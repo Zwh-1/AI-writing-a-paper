@@ -1,0 +1,108 @@
+const fs = require('fs'), path = require('path'), assert = require('assert');
+const root = path.resolve(__dirname, '..'), port = 8785;
+const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'C:/Users/abcta/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright');
+
+(async () => {
+  const fixture = JSON.parse(fs.readFileSync(path.join(root, '.runtime/project-review-browser-fixture.json'), 'utf8'));
+  const session = JSON.parse(fs.readFileSync(path.join(root, '.runtime/session-' + port + '.json'), 'utf8'));
+  const browser = await chromium.launch({ headless: true, executablePath: path.join(root, '.runtime/browsers/chromium-1234/chrome-win64/chrome.exe') });
+  const page = await browser.newPage({ viewport: { width: 1440, height: 1100 }, locale: 'zh-CN' });
+  page.setDefaultTimeout(15000);
+  await page.addInitScript(pid => localStorage.setItem('paper_project', pid), fixture.project_id);
+  let requests = 0, paid = 0, failNext = false, hold = null, release = null;
+  const checks = [], errors = [];
+  page.on('pageerror', e => errors.push(e.message));
+  page.on('request', r => { if (r.method() === 'POST' && (r.url().endsWith('/summary') || r.url().includes('probe-generation'))) paid++; });
+  await page.route('**/api/v1/projects/*/materials/review', async route => {
+    if (route.request().method() !== 'POST') return route.continue();
+    requests++;
+    if (failNext) { failNext = false; return route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ detail: '模拟全部文件保存失败' }) }); }
+    if (hold) { const gate = hold; hold = null; await gate; }
+    return route.continue();
+  });
+  const panel = () => page.getByTestId('project-original-review');
+  const button = () => panel().getByRole('button', { name: '确认当前项目全部文件原文已核对', exact: true });
+  const complete = () => panel().locator('.project-review-complete');
+  const url = '/api/v1/projects/' + fixture.project_id + '/materials/review';
+  try {
+    await page.goto('http://127.0.0.1:' + port + '/#token=' + session.bootstrap_token, { waitUntil: 'networkidle' });
+    await page.getByRole('button', { name: '资料中心', exact: true }).click();
+    await button().waitFor();
+    await panel().getByText('待确认 1 份文件、2 页原文', { exact: false }).waitFor();
+    assert(await button().isEnabled());
+    await page.getByTestId('material-health').getByText('在用资料 2 份', { exact: true }).waitFor();
+    await page.getByTestId('material-health').getByText('待核对原文 2 页', { exact: true }).waitFor();
+    checks.push('scope_shows_active_files_pending_pages_and_exclusions');
+    await panel().scrollIntoViewIfNeeded();
+    await page.screenshot({ path: path.join(root, 'docs/screenshots/project-original-review-action.png') });
+    failNext = true;
+    await button().click();
+    await panel().getByRole('alert').filter({ hasText: '模拟全部文件保存失败' }).waitFor();
+    assert(await button().isEnabled());
+    assert.equal(await complete().count(), 0);
+    checks.push('failed_bulk_save_keeps_action_retryable');
+    const local = await page.request.post('http://127.0.0.1:' + port + '/api/v1/session', { data: {} });
+    const headers = { 'X-CSRF-Token': (await local.json()).csrf };
+    const reset = await page.request.patch('http://127.0.0.1:' + port + '/api/v1/pages/' + fixture.first_pages[0].id, { headers, data: { review_state: 'unreviewed' } });
+    assert.equal(reset.status(), 200);
+    await button().click();
+    await panel().getByRole('alert').filter({ hasText: '已变化' }).waitFor();
+    await panel().getByText('待确认 2 份文件、3 页原文', { exact: false }).waitFor();
+    const unchanged = await (await page.request.get('http://127.0.0.1:' + port + '/api/v1/files/' + fixture.second_file_id + '/pages')).json();
+    assert(unchanged.every(p => p.review_state === 'unreviewed'));
+    checks.push('stale_scope_is_rejected_without_partial_confirmation');
+    hold = new Promise(resolve => { release = resolve; });
+    await button().click();
+    const saving = panel().getByRole('button', { name: '正在保存全部文件核对…', exact: true });
+    await saving.waitFor();
+    assert(await saving.isDisabled());
+    await saving.evaluate(el => el.click());
+    assert.equal(requests, 3);
+    release();
+    await complete().waitFor();
+    assert.equal(await button().count(), 0);
+    await page.getByTestId('material-health').getByText('待核对原文 0 页', { exact: true }).waitFor();
+    assert((await panel().innerText()).includes('已核对 3/4 页'));
+    checks.push('bulk_confirmation_updates_every_active_file_and_progress', 'in_flight_confirmation_cannot_be_submitted_twice');
+    const first = await (await page.request.get('http://127.0.0.1:' + port + '/api/v1/files/' + fixture.first_file_id + '/pages')).json();
+    assert.equal(first[1].review_state, 'not_applicable');
+    assert.equal(first[1].review_note, '封面排除');
+    for (const fileId of [fixture.inactive_file_id, fixture.foreign_file_id]) {
+      const pages = await (await page.request.get('http://127.0.0.1:' + port + '/api/v1/files/' + fileId + '/pages')).json();
+      assert(pages.every(p => p.review_state === 'unreviewed'));
+    }
+    checks.push('excluded_pages_inactive_files_and_other_projects_preserved');
+    await complete().scrollIntoViewIfNeeded();
+    await page.screenshot({ path: path.join(root, 'docs/screenshots/project-original-review-completed.png') });
+    await page.getByRole('button', { name: '批量待核对文件.txt' }).click();
+    await page.locator('.document-review-complete').waitFor();
+    await page.locator('.source-review-complete').waitFor();
+    assert.equal(await page.getByRole('button', { name: '确认整份文档原文已核对', exact: true }).count(), 0);
+    await page.locator('.modal>header button').click();
+    checks.push('single_document_and_page_controls_reflect_project_confirmation');
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.getByRole('button', { name: '资料中心', exact: true }).click();
+    await complete().waitFor();
+    checks.push('completion_persists_after_reload');
+    await page.locator('.project-switch select').selectOption(fixture.other_project_id);
+    await panel().getByText('待确认 1 份文件、2 页原文', { exact: false }).waitFor();
+    assert(await button().isEnabled());
+    assert.equal(await complete().count(), 0);
+    checks.push('switching_projects_does_not_leak_completed_state');
+    await page.locator('.project-switch select').selectOption(fixture.blocked_project_id);
+    await panel().getByText('1 份资料尚未就绪', { exact: false }).waitFor();
+    assert(await button().isDisabled());
+    await panel().locator('summary').click();
+    await panel().getByText('解析失败的文件.txt', { exact: false }).waitFor();
+    checks.push('unready_files_block_project_confirmation_with_visible_reasons');
+    await page.setViewportSize({ width: 390, height: 844 });
+    await panel().scrollIntoViewIfNeeded();
+    assert.equal(await panel().evaluate(el => el.scrollWidth > el.clientWidth + 1), false);
+    checks.push('project_confirmation_fits_mobile');
+    assert.deepEqual(errors, []);
+    assert.equal(paid, 0);
+    const report = { checks, errors, project_review_requests: requests, upstream_generation_calls: paid, fixture: 'isolated synthetic projects; real user review states were not changed' };
+    fs.writeFileSync(path.join(root, 'docs/project-material-review-browser-results.json'), JSON.stringify(report, null, 2));
+    console.log(JSON.stringify(report));
+  } finally { await browser.close(); }
+})().catch(error => { console.error(error); process.exitCode = 1; });

@@ -1,0 +1,14 @@
+CREATE TABLE IF NOT EXISTS neural_vectors(source_id TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,model TEXT NOT NULL,text_hash TEXT NOT NULL,dimension INTEGER NOT NULL,vector BLOB NOT NULL,created_at TEXT NOT NULL,PRIMARY KEY(source_id,model));
+CREATE TABLE IF NOT EXISTS advanced_runs(id TEXT PRIMARY KEY,project_id TEXT NOT NULL REFERENCES projects(id),kind TEXT NOT NULL,parameters TEXT NOT NULL,result TEXT NOT NULL,created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS stream_chunks(run_id TEXT NOT NULL,seq INTEGER NOT NULL,text TEXT NOT NULL,kind TEXT NOT NULL,created_at TEXT NOT NULL,PRIMARY KEY(run_id,seq));
+CREATE TABLE IF NOT EXISTS stream_runs(id TEXT PRIMARY KEY,project_id TEXT NOT NULL REFERENCES projects(id),section_id TEXT,base_revision_id TEXT,status TEXT NOT NULL,model TEXT NOT NULL,protocol TEXT NOT NULL,usage TEXT,error TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS collaboration_users(id TEXT PRIMARY KEY,username TEXT UNIQUE NOT NULL,password_hash TEXT NOT NULL,admin INTEGER NOT NULL DEFAULT 0,disabled INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS collaboration_sessions(token_hash TEXT PRIMARY KEY,user_id TEXT NOT NULL REFERENCES collaboration_users(id),csrf TEXT NOT NULL,expires_at REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS project_members(project_id TEXT NOT NULL REFERENCES projects(id),user_id TEXT NOT NULL REFERENCES collaboration_users(id),role TEXT NOT NULL,PRIMARY KEY(project_id,user_id));
+CREATE TABLE IF NOT EXISTS collaboration_events(seq INTEGER PRIMARY KEY AUTOINCREMENT,project_id TEXT NOT NULL REFERENCES projects(id),actor_id TEXT NOT NULL,kind TEXT NOT NULL,payload TEXT NOT NULL,created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS sync_operations(project_id TEXT NOT NULL REFERENCES projects(id),operation_id TEXT NOT NULL,payload_hash TEXT NOT NULL,result TEXT NOT NULL,created_at TEXT NOT NULL,PRIMARY KEY(project_id,operation_id));
+CREATE TABLE IF NOT EXISTS sync_conflicts(id TEXT PRIMARY KEY,project_id TEXT NOT NULL REFERENCES projects(id),section_id TEXT NOT NULL,base_revision_id TEXT,local_revision_id TEXT,remote_document TEXT NOT NULL,state TEXT NOT NULL DEFAULT 'open',created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS collaboration_presence(connection_id TEXT PRIMARY KEY,project_id TEXT NOT NULL REFERENCES projects(id),user_id TEXT NOT NULL REFERENCES collaboration_users(id),updated_at REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS sync_record_conflicts(id TEXT PRIMARY KEY,project_id TEXT NOT NULL REFERENCES projects(id),table_name TEXT NOT NULL,key_json TEXT NOT NULL,local_row TEXT NOT NULL,remote_row TEXT NOT NULL,state TEXT NOT NULL DEFAULT 'open',created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS file_derivations(child_file_id TEXT NOT NULL REFERENCES files(id),parent_file_id TEXT NOT NULL REFERENCES files(id),reason TEXT NOT NULL,PRIMARY KEY(child_file_id,parent_file_id));
+PRAGMA user_version=3;

@@ -1,0 +1,14 @@
+const fs=require('fs'),path=require('path'),assert=require('assert');
+if(process.env.PAPER_RUN_LIVE_BALANCE!=='1')throw new Error('Set PAPER_RUN_LIVE_BALANCE=1 to query the saved relay account; no model generation is performed.');
+const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'C:/Users/abcta/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright');
+(async()=>{
+ const root=path.resolve(__dirname,'..'),session=JSON.parse(fs.readFileSync(path.join(root,'.runtime/session-8765.json'),'utf8'));const output=process.env.PAPER_BALANCE_REPORT_DIR||path.join(root,'data/acceptance-2026-10-21/run-100803');fs.mkdirSync(output,{recursive:true});
+ const browser=await chromium.launch({headless:true});const page=await browser.newPage({viewport:{width:1480,height:1020},locale:'zh-CN'});let generationRequests=0;const errors=[];
+ page.on('pageerror',e=>errors.push(e.message));page.on('request',r=>{if(r.url().includes('/probe-generation')||r.url().includes('/writing-tasks'))generationRequests++});
+ try{
+  await page.goto('http://127.0.0.1:8765/#token='+session.bootstrap_token,{waitUntil:'networkidle'});await page.getByRole('button',{name:'接口与设置',exact:true}).click();await page.getByLabel('API key',{exact:true}).waitFor();assert.equal(await page.getByLabel('API key',{exact:true}).inputValue(),'');
+  const pending=page.waitForResponse(r=>r.url().endsWith('/api/v1/provider/account-usage')&&r.request().method()==='POST');await page.getByRole('button',{name:'查询余额',exact:true}).click();const response=await pending;assert.equal(response.status(),200);const receipt=await response.json();await page.getByTestId('account-usage').filter({hasText:receipt.remaining_exact+' '+receipt.unit}).waitFor();assert.equal(receipt.scope,'account');assert.equal(generationRequests,0);assert.deepEqual(errors,[]);
+  const settings=await page.evaluate(async()=>(await fetch('/api/v1/settings')).json());assert.equal(settings.version,'0.2.2');await page.getByText('砚台 v0.2.2',{exact:true}).waitFor();assert.equal(settings.provider.model,'gemini-4-argon');assert.equal(settings.credential.configured,true);
+  await page.screenshot({path:path.join(output,'account-usage-live.png'),fullPage:true});fs.writeFileSync(path.join(output,'balance-live-browser.json'),JSON.stringify({passed:true,version:settings.version,frontend_build_hash:require('crypto').createHash('sha256').update(fs.readFileSync(path.join(root,'frontend/dist/index.html'))).digest('hex'),credential_configured:true,plaintext_key_refilled:false,model_configuration_retained:true,generation_requests:generationRequests,balance:receipt,page_errors:errors,tested_at:new Date().toISOString()},null,2));console.log('Live balance UI passed; saved key retained; no generation requests.');
+ }finally{await browser.close()}
+})().catch(e=>{console.error(e.message);process.exitCode=1});

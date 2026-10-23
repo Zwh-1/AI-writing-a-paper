@@ -1,0 +1,2 @@
+CREATE TABLE IF NOT EXISTS material_summaries(file_id TEXT PRIMARY KEY REFERENCES files(id),input_hash TEXT NOT NULL,provider_hash TEXT NOT NULL,data TEXT NOT NULL,model TEXT NOT NULL,task_id TEXT REFERENCES tasks(id),created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS material_summary_parts(file_id TEXT NOT NULL REFERENCES files(id),cache_key TEXT NOT NULL,data TEXT NOT NULL,created_at TEXT NOT NULL,PRIMARY KEY(file_id,cache_key));

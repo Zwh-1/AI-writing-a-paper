@@ -1,0 +1,64 @@
+const fs=require('fs'),path=require('path'),assert=require('assert');
+let playwright;
+for(const p of [process.env.PLAYWRIGHT_MODULE,path.resolve(__dirname,'../frontend/node_modules/playwright'),'C:/Users/abcta/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright']){if(!p)continue;try{playwright=require(p);break}catch{}}
+if(!playwright)throw new Error('Local Playwright runtime not available');
+const root=path.resolve(__dirname,'..'),port=Number(process.env.PAPER_TEST_PORT||8789);
+(async()=>{
+ const session=JSON.parse(fs.readFileSync(path.join(root,`.runtime/session-${port}.json`),'utf8'));
+ const browser=await playwright.chromium.launch({headless:true});
+ const page=await browser.newPage({viewport:{width:1440,height:1050},locale:'zh-CN'}),errors=[],failures=[],checks=[],apiTrace=[];
+ page.on('response',async r=>{if(r.url().includes('/api/v1/projects/')){try{const data=await r.json();apiTrace.push({path:new URL(r.url()).pathname,status:r.status(),count:Array.isArray(data)?data.length:null,detail:data.detail});}catch{}}});
+ page.on('pageerror',e=>errors.push(e.message));page.on('response',r=>{if(r.url().includes('/api/')&&r.status()>=500)failures.push(r.status()+':'+r.url())});
+ const shots=path.join(root,'docs/writing-agent/completion-screenshots');fs.mkdirSync(shots,{recursive:true});
+ try{
+   await page.goto(`http://127.0.0.1:${port}/#token=${session.bootstrap_token}`,{waitUntil:'networkidle'});
+   await page.getByRole('button',{name:'有据写作',exact:true}).click();await page.getByRole('heading',{name:'有据写作',exact:true}).waitFor();
+   await page.getByRole('heading',{name:'论文核心与结论边界'}).waitFor();checks.push('core_and_contract_setup');
+   await page.getByRole('button',{name:'代码与证据',exact:true}).click();await page.getByRole('heading',{name:'已有证据'}).waitFor();
+   await page.getByLabel('代码检索').fill('allowed');await page.getByRole('button',{name:'检索冻结代码',exact:true}).click();await page.getByText(/gate.ts:1/).first().waitFor();checks.push('frozen_code_search');
+   await page.screenshot({path:path.join(shots,'sources-desktop.png'),fullPage:true});
+   await page.getByRole('button',{name:'写作与核验',exact:true}).click();const chooser=page.getByRole('combobox',{name:'写作会话',exact:true});
+   await chooser.locator('option').nth(1).waitFor({state:'attached'});
+   const values=await chooser.locator('option').evaluateAll(opts=>opts.map(o=>o.value).filter(Boolean));assert(values.length);await chooser.selectOption(values[0]);
+   await page.getByRole('heading',{name:'核对与采用',exact:true}).waitFor();await page.getByRole('heading',{name:'句子、论断与依据',exact:true}).waitFor();
+   await page.getByPlaceholder('写明对照了什么源码、条件、结果及未决问题').fill('已逐句对照本合成代码的角色和启用条件，未将静态源码描述为执行结果。');
+   const review=page.waitForResponse(r=>r.url().includes('/writing-analyses/')&&r.url().endsWith('/review'));
+   await page.getByRole('button',{name:'逐句核对后登记人工审阅',exact:true}).click();assert.equal((await review).status(),200);
+   await page.getByRole('button',{name:'严格核对后采用',exact:true}).waitFor();
+   const adoption=page.waitForResponse(r=>r.url().includes('/writing-candidates/')&&r.url().endsWith('/accept'));
+   await page.getByRole('button',{name:'严格核对后采用',exact:true}).click();assert.equal((await adoption).status(),200);checks.push('explicit_review_and_atomic_adoption');
+   await page.screenshot({path:path.join(shots,'writing-desktop.png'),fullPage:true});
+   await page.getByRole('button',{name:'写作工作台',exact:true}).click();await page.getByRole('button',{name:'查看并定位当前版本的逐句核验',exact:true}).click();await page.getByRole('button',{name:'定位第1句',exact:true}).click();await page.waitForFunction(()=>window.getSelection()?.toString().includes('发行方'));checks.push('editor_sentence_range_selection');
+   await page.getByRole('button',{name:'有据写作',exact:true}).click();
+   await page.getByRole('button',{name:'模型诊断',exact:true}).click();await page.getByRole('heading',{name:'模型任务诊断'}).waitFor();await page.getByText(/D16 跨章节条件组合/).waitFor();checks.push('all_diagnostic_cases_visible');
+   const resultPanel=page.locator('section').filter({has:page.getByRole('heading',{name:'结果与人工复核',exact:true})});
+   const diagnosticSelect=resultPanel.getByRole('combobox',{name:'诊断运行'});
+   await diagnosticSelect.locator('option').nth(1).waitFor({state:'attached'});
+   await diagnosticSelect.selectOption(await diagnosticSelect.locator('option').nth(1).getAttribute('value'));
+   await resultPanel.getByText('开始隐藏配置与既有评分的盲评',{exact:true}).click();
+   await resultPanel.getByLabel('评审人标识',{exact:true}).first().fill('browser-fixture-reviewer');
+   await resultPanel.getByRole('button',{name:'生成随机顺序盲评包',exact:true}).click();
+   const blindForm=resultPanel.locator('article').first().locator('form');
+   await blindForm.getByLabel('角色、条件、否定和启用状态评分',{exact:true}).waitFor();
+   const selects=blindForm.locator('fieldset select');assert.equal(await selects.count(),8);
+   for(let i=0;i<8;i++){await selects.nth(i).selectOption('2');await blindForm.locator('fieldset input').nth(i).fill('只对照合成fixture验证评分保存，不代表真实模型人工验收。');}
+   await blindForm.getByLabel('总体判断',{exact:true}).selectOption('pass');
+   await blindForm.getByLabel('本次核对依据',{exact:true}).fill('这是隔离合成fixture，用于验证盲评分项、身份与保存交互，不是实际项目的人工评分。');
+   const saved=page.waitForResponse(r=>r.url().endsWith('/blind-review'));
+   await blindForm.getByRole('button',{name:'保存我的分项审阅',exact:true}).click();assert.equal((await saved).status(),200);
+   await resultPanel.getByText(/分项人工记录 1/).waitFor();checks.push('dimensional_blind_review_saved_without_fake_qualification');
+   await page.getByRole('heading',{name:'可比对照与位置偏好',exact:true}).waitFor();checks.push('controlled_comparison_ui');
+   await page.getByRole('button',{name:'全文与交付',exact:true}).click();await page.getByRole('button',{name:'查看草稿交付缺口',exact:true}).click();await page.getByText('全文论证复核尚未运行',{exact:true}).waitFor();checks.push('unresolved_report_is_not_a_pass');
+   await page.getByRole('heading',{name:'跨章节联合复核与采用',exact:true}).waitFor();
+   await page.getByText('逐项处理待复查原因',{exact:true}).waitFor();checks.push('joint_review_and_separate_stale_causes_visible');
+   const blocked=page.waitForResponse(r=>r.url().includes('/writing-export-report?strict=true'));
+   await page.getByRole('button',{name:'核对严格交付条件',exact:true}).click();assert.equal((await blocked).status(),409);
+   await page.getByRole('alert').filter({hasText:'严格交付'}).waitFor();checks.push('strict_export_409_is_actionable_and_not_success');
+   await page.getByRole('button',{name:'关闭错误',exact:true}).click();
+   await page.setViewportSize({width:390,height:844});await page.screenshot({path:path.join(shots,'mobile.png'),fullPage:true});
+   const overflow=await page.evaluate(()=>document.documentElement.scrollWidth>window.innerWidth+2);assert.equal(overflow,false,'mobile horizontal overflow');checks.push('mobile_layout');
+   const tabFont=await page.getByRole('button',{name:'全文与交付',exact:true}).evaluate(e=>parseFloat(getComputedStyle(e).fontSize));assert(tabFont>=12);checks.push('mobile_tab_text_visible');
+   assert.deepEqual(errors,[]);assert.deepEqual(failures,[]);
+   const report={synthetic_fixture:true,real_model_quality_verified:false,checks,errors,api_server_errors:failures,passed:true,created_at:new Date().toISOString()};fs.writeFileSync(path.join(root,'docs/writing-agent/completion-browser-report.json'),JSON.stringify(report,null,2));console.log(JSON.stringify(report));
+ }catch(e){await page.screenshot({path:path.join(shots,'failure.png'),fullPage:true});console.error(e);console.error({errors,failures,apiTrace,selects:await page.locator('select').evaluateAll(rows=>rows.map(x=>({label:x.parentElement.textContent.slice(0,100),options:x.options.length})))});process.exitCode=1;}finally{await browser.close();}
+})();

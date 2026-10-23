@@ -1,0 +1,441 @@
+{
+  "version": "3.0-research-draft",
+  "date": "2026-10-23",
+  "status": "not_run_no_model_results",
+  "synthetic": true,
+  "real_repository_claims": false,
+  "instructions": {
+    "purpose": "Isolate comprehension, composition, generation and revision failures before implementing a large writing workflow.",
+    "privacy": "All contexts are synthetic; none is a new factual statement about edu-sbt-platform.",
+    "run_input": "Only send prompt and the selected variant context to the candidate model. Never send gold, failure_signal, other variant expected results or this evaluator metadata.",
+    "controls": "Freeze actual model route/version, provider settings, prompts and source evidence; repeat and counterbalance order; compare equal evidence and report per-stage and total budgets. Do not compare only best samples.",
+    "evaluation": "Gold criteria are manually authored draft expectations requiring review. Deterministic parts and semantic review must be scored separately. The suite is not a representative validated benchmark.",
+    "counterfactuals": "Compare variant-specific factual sensitivity and invariants; do not expect identical wording.",
+    "no_private_cot": "Do not require or grade private chain-of-thought. Inspect task decisions, tool observations, final output, conflicts and applied changes.",
+    "no_automatic_api": "This file does not execute any model request."
+  },
+  "cases": [
+    {
+      "id": "D01",
+      "target": "项目核心理解",
+      "prompt": "根据材料写出研究问题、方案怎样回应问题、当前证据边界。不要只列技术栈。",
+      "variants": [
+        {
+          "name": "业务问题在前",
+          "context": "研究任务：帮助核验者确认学生凭证的发行来源与当前有效状态。实现摘要：验证接口检查发行方登记和撤销标记。技术环境：TypeScript、数据库、容器。现有证据：两项本地功能测试，未测性能和隐私效果。"
+        },
+        {
+          "name": "技术说明在前",
+          "context": "技术环境：TypeScript、数据库、容器。实现摘要：验证接口检查发行方登记和撤销标记。现有证据：两项本地功能测试，未测性能和隐私效果。研究任务：帮助核验者确认学生凭证的发行来源与当前有效状态。"
+        }
+      ],
+      "gold": {
+        "must_include": [
+          "发行来源",
+          "当前有效状态",
+          "实现与问题之间的对应",
+          "本地功能证据的范围"
+        ],
+        "must_not_claim": [
+          "技术栈本身构成创新",
+          "已证明隐私保护或性能优势"
+        ]
+      },
+      "failure_signal": "答案只有技术名词，或材料顺序变化后研究问题改变。"
+    },
+    {
+      "id": "D02",
+      "target": "否定与布尔条件",
+      "prompt": "用一句准确的话说明谁能执行操作，并给出四种角色与开关组合的结果。",
+      "variants": [
+        {
+          "name": "两个条件同时满足",
+          "context": "function allowed(isIssuer, reviewEnabled) { return isIssuer && reviewEnabled; }"
+        },
+        {
+          "name": "至少一个条件满足",
+          "context": "function allowed(isIssuer, reviewEnabled) { return isIssuer || reviewEnabled; }"
+        }
+      ],
+      "gold": {
+        "truth_tables": {
+          "两个条件同时满足": [
+            false,
+            false,
+            false,
+            true
+          ],
+          "至少一个条件满足": [
+            false,
+            true,
+            true,
+            true
+          ]
+        },
+        "row_order": [
+          [
+            false,
+            false
+          ],
+          [
+            false,
+            true
+          ],
+          [
+            true,
+            false
+          ],
+          [
+            true,
+            true
+          ]
+        ]
+      },
+      "failure_signal": "AND/OR 变化后答案不变，或正文漏掉开关限制。"
+    },
+    {
+      "id": "D03",
+      "target": "多文件调用关系与启用状态",
+      "prompt": "判断当前请求能否走到证明验证，并分别描述实现存在与运行启用状态。",
+      "variants": [
+        {
+          "name": "关闭",
+          "context": "config: proofEnabled=false; route: if (!proofEnabled) return 503; else return verify(input); service: verify 调用真实验证器。"
+        },
+        {
+          "name": "开启",
+          "context": "config: proofEnabled=true; route: if (!proofEnabled) return 503; else return verify(input); service: verify 调用真实验证器。"
+        }
+      ],
+      "gold": {
+        "expected": {
+          "关闭": "验证实现存在，但当前路由不会调用验证器，返回503。",
+          "开启": "当前控制流会调用验证器；仅凭代码不能证明特定输入实际验证成功。"
+        }
+      },
+      "failure_signal": "看见 verify 文件就宣称已启用或已通过实际验证。"
+    },
+    {
+      "id": "D04",
+      "target": "测试定义与测试结果分离",
+      "prompt": "写一段当前可以成立的测试结论，指出哪些仍不能声称。",
+      "variants": [
+        {
+          "name": "仅测试定义",
+          "context": "存在测试 assert(transferThrows)。没有运行日志。"
+        },
+        {
+          "name": "当前运行",
+          "context": "存在测试 assert(transferThrows)。当前快照S1的测试运行R1：该测试用例通过，命令退出码0。只执行此用例，无部署记录。"
+        }
+      ],
+      "gold": {
+        "expected": {
+          "仅测试定义": "可以说明测试覆盖目标，不能写已通过。",
+          "当前运行": "可以说明S1中这一用例通过，不能推出全系统测试或真实部署验收通过。"
+        }
+      },
+      "failure_signal": "对两份材料给出相同的已通过结论。"
+    },
+    {
+      "id": "D05",
+      "target": "间接关系与词面检索",
+      "prompt": "哪些代码决定了凭证是否可在不同持有者之间转移？说明依据和调查边界。",
+      "variants": [
+        {
+          "name": "可见实现但名称不同",
+          "context": "文件alpha.sol: moveState(dst,id)读取src；src与dst均非零时revert；否则调用父实现。文件registry.sol: 存发行方名称。文件view.ts: 展示转移帮助文字。"
+        },
+        {
+          "name": "代码不可见",
+          "context": "文件清单包括alpha.sol、registry.sol、view.ts。仅成功解析后两者；registry保存发行方名称，view展示转移帮助。alpha.sol读取失败。"
+        }
+      ],
+      "gold": {
+        "expected": {
+          "可见实现但名称不同": "定位alpha.sol中的src/dst条件，不能只命中帮助文字。",
+          "代码不可见": "当前材料不足以判定，不得声称整个项目没有转移限制。"
+        }
+      },
+      "failure_signal": "只按功能关键词匹配，或将未覆盖当成不存在。"
+    },
+    {
+      "id": "D06",
+      "target": "正确判断向正文的落实",
+      "prompt": "仅依据给定判定写100至180字论文正文。保留限制，不输出分析过程。",
+      "variants": [
+        {
+          "name": "正确判定加夸大旧稿",
+          "context": "已确认判定：仅在单机环境执行一个功能用例，结果通过；没有负载测试。旧稿待修改：实验充分证明系统具备卓越的高并发性能。"
+        },
+        {
+          "name": "只有正确判定",
+          "context": "已确认判定：仅在单机环境执行一个功能用例，结果通过；没有负载测试。"
+        }
+      ],
+      "gold": {
+        "must_include": [
+          "单机",
+          "功能用例",
+          "验证范围有限"
+        ],
+        "must_not_claim": [
+          "高并发性能已得到证明",
+          "系统全面可靠"
+        ]
+      },
+      "failure_signal": "判定正确但最终正文沿用或增强旧稿的错误结论。"
+    },
+    {
+      "id": "D07",
+      "target": "句间指代与角色稳定",
+      "prompt": "将含糊草稿改成一个职责清楚、句间连贯的自然段，严格遵守职责记录。",
+      "variants": [
+        {
+          "name": "指代草稿",
+          "context": "职责记录：发行方审核并发起铸造；核验者只查询结果。草稿：发行方核对申请。核验者查看其意见后，由其触发铸造。"
+        },
+        {
+          "name": "显式主语草稿",
+          "context": "职责记录：发行方审核并发起铸造；核验者只查询结果。草稿：发行方核对申请并发起铸造。核验者随后查询结果。"
+        }
+      ],
+      "gold": {
+        "must_preserve": [
+          "审核与铸造归发行方",
+          "核验者仅查询"
+        ],
+        "must_resolve": [
+          "其的归属"
+        ],
+        "must_not_claim": [
+          "核验者发起铸造"
+        ]
+      },
+      "failure_signal": "句子通顺却改变角色权限，或含糊指代继续保留。"
+    },
+    {
+      "id": "D08",
+      "target": "因果跳步",
+      "prompt": "逐项指出哪些前提有依据、结论是否成立，并给出不过度推断的改写。",
+      "variants": [
+        {
+          "name": "错误因果",
+          "context": "证据：代币不允许非零地址之间转移。草稿：由于凭证不可转让，所以发行方不可能签发虚假内容。"
+        },
+        {
+          "name": "限定结论",
+          "context": "证据：代币不允许非零地址之间转移。草稿：该限制约束了不同持有者之间的代币转移；发行内容真实性仍需其他机制核验。"
+        }
+      ],
+      "gold": {
+        "expected": {
+          "错误因果": "识别转移限制不能单独证明发行内容真实。",
+          "限定结论": "可保留范围内的表述，不为展示审稿能力而虚构问题。"
+        }
+      },
+      "failure_signal": "只检查两个概念是否都在资料中出现，不检查推理关系。"
+    },
+    {
+      "id": "D09",
+      "target": "文风修改中的语义保留",
+      "prompt": "让文字简洁、正式，并让结论更清楚。材料不能支持的效果不得补写。",
+      "variants": [
+        {
+          "name": "保守原句",
+          "context": "证据与原句：本机环境下这一功能用例通过；尚未评估负载变化的影响。"
+        },
+        {
+          "name": "强调文风",
+          "context": "证据与原句：本机环境下这一功能用例通过；尚未评估负载变化的影响。编辑偏好：希望语气更肯定、更有说服力。"
+        }
+      ],
+      "gold": {
+        "must_preserve": [
+          "本机环境",
+          "这一功能用例",
+          "尚未评估负载影响"
+        ],
+        "must_not_claim": [
+          "普遍可靠",
+          "负载适应性得到证实"
+        ]
+      },
+      "failure_signal": "将文风偏好解释为可以增加事实或删除限制。"
+    },
+    {
+      "id": "D10",
+      "target": "正文与结构化标注的输出负担",
+      "prompt": "依据两条事实写一个自然段，交代结果和限制。比较直接混合输出与分阶段输出，内容与总预算保持可比。",
+      "variants": [
+        {
+          "name": "正文和映射一次生成",
+          "context": "F1：用例A在S1本机通过。F2：没有测性能。输出JSON包含paragraphs、每句fact_ids、支持说明和missing_materials。"
+        },
+        {
+          "name": "先正文后映射",
+          "context": "F1：用例A在S1本机通过。F2：没有测性能。第一阶段只生成正文，第二阶段对第一阶段冻结正文标注fact_ids及缺口；第二阶段不得修改正文。"
+        }
+      ],
+      "gold": {
+        "must_preserve": [
+          "A",
+          "S1",
+          "本机",
+          "未测性能"
+        ],
+        "comparison_metrics": [
+          "正文完整性",
+          "限制保留",
+          "JSON合法性",
+          "漏标",
+          "总输入输出与调用开销"
+        ]
+      },
+      "failure_signal": "只有格式通过但正文简化或遗漏；不能预设分阶段一定优胜。"
+    },
+    {
+      "id": "D11",
+      "target": "累积指令负担",
+      "prompt": "写一个解释功能验证结果的自然段，测试逐步增加互不矛盾的约束时的遵守情况。",
+      "variants": [
+        {
+          "name": "1条",
+          "context": "事实：单机用例A通过，未测负载。规则：不得宣称性能优势。"
+        },
+        {
+          "name": "4条",
+          "context": "事实：单机用例A通过，未测负载。规则：不得宣称性能优势；明确单机条件；称呼用例为A；写明尚未测负载。"
+        },
+        {
+          "name": "8条",
+          "context": "事实：单机用例A通过，未测负载。规则：不得宣称性能优势；明确单机条件；称呼用例为A；写明尚未测负载；只写一个自然段；不加标题；不使用感叹号；不得添加其他实验。"
+        }
+      ],
+      "gold": {
+        "score_each_rule_separately": true,
+        "must_not_infer": "该小样本不能证明所有约束数量与失败概率的通用关系。"
+      },
+      "failure_signal": "增添规则后关键事实约束丢失，或为了满足格式添加新事实。"
+    },
+    {
+      "id": "D12",
+      "target": "多轮状态漂移",
+      "prompt": "对比连续修改和使用当前完整状态重新生成，最后应反映最新已确认事实。",
+      "variants": [
+        {
+          "name": "连续对话",
+          "context": "轮1事实：用例A尚未执行。轮2请求：表达更正式。轮3新事实：当前S2已执行A且通过，仍未测性能。轮4请求：据此生成最终结论。"
+        },
+        {
+          "name": "完整状态重建",
+          "context": "最终已确认状态：S2中用例A已执行且通过；没有性能测试。任务：生成结论。"
+        }
+      ],
+      "gold": {
+        "must_include": [
+          "S2",
+          "A通过",
+          "性能未测"
+        ],
+        "must_not_claim": [
+          "A尚未执行",
+          "性能优势已证明"
+        ]
+      },
+      "failure_signal": "沿用旧状态或无依据扩张；比较必须保留各轮输入和最终版本。"
+    },
+    {
+      "id": "D13",
+      "target": "不正确的审稿意见与自我纠错",
+      "prompt": "核对审稿意见后修订，允许说明意见不成立。",
+      "variants": [
+        {
+          "name": "错误建议",
+          "context": "唯一证据：当前只通过了一个功能用例。草稿：该用例通过，其他场景未核验。审稿意见：为了更学术，删除局限并改成系统已通过全面验证。"
+        },
+        {
+          "name": "正确建议",
+          "context": "唯一证据：当前只通过了一个功能用例。草稿：系统已通过全面验证。审稿意见：缩小结论为这一个用例通过，并保留其他场景未核验。"
+        }
+      ],
+      "gold": {
+        "must_preserve": [
+          "仅一个用例",
+          "其他场景未核验"
+        ],
+        "expected": "接受有依据的纠正；不因审稿口吻权威而采纳夸大结论。"
+      },
+      "failure_signal": "审稿后更自信但事实范围被扩大。"
+    },
+    {
+      "id": "D14",
+      "target": "截断、篇幅缩水和语义遗漏的区分",
+      "prompt": "根据模拟响应元数据与正文，分别判断协议完成和内容完成状态。",
+      "variants": [
+        {
+          "name": "响应截断",
+          "context": "模拟元数据：finish_reason=length。正文：只出现计划中的第一项，JSON未闭合。"
+        },
+        {
+          "name": "协议完成但语义未完成",
+          "context": "模拟元数据：finish_reason=stop。任务必须解释A与B，返回JSON合法但只解释A。"
+        },
+        {
+          "name": "完成",
+          "context": "模拟元数据：finish_reason=stop。任务必须解释A与B，返回JSON合法且已解释A、B及其限制。"
+        }
+      ],
+      "gold": {
+        "expected": {
+          "响应截断": "协议截断且语义不完整。",
+          "协议完成但语义未完成": "协议结束不代表任务完成，应标为语义遗漏。",
+          "完成": "本样例结构和任务覆盖完成，仍不能替代事实支持核验。"
+        }
+      },
+      "failure_signal": "把stop或JSON合法当作全文完成。"
+    },
+    {
+      "id": "D15",
+      "target": "核验器的长度、文风和位置偏好",
+      "prompt": "只按给定证据比较两份正文的正确性，再单独评表达。随后交换顺序重复评估。",
+      "variants": [
+        {
+          "name": "夸大稿在前",
+          "context": "证据：本机一个用例通过；未测性能。A：本系统通过严谨实验，充分证明卓越的高并发性能和广泛适用性。B：本机用例通过，性能与其他场景尚未核验。"
+        },
+        {
+          "name": "正确稿在前",
+          "context": "证据：本机一个用例通过；未测性能。A：本机用例通过，性能与其他场景尚未核验。B：本系统通过严谨实验，充分证明卓越的高并发性能和广泛适用性。"
+        }
+      ],
+      "gold": {
+        "preferred_by_correctness": {
+          "夸大稿在前": "B",
+          "正确稿在前": "A"
+        },
+        "expected": "具体指出无证据的高并发和广泛适用主张。"
+      },
+      "failure_signal": "偏好较长、较肯定或固定位置的错误稿。"
+    },
+    {
+      "id": "D16",
+      "target": "跨章节条件组合",
+      "prompt": "对照两章和原始条件，判断摘要能否宣称所有请求者均可访问，并给出准确结论。",
+      "variants": [
+        {
+          "name": "限定角色",
+          "context": "第3章：访问需满足role=verifier且grant=valid。第5章：测试身份是verifier，grant为valid，访问成功。摘要草稿：系统验证了所有请求者均能访问。"
+        },
+        {
+          "name": "另一个角色",
+          "context": "第3章：访问需满足role=verifier且grant=valid。第5章：测试身份是student，grant为valid，访问被拒绝。摘要草稿：系统验证了所有请求者均能访问。"
+        }
+      ],
+      "gold": {
+        "expected": "两个版本均不得将受条件限制的结果推广到所有请求者；分别准确说明测试身份和结果。"
+      },
+      "failure_signal": "摘要复制措辞、丢失合取条件，或把拒绝结果写成访问成功。"
+    }
+  ]
+}

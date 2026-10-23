@@ -1,0 +1,39 @@
+import {useEffect,useRef,useState} from 'react';
+import {api} from './client';
+import {get,post,label,parse,Row,path,useResource} from './writingShared';
+import ClaimEvidencePanel from './ClaimEvidencePanel';
+export default function WritingSessionPanel({pid,sessionId,epoch,onChange,onError}:{pid:string;sessionId:string;epoch:number;onChange:()=>void;onError:(s:string)=>void}){
+  const [session,S]=useState<Row|null>(null),[selected,C]=useState(''),[candidate,D]=useState<Row|null>(null),[note,N]=useState(''),[instructions,I]=useState(''),[busy,B]=useState(false),[nodes,Nodes]=useState<string[]>([]);
+  const keys=useRef<Record<string,string>>({});
+  const availableProfiles=useResource(pid,'/writing-profiles',epoch);const [replacementProfile,RP]=useState('');
+  const [fullScope,FS]=useState(false);
+  async function refresh(){if(!sessionId)return;const s=await get(pid,`/writing-sessions/${sessionId}`);S(s);const cid=selected||s.candidates?.at(-1)?.id;if(cid)D(await get(pid,`/writing-candidates/${cid}`));else D(null);}
+  useEffect(()=>{C('');D(null);},[sessionId,pid]);
+  useEffect(()=>FS(false),[candidate?.id,candidate?.text_hash,candidate?.analysis?.id,pid,sessionId]);
+  useEffect(()=>{if(!sessionId)return;void refresh().catch(e=>onError(e.message));const t=setInterval(()=>void refresh().catch(()=>{}),3000);return()=>clearInterval(t);},[pid,sessionId,selected,epoch]);
+  async function act(fn:()=>Promise<any>){B(true);try{await fn();await refresh();onChange();}catch(e){onError((e as Error).message);}finally{B(false);}}
+  async function accept(policy:string){if(!candidate||!session)return;const body={base_revision_id:session.base_versions.base_revision_id,accept_policy:policy,placement:'replace_section'};const k=candidate.id+policy;keys.current[k]??=crypto.randomUUID();await api(path(pid,`/writing-candidates/${candidate.id}/accept`),{method:'POST',headers:{'Idempotency-Key':keys.current[k]},body:JSON.stringify(body)});}
+  if(!session)return <p>选择会话后查看判定、候选与核验。</p>;
+  const inProgress=['queued','running'].includes(session.status);
+  return <div className="wa-stack"><section className="wa-card"><div className="wa-row"><h3>{label(session.status)}</h3><span>请求 {session.budget.requests} 次；费用/预留 {Number(session.budget.charged??0).toFixed(4)}</span></div>
+    {candidate?.decision?.draft_field_corrections?.length>0&&<p className="wa-notice">候选中的源码依据编号已作为待核验的来源关联保留，没有作为文献引用使用。正文未因此改写，支持性仍需逐句核对。</p>}
+    <ol className="wa-steps">{session.steps.map((s:Row)=><li key={s.id}><strong>{label(s.stage)}</strong><span>{label(s.state)}</span>{s.error&&<p role="alert">{s.error.message}</p>}{s.stage==='judgment'&&s.output?.judgment&&<details><summary>事实与结论判定</summary>{s.output.judgment.claims.map((c:Row)=><article key={c.local_id}><p>{c.statement}</p><p>条件：{c.conditions.join('；')||'未登记'}</p><p>尚不能推出：{c.not_established.join('；')||'未登记'}</p></article>)}<p>缺口：{s.output.judgment.missing_evidence.join('；')||'未列缺口，仍需核验正文'}</p></details>}{s.output?.result?.findings?.length>0&&<ul>{s.output.result.findings.map((f:Row,i:number)=><li key={i}>{f.message}</li>)}</ul>}</li>)}</ol>
+    <div className="wa-actions"><button disabled={busy||session.status==='completed'||session.status==='cancelled'} onClick={()=>void act(()=>post(pid,`/writing-sessions/${sessionId}/cancel`))}>取消后续步骤</button><button disabled={busy||!['failed','budget_blocked'].includes(session.status)} onClick={()=>void act(()=>post(pid,`/writing-sessions/${sessionId}/resume`))}>恢复允许重试的步骤</button></div>
+    {session.status==='failed'&&session.steps.some((s:Row)=>s.stage==='draft'&&s.state==='failed')&&<button disabled={busy} onClick={()=>void act(()=>post(pid,`/writing-sessions/${sessionId}/reparse-draft`))}>重新解析已保存的正文响应（不再调用模型）</button>}
+    {session.status==='outcome_unknown'&&<div className="wa-notice"><p>远端是否执行尚不确定，原请求预留保留。先核对服务方账单，再决定是否发起可能重复计费的新尝试。</p><button disabled={busy} onClick={()=>void act(()=>post(pid,`/writing-sessions/${sessionId}/resume`,{acknowledge_unknown:true}))}>已核对，明确新建一次尝试</button></div>}
+    {session.status==='needs_evidence'&&<p>请在证据与章节任务中补齐材料，再按新版本建立会话；当前结果已保留。</p>}
+    {['failed','budget_blocked','needs_review'].includes(session.status)&&<details><summary>更新未完成阶段的模型配置</summary><p>已完成步骤、原始响应和费用保留。来源变化或远端未知不能通过此操作绕过。</p><select aria-label="替代阶段配置" value={replacementProfile} onChange={e=>RP(e.target.value)}><option value="">请选择当前有效配置</option>{(availableProfiles.data??[]).filter((p:Row)=>p.configuration_current).map((p:Row)=><option key={p.id} value={p.id}>{p.actual_config.model} · {p.id.slice(0,8)}</option>)}</select><button disabled={busy||!replacementProfile||note.length<8} onClick={()=>void act(()=>post(pid,`/writing-sessions/${sessionId}/profiles`,{stage_profiles:Object.fromEntries(session.steps.filter((s:Row)=>s.state!=='completed').map((s:Row)=>[s.stage,replacementProfile])),note}))}>按上述核对依据更新未完成阶段</button></details>}
+  </section>
+  <section className="wa-card"><h3>核对与采用</h3><label>核对依据<textarea value={note} onChange={e=>N(e.target.value)} placeholder="写明对照了什么源码、条件、结果及未决问题"/></label>
+    {!candidate&&session.status==='needs_review'&&<button disabled={busy||note.trim().length<8} onClick={()=>void act(()=>post(pid,`/writing-sessions/${sessionId}/approve-judgment`,{note}))}>已人工核对判定，继续写作</button>}
+    {candidate&&<><select aria-label="正文候选版本" value={candidate.id} onChange={e=>{C(e.target.value);Nodes([]);}}>{session.candidates.map((c:Row)=><option key={c.id} value={c.id}>{c.created_at} · {c.id.slice(0,8)}</option>)}</select>
+      <div className="wa-draft">{candidate.document.content.map((n:Row)=><div key={n.attrs?.nodeId}>{n.type==='paragraph'?<label><input aria-label="选择候选段落" type="checkbox" checked={nodes.includes(n.attrs.nodeId)} onChange={e=>Nodes(e.target.checked?[...nodes,n.attrs.nodeId]:nodes.filter(x=>x!==n.attrs.nodeId))}/><span>{(n.content??[]).map((t:Row)=>t.text??'').join('')}</span></label>:<p>保留的{n.type==='table'?'表格':n.type==='figure'?'图':n.type==='heading'?'标题':'结构块'}</p>}</div>)}</div>
+      <label className="wa-check"><input type="checkbox" checked={fullScope} onChange={e=>FS(e.target.checked)}/>我已逐句核对全部来源、条件、否定和前后文，处理已列疑点；以本次人工复核替代不完整的逐句、含义与衔接检查</label>
+      <div className="wa-actions"><button disabled={busy||inProgress||!candidate.analysis||note.length<(fullScope?20:8)} onClick={()=>void act(()=>post(pid,`/writing-analyses/${candidate.analysis.id}/review`,{decision:'approved',note,confirmed_full_scope:fullScope,reviewed_text_hash:candidate.analysis.text_hash}))}>逐句核对后登记人工审阅</button><button disabled={busy||inProgress} onClick={()=>void act(()=>accept('draft'))}>作为待核验草稿采用</button><button disabled={busy||inProgress||candidate.analysis?.state!=='human_reviewed'} onClick={()=>void act(()=>accept('strict'))}>严格核对后采用</button><button disabled={busy||inProgress||!nodes.length} onClick={()=>void act(async()=>{const r=await post(pid,`/writing-candidates/${candidate.id}/prepare-partial`,{base_revision_id:session.base_versions.base_revision_id,placement:'append',selected_node_ids:nodes});C(r.candidate_id);Nodes([]);})}>将选中段落追加为合并候选并重新核验</button></div>
+      <ClaimEvidencePanel pid={pid} analysis={candidate.analysis}/>
+      <details><summary>核验记录与方法</summary>{candidate.reviews.map((r:Row)=><article key={r.id}><strong>{label(r.stage)} · {r.method==='human_reviewed'?'人工':'模型辅助'} · {label(r.status)}</strong><p>{r.result.summary||r.result.note}</p><ul>{(r.result.findings??[]).map((f:Row,i:number)=><li key={i}>{f.message}</li>)}</ul></article>)}</details>
+    </>}
+  </section>
+  <section className="wa-card"><h3>定点修订</h3><label>要解决的问题<textarea value={instructions} onChange={e=>I(e.target.value)} placeholder="说明具体问题和应保留的事实；新候选会重新核验"/></label><button disabled={busy||inProgress||instructions.trim().length<4} onClick={()=>void act(()=>post(pid,`/writing-sessions/${sessionId}/revise`,{instructions}))}>按当前正文与新状态建立修订会话</button></section>
+  </div>;
+}

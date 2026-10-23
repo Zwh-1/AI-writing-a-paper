@@ -1,0 +1,71 @@
+services:
+  gateway:
+    build:
+      context: ..
+      dockerfile: deployment/Dockerfile
+    restart: unless-stopped
+    environment:
+      PAPER_DATA_DIR: /data
+      PAPER_COLLAB_BIND: 0.0.0.0
+      PAPER_COLLAB_HOSTS: ${PAPER_DOMAIN:?Set PAPER_DOMAIN}
+      PAPER_COLLAB_ORIGINS: https://${PAPER_DOMAIN}
+      PAPER_COLLAB_INSECURE: "0"
+      PAPER_PROXY_IPS: "*"
+      PAPER_REMOTE_AI_BUDGET: ${PAPER_REMOTE_AI_BUDGET:-0}
+    volumes:
+      - paper_data:/data
+    expose:
+      - "8774"
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,noexec,nosuid
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 1g
+  worker:
+    build:
+      context: ..
+      dockerfile: deployment/Dockerfile
+    command: ["worker"]
+    restart: unless-stopped
+    environment:
+      PAPER_DATA_DIR: /data
+      PAPER_BASE_URL: ${PAPER_BASE_URL:-https://www.ecoapi.cc}
+      PAPER_PROTOCOL: ${PAPER_PROTOCOL:-openai}
+      PAPER_MODEL: ${PAPER_MODEL:-}
+      PAPER_API_KEY_FILE: /run/secrets/model_api_key
+    volumes:
+      - paper_data:/data
+    secrets:
+      - model_api_key
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,noexec,nosuid
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 2g
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      PAPER_DOMAIN: ${PAPER_DOMAIN}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - gateway
+secrets:
+  model_api_key:
+    file: ./private/model-api-key.txt
+volumes:
+  paper_data:
+  caddy_data:
+  caddy_config:

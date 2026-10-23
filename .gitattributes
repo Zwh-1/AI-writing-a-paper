@@ -1,0 +1,2 @@
+# Database migration integrity checks use the original SQL file bytes.
+*.sql -text
