@@ -2290,6 +2290,28 @@ function TaskDetail({ task, onClose }: { task: Row; onClose: () => void }) {
       onClose();
     }
   };
+  if (t.kind === "materials_rules_autopilot") {
+    const materials = result.materials ?? {};
+    const rules = result.rules ?? {};
+    const budget = result.budget ?? {};
+    const recover = () => act(
+      () => send("/tasks/" + t.id + "/retry", { acknowledge_possible_duplicate_charge: true }),
+      "已保存当前结果，并重新排队恢复未完成范围",
+    );
+    return <Modal title="任务结果与托管恢复" wide onClose={onClose}>
+      <div className="inline"><Badge value={t.status} /><strong>{t.phase || "资料与规则 AI 托管"}</strong></div>
+      {t.error && <div className="alert">{t.error}</div>}
+      <div className="task-recovery-summary">
+        <div><strong>资料</strong><span>{materials.automatic_completed ?? 0}/{materials.total ?? 0} 已完成</span><small>AI 覆盖 {materials.ai_percent ?? 0}%</small></div>
+        <div><strong>规则</strong><span>{rules.automatic_completed ?? 0}/{rules.total ?? 0} 已完成</span><small>AI 覆盖 {rules.ai_percent ?? 0}%</small></div>
+        <div><strong>预算</strong><span>已用 {Number(budget.used ?? 0).toFixed(2)}</span><small>未知预留 {Number(budget.unknown_reserved ?? 0).toFixed(2)}</small></div>
+      </div>
+      <div className="alert compact">已保存的资料总结、规则判定和原文依据会被复用。恢复操作只处理尚未完成的范围；远端未知请求不会自动重复发送。</div>
+      {t.status !== "acknowledged" && <div className="actions"><Button variant="primary" onClick={recover}>恢复未完成范围</Button><Button onClick={() => onClose()}>稍后处理</Button></div>}
+      <details><summary>查看原始托管结果</summary><pre className="source-content">{JSON.stringify(result,null,2)}</pre></details>
+      <details><summary>查看任务输入</summary><pre className="source-content">{JSON.stringify(t.payload??{},null,2)}</pre></details>
+    </Modal>;
+  }
   return (
     <Modal title="任务结果与候选审阅" wide onClose={onClose}>
       <div className="inline">
