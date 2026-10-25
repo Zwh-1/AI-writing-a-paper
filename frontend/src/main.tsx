@@ -818,7 +818,7 @@ function App() {
                 {["failed", "cancelled", "outcome_unknown", "incomplete"].includes(t.status) && ["write", "rules_ai", "outline_ai", "semantic_review", "support_check", "ocr", "material_summary", "provider_probe", "provider_image_probe"].includes(t.kind) && (
                   <Button onClick={() => {
                     if (!confirm("确认改用 GPT 重试？如果此前远端已经执行，可能产生重复费用；请先核实账单。")) return;
-                    act(() => send("/tasks/" + t.id + "/retry", {provider_profile:"gpt",acknowledge_possible_duplicate_charge:true}), "已使用 GPT 重新排队");
+                    act(() => send("/tasks/" + t.id + "/retry", {provider_profile:"gpt",acknowledge_possible_duplicate_charge:true,...(t.kind === "rules_ai" ? {retry_unknown:true,retry_invalid:true} : {})}), "已使用 GPT 重新排队，并续接未完成范围");
                   }}>用 GPT 重试</Button>
                 )}
               </div>
