@@ -136,6 +136,10 @@ def material_summary_markdown(fid):
     for topic in summary['topics']:
         lines.extend(['### '+topic['title'],'']);lines.extend('- '+point(p) for p in topic['points']);lines.append('')
     lines.extend(['模型：'+summary['model'],'AI 整理结果需对照原文核对。'])
+    if summary.get('source_review'):lines.extend(['','来源：Codex 结合原文与已保存分段复核整理；未创建新的远端生成请求。'])
+    if summary.get('excluded_pages'):
+        lines.extend(['','未纳入正文归纳：'])
+        lines.extend('- 第 '+str(p['page'])+' 页：'+p['reason'] for p in summary['excluded_pages'])
     return Response('\n'.join(lines),media_type='text/markdown; charset=utf-8',headers={'Content-Disposition':"attachment; filename*=UTF-8''"+quote(f['name']+'-总结.md')})
 @app.post('/api/v1/projects/{pid}/materials/summarize')
 def summarize_materials(pid):

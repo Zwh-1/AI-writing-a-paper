@@ -89,6 +89,9 @@ export default function AutopilotControls() {
         </p>
       )}
       <div className="autopilot-budget-actions">
+        {data.exception_count>0 && <button className="btn" disabled={!c.canStart} onClick={c.repairExceptions}>
+          {pending === "repair" ? "正在提交修复…" : "修复当前 "+data.exception_count+" 项例外（计费）"}
+        </button>}
         <button className="btn" disabled={disabled} onClick={c.reconcileBilling}>
           {pending === "billing" ? "正在核对账单…" : "核对账单并刷新预算"}
         </button>

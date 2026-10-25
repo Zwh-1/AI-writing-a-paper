@@ -92,7 +92,7 @@ def report(pid):
         extracted+=int(end>=len(source['text']))
     extraction=measured(len(selected_sources),extracted,extracted)
     sources_met=not selected_sources or extraction['target_met']
-    jobs=db.rows('SELECT id,status,phase,progress,result,error,created_at FROM tasks WHERE project_id=? AND kind=? ORDER BY created_at DESC LIMIT 5',(pid,KIND))
+    jobs=db.rows('SELECT id,status,phase,progress,result,error,created_at FROM tasks WHERE project_id=? AND kind IN (?,?) ORDER BY created_at DESC LIMIT 5',(pid,KIND,'autopilot_exception_repair'))
     for job in jobs:job['result']=db.loads(job['result'],{})
     rule_rate['target_met']=rule_rate['target_met'] and sources_met
     cfg=priced_config(provider.config(),provider.get_key());reservation=0 if all(summary_billing.finite(cfg.get(k)) for k in ('input_price','output_price')) else cfg.get('max_request_cost',2)

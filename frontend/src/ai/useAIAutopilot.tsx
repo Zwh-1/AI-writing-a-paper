@@ -207,6 +207,12 @@ function useController(pid: string, tick: number, onUpdated: () => void) {
           ? "账单未完全核对，保留未核实预留：" + failed.map((item: Row) => item.reason).join("；")
           : "账单核对完成，可用预算已刷新。" };
       }),
+    repairExceptions: () => {
+      if (canStart && (data?.exception_count ?? 0)>0)
+        return perform("repair",()=>send("/projects/"+pid+"/ai-autopilot/repair-exceptions",{
+          budget_limit:budget,acknowledge_unknown:true,auto_publish:autoPublish,
+        }));
+    },
     cancel: () => {
       if (active)
         return perform("cancel", () => send(`/tasks/${active.id}/cancel`, {}));

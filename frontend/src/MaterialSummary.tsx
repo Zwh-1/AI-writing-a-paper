@@ -290,7 +290,9 @@ export function MaterialSummary({
         <div>
           <h3>资料概括与分点</h3>
           <p className="muted">
-            DeepSeek 根据提取文字生成 · 全篇概括、重点整理、主题归纳
+            {summary?.source_review
+              ? "Codex 结合原文与已保存分段复核整理 · 来源记录已保留"
+              : "DeepSeek 根据提取文字生成 · 全篇概括、重点整理、主题归纳"}
           </p>
         </div>
         <button
@@ -365,7 +367,7 @@ export function MaterialSummary({
           API 余额。
         </p>
       )}
-      {data?.task?.error && !pending && (
+      {data?.task?.error && !pending && (!summary || data?.stale) && (
         <p className="error-text" role="alert">
           {data.task.error}
           {data.task.status === "outcome_unknown"
@@ -422,6 +424,12 @@ export function MaterialSummary({
             <p className="summary-warning">
               第 {summary.empty_pages.join("、")}{" "}
               页无可用文字，未纳入总结，请核对原件或补充识别。
+            </p>
+          )}
+          {!!summary.excluded_pages?.length && (
+            <p className="muted">
+              未纳入正文归纳：{summary.excluded_pages.map((p: Row) =>
+                `第 ${p.page} 页（${p.reason}）`).join("；")}。
             </p>
           )}
           <p className="muted">

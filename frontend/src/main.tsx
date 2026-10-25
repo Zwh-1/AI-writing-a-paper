@@ -745,6 +745,7 @@ function App() {
                         ocr_local_batch: "本地批量OCR",
                         rules_ai: "AI结构化规则整理",
                         materials_rules_autopilot: "资料与规则 AI 托管",
+                        autopilot_exception_repair: "修复资料与规则例外",
                         outline_ai: "规划提纲",
                         knowledge_index: "更新文献知识库",
                         provider_probe: "验证模型生成",
@@ -2290,7 +2291,7 @@ function TaskDetail({ task, onClose }: { task: Row; onClose: () => void }) {
       onClose();
     }
   };
-  if (t.kind === "materials_rules_autopilot") {
+  if (t.kind === "materials_rules_autopilot" || t.kind === "autopilot_exception_repair") {
     const materials = result.materials ?? {};
     const rules = result.rules ?? {};
     const budget = result.budget ?? {};
@@ -2307,7 +2308,7 @@ function TaskDetail({ task, onClose }: { task: Row; onClose: () => void }) {
         <div><strong>预算</strong><span>已用 {Number(budget.used ?? 0).toFixed(2)}</span><small>未知预留 {Number(budget.unknown_reserved ?? 0).toFixed(2)}</small></div>
       </div>
       <div className="alert compact">已保存的资料总结、规则判定和原文依据会被复用。恢复操作只处理尚未完成的范围；远端未知请求不会自动重复发送。</div>
-      {t.status !== "acknowledged" && <div className="actions"><Button variant="primary" onClick={recover}>恢复未完成范围</Button><Button onClick={() => onClose()}>稍后处理</Button></div>}
+      {t.status !== "acknowledged" && !result.complete && <div className="actions"><Button variant="primary" onClick={recover}>恢复未完成范围</Button><Button onClick={() => onClose()}>稍后处理</Button></div>}
       <details><summary>查看原始托管结果</summary><pre className="source-content">{JSON.stringify(result,null,2)}</pre></details>
       <details><summary>查看任务输入</summary><pre className="source-content">{JSON.stringify(t.payload??{},null,2)}</pre></details>
     </Modal>;

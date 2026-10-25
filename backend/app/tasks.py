@@ -388,6 +388,10 @@ def dispatch(task):
     if kind=='material_summary':
         from .material_summary import generate
         return generate(task,p)
+    if kind=='autopilot_exception_repair':
+        from .exception_repair import process
+        from .ai_autopilot import priced_config
+        with provider.request_scope(priced_config(provider.config(),provider.get_key()),provider.get_key()):return process(task,p)
     if kind=='materials_rules_autopilot':
         from .ai_autopilot import process,priced_config
         with provider.request_scope(priced_config(provider.config(),provider.get_key()),provider.get_key()):
@@ -494,7 +498,7 @@ def run_one():
     try:
         event(task['id'],'准备执行',5);result=dispatch(task)
         state='succeeded'
-        if task['kind']=='materials_rules_autopilot' and not result.get('complete'):
+        if task['kind'] in ('materials_rules_autopilot','autopilot_exception_repair') and not result.get('complete'):
             state='budget_blocked' if result.get('pause_reason') and '预算' in result['pause_reason'] else 'incomplete'
         elif task['kind']=='rules_ai' and result.get('automatic') and not result.get('complete'):
             state='budget_blocked' if any(i['state']=='budget_wait' for i in result['unresolved_items']) else 'incomplete'
@@ -505,7 +509,7 @@ def run_one():
         db.execute('UPDATE tasks SET status=?,result=?,updated_at=?,lease_until=NULL WHERE id=? AND attempt=?',(state,db.dumps(result),db.now(),task['id'],task['attempt']))
     except InterruptedError as e: db.execute("UPDATE tasks SET status='cancelled',error=?,updated_at=?,lease_until=NULL WHERE id=?",(str(e),db.now(),task['id']))
     except Exception as e:
-        status='budget_blocked' if task['kind'] in ('material_summary','rules_ai','materials_rules_autopilot') and isinstance(e,BudgetExceeded) else 'outcome_unknown' if isinstance(e,provider.ProviderError) and e.unknown else 'failed'
+        status='budget_blocked' if task['kind'] in ('material_summary','rules_ai','materials_rules_autopilot','autopilot_exception_repair') and isinstance(e,BudgetExceeded) else 'outcome_unknown' if isinstance(e,provider.ProviderError) and e.unknown else 'failed'
         saved_result=db.loads(db.one('SELECT result FROM tasks WHERE id=?',(task['id'],))['result'],{}) or {}
         result_value=db.dumps(saved_result) if saved_result else None
         completed=db.one("SELECT manifest FROM generation_runs WHERE task_id=? AND status IN ('completed','completed_invalid') ORDER BY created_at DESC LIMIT 1",(task['id'],))

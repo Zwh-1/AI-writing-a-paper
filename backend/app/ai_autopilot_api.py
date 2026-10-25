@@ -13,6 +13,11 @@ def status(pid):
 def start(pid,body:dict):
     return autopilot.start(pid,body)
 
+@router.post('/projects/{pid}/ai-autopilot/repair-exceptions')
+def repair_exceptions(pid,body:dict):
+    from .exception_repair import start
+    return start(pid,body)
+
 @router.put('/projects/{pid}/ai-autopilot')
 def configure(pid,body:dict):
     security.require_project(pid)
