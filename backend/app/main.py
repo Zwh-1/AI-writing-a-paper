@@ -1,4 +1,5 @@
 import os,json,asyncio,hashlib,re,zipfile,io,mimetypes,sqlite3,secrets
+from datetime import datetime,timedelta,timezone
 from pathlib import Path
 from contextlib import asynccontextmanager
 from fastapi import FastAPI,Request,HTTPException,UploadFile,File,Form
@@ -520,9 +521,17 @@ def download_backup(bid):
 @app.post('/api/v1/backups/restore')
 async def restore_backup(file:UploadFile=File(...)): return exports.restore_backup(await file.read(2_000_000_001))
 @app.get('/api/v1/tasks')
-def task_list(project_id:str|None=None,summary:bool=False):
+def task_list(project_id:str|None=None,summary:bool=False,active_only:bool=False):
     fields='id,project_id,kind,status,phase,progress,error,cancel_requested,attempt,created_at,updated_at' if summary else '*'
-    rows=db.rows('SELECT '+fields+' FROM tasks'+(' WHERE project_id=?' if project_id else '')+' ORDER BY created_at DESC LIMIT 100',(project_id,) if project_id else ())
+    clauses=[];args=[]
+    if project_id:clauses.append('project_id=?');args.append(project_id)
+    if summary and active_only:
+        unknown_since=(datetime.now(timezone.utc)-timedelta(hours=24)).isoformat()
+        recent_since=(datetime.now(timezone.utc)-timedelta(hours=6)).isoformat()
+        clauses.append("(status IN ('queued','running') OR (status='outcome_unknown' AND updated_at>=?) OR (status IN ('failed','budget_blocked','incomplete') AND updated_at>=?))")
+        args.extend([unknown_since,recent_since])
+    where=(' WHERE '+' AND '.join(clauses)) if clauses else ''
+    rows=db.rows('SELECT '+fields+' FROM tasks'+where+' ORDER BY created_at DESC LIMIT 100',tuple(args))
     if summary:return [{**t,'error':provider.readable_error(t['error'])} for t in rows]
     from .rule_review_receipts import receipt
     return [{**t,'error':provider.readable_error(t['error']),**({'review_receipt':receipt(t)} if t['kind']=='rules_ai' else {})} for t in rows]
@@ -559,6 +568,13 @@ def retry(tid,body:dict):
         if body['provider_profile']=='gpt':model_routing.snapshot()
         payload['provider_profile']=body['provider_profile']
     return tasks.enqueue(t['project_id'],t['kind'],payload)
+@app.post('/api/v1/tasks/{tid}/acknowledge')
+def acknowledge_task(tid):
+    t=task(tid)
+    if t['status']!='outcome_unknown': raise HTTPException(409,'只有远端状态未知的任务需要核实关闭')
+    db.execute("UPDATE tasks SET status='acknowledged',updated_at=? WHERE id=?",(db.now(),tid))
+    db.audit(t['project_id'],'task_outcome_acknowledged',{'task_id':tid,'generation_runs':db.rows('SELECT id,status FROM generation_runs WHERE task_id=?',(tid,))})
+    return task(tid)
 @app.get('/api/v1/tasks/{tid}/events')
 async def task_events(tid:str,after:int=0):
     task(tid)

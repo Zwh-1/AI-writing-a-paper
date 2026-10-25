@@ -431,7 +431,7 @@ function App() {
     const poll = () => {
       if (polling || !alive) return;
       polling = true;
-      api("/tasks?summary=true" + (pid ? "&project_id=" + pid : ""), { signal: controller.signal })
+      api("/tasks?summary=true&active_only=true" + (pid ? "&project_id=" + pid : ""), { signal: controller.signal })
         .then((d) => {
           if (!alive) return;
           const visible = d.filter((t: Row) => !["succeeded", "cancelled"].includes(t.status));
@@ -770,6 +770,16 @@ function App() {
                     }
                   >
                     <Square size={13} />
+                  </Button>
+                )}
+                {t.status === "outcome_unknown" && (
+                  <Button
+                    onClick={() => {
+                      if (!confirm("请确认已核对服务方账单或远端任务状态；关闭后不再把它显示为待处理警告。")) return;
+                      act(() => send("/tasks/" + t.id + "/acknowledge"), "已记录核实，关闭提示");
+                    }}
+                  >
+                    已核实，关闭提示
                   </Button>
                 )}
                 {["failed", "cancelled", "outcome_unknown"].includes(
