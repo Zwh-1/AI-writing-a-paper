@@ -7,6 +7,7 @@ export default function AutopilotControls() {
   if (!data) return null;
   const latest = data.tasks[0],
     disabled = !!pending || !!active;
+  const currency = data.budget.currency ?? data.pricing?.currency ?? "USD";
   return (
     <section className="autopilot-settings" aria-label="AI托管设置">
       <div className="workspace-surface-intro">
@@ -15,12 +16,12 @@ export default function AutopilotControls() {
           <p>资料与规则共用本轮预算，已有有效结果自动复用。</p>
         </div>
         <span className="autopilot-budget-pill">
-          项目可用 {data.budget.available.toFixed(2)} USD
+          项目可用 {c.available.toFixed(2)} {currency}
         </span>
       </div>
       <div className="autopilot-controls">
         <label className="field">
-          <span>本轮总预算上限（USD）</span>
+          <span>本轮总预算上限（{currency}）</span>
           <input
             aria-label="AI托管预算上限"
             type="number"
@@ -71,7 +72,10 @@ export default function AutopilotControls() {
       </div>
       {!active && c.budget > c.available && (
         <p className="error-text">
-          本轮预算不能超过当前可用的 {c.available.toFixed(2)} USD。
+          本轮预算不能超过当前可用的 {c.available.toFixed(2)} {currency}。
+          <button className="text-button" disabled={disabled} onClick={c.useAvailableBudget}>
+            使用当前可用预算 {c.available.toFixed(2)} {currency}
+          </button>
         </p>
       )}
       {!data.model_ready && (
@@ -84,6 +88,16 @@ export default function AutopilotControls() {
           可用额度不足以覆盖费用预留，请先核实费率或账单。
         </p>
       )}
+      <div className="autopilot-budget-actions">
+        <button className="btn" disabled={disabled} onClick={c.reconcileBilling}>
+          {pending === "billing" ? "正在核对账单…" : "核对账单并刷新预算"}
+        </button>
+        {(data.budget.unknown_reserved ?? 0) > 0 && <span>
+          未核实预留 {Number(data.budget.unknown_reserved).toFixed(2)} {currency}。
+          核对失败会保留预留，不会增加项目预算。
+        </span>}
+      </div>
+      {c.message && <p className="autopilot-budget" role="status">{c.message}</p>}
       {latest && (
         <div className="autopilot-job" role="status">
           <strong>{taskStatusLabels[latest.status] ?? latest.status}</strong>
@@ -123,7 +137,7 @@ export default function AutopilotControls() {
       <details className="autopilot-billing">
         <summary>费用与统计说明</summary>
         <p>
-          项目总预算 {data.budget.limit.toFixed(2)} USD。
+          项目总预算 {data.budget.limit.toFixed(2)} {currency}。
           {data.pricing?.verified_reference_estimate
             ? "本轮使用已核实的接口基准公式保守估算，用量估算与账单核对分别保留。"
             : "费用按现有模型设置预留与登记。"}

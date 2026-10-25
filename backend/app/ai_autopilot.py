@@ -1,6 +1,7 @@
 """Evidence-backed materials/rules automation with measured, separate coverage rates."""
 import hashlib, math, re, time, threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from fastapi import HTTPException
 from . import db, provider, security, source_payload, rule_engine, rule_governance, material_summary
 from .rule_pipeline import exact_quote
 
@@ -96,24 +97,34 @@ def report(pid):
     rule_rate['target_met']=rule_rate['target_met'] and sources_met
     cfg=priced_config(provider.config(),provider.get_key());reservation=0 if all(summary_billing.finite(cfg.get(k)) for k in ('input_price','output_price')) else cfg.get('max_request_cost',2)
     pricing={k:cfg.get(k) for k in ('input_price','output_price','currency')};pricing['verified_reference_estimate']=bool(cfg.get('pricing_evidence'))
-    return {'policy':policy(pid),'materials':material_rate,'rules':rule_rate,'extraction':extraction,'target_met':material_rate['target_met'] and rule_rate['target_met'],'outcomes':outcomes,'exceptions':exceptions,'exception_count':len(exceptions),'tasks':jobs,'budget':summary_billing.budget(pid,reservation),'pricing':pricing,'model_ready':security.key_status()['configured'],'note':'AI参与率按有当前原文依据的AI结果计算；自动完成率不包含不确定、失败和未处理项。规则目标同时核查原文提取覆盖；内容未变的已保存AI资料总结计入资料参与率。'}
+    return {'policy':policy(pid),'materials':material_rate,'rules':rule_rate,'extraction':extraction,'target_met':material_rate['target_met'] and rule_rate['target_met'],'outcomes':outcomes,'exceptions':exceptions,'exception_count':len(exceptions),'tasks':jobs,'budget':{**summary_billing.budget(pid,reservation),'currency':cfg.get('currency','USD')},'pricing':pricing,'model_ready':security.key_status()['configured'],'note':'AI参与率按有当前原文依据的AI结果计算；自动完成率不包含不确定、失败和未处理项。规则目标同时核查原文提取覆盖；内容未变的已保存AI资料总结计入资料参与率。'}
 
 
 @db.atomic
 def schedule(pid):
     from . import tasks
+    from .summary_billing import budget
     cfg=policy(pid)
     if not cfg['enabled']:return None
     active=db.one("SELECT * FROM tasks WHERE project_id=? AND kind=? AND status IN ('queued','running') LIMIT 1",(pid,KIND))
     if active:return active
-    return tasks.enqueue(pid,KIND,{'automatic':True,'budget_limit':cfg['budget_limit'],'auto_publish':cfg['auto_publish'],'provider_profile':'primary','requested_at':db.now()})
+    # The saved policy is an authorization ceiling, not a fresh grant of money.
+    available=budget(pid)['available']
+    limit=min(float(cfg.get('budget_limit',0)),math.floor((available+1e-9)*100)/100)
+    if limit<0.01:return None
+    return tasks.enqueue(pid,KIND,{'automatic':True,'budget_limit':limit,'auto_publish':cfg['auto_publish'],'provider_profile':'primary','requested_at':db.now()})
 
 
+@db.atomic
 def start(pid, body):
     from . import summary_billing
-    p=security.require_project(pid);limit=body.get('budget_limit',summary_billing.budget(pid)['available'])
-    if type(limit) not in (int,float) or not math.isfinite(limit) or not 0<limit<=p['budget']:raise ValueError('托管预算必须大于0且不超过项目总预算')
+    p=security.require_project(pid);current=summary_billing.budget(pid);limit=body.get('budget_limit',math.floor((current['available']+1e-9)*100)/100)
+    if type(limit) not in (int,float) or not math.isfinite(limit) or not 0.01<=limit<=p['budget']:raise ValueError('托管预算须至少为0.01且不超过项目总预算')
     if not security.key_status()['configured']:raise ValueError('请先配置主模型接口和密钥')
+    active=db.one("SELECT * FROM tasks WHERE project_id=? AND kind=? AND status IN ('queued','running') LIMIT 1",(pid,KIND))
+    if active:return active
+    if limit>current['available']+1e-9:
+        raise HTTPException(409,{'code':'AUTOPILOT_BUDGET_CHANGED','message':f'可用预算已更新为 {current["available"]:.4f}，请刷新或使用当前可用预算；已保留原任务和费用预留。','budget':current})
     cfg={'enabled':True,'budget_limit':limit,'auto_publish':bool(body.get('auto_publish',True)),'target_percent':95}
     db.set_setting('ai_autopilot_policy:'+pid,cfg)
     job=schedule(pid)

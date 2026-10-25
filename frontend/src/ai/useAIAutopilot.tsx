@@ -9,6 +9,7 @@ import {
 } from "react";
 import { api, send } from "../client";
 import type { Row } from "../workspace/types";
+import { availableBudget } from "./autopilotBudget";
 
 export type AIDomain = "materials" | "rules";
 export type Coverage = {
@@ -34,7 +35,8 @@ export type AutopilotReport = {
   exception_count: number;
   tasks: Row[];
   policy: Row;
-  budget: { limit: number; available: number; can_call?: boolean };
+  budget: { limit: number; available: number; can_call?: boolean; currency?: string;
+    used?: number; unknown_reserved?: number; pending_bill_reserved?: number };
   pricing?: Row;
   model_ready: boolean;
   note: string;
@@ -52,12 +54,25 @@ export const taskStatusLabels: Record<string, string> = {
 function useController(pid: string, tick: number, onUpdated: () => void) {
   const [data, setData] = useState<AutopilotReport | null>(null),
     [error, setError] = useState("");
+  const [loadError, setLoadError] = useState("");
   const [pending, setPending] = useState<string | null>(null),
     [budget, setBudget] = useState(0);
+  const [message, setMessage] = useState("");
   const [autoPublish, setAutoPublish] = useState(true),
     [followImports, setFollowImports] = useState(true);
   const initialized = useRef(false),
     signature = useRef("");
+  const automaticBudget = useRef(true);
+  useEffect(() => {
+    initialized.current = false;
+    automaticBudget.current = true;
+    signature.current = "";
+    setData(null);
+    setError("");
+    setLoadError("");
+    setMessage("");
+    setBudget(0);
+  }, [pid]);
   const actionLock = useRef(false);
   const updated = useRef(onUpdated);
   updated.current = onUpdated;
@@ -73,27 +88,30 @@ function useController(pid: string, tick: number, onUpdated: () => void) {
       );
       if (controller.signal.aborted) return;
       setData(value);
-      setError("");
+      setLoadError("");
+      const running = value.tasks.some((task) =>
+        ["queued", "running"].includes(task.status),
+      );
+      const ceiling = availableBudget(value.budget.limit, value.budget.available);
       if (!initialized.current) {
         initialized.current = true;
-        const running = value.tasks.some((task) =>
-          ["queued", "running"].includes(task.status),
-        );
         setBudget(
           running && value.policy.budget_limit != null
             ? value.policy.budget_limit
-            : Math.max(0, Math.floor(value.budget.available * 100) / 100),
+            : ceiling,
         );
         setAutoPublish(value.policy.auto_publish ?? true);
         setFollowImports(
           value.policy.budget_limit === undefined ? true : value.policy.enabled,
         );
+      } else if (automaticBudget.current && !running) {
+        setBudget(ceiling);
       }
       const next = `${value.tasks[0]?.id}:${value.tasks[0]?.status}:${value.materials.automatic_completed}:${value.rules.automatic_completed}`;
       if (signature.current && signature.current !== next) updated.current();
       signature.current = next;
     } catch (failure) {
-      if (!controller.signal.aborted) setError((failure as Error).message);
+      if (!controller.signal.aborted) setLoadError((failure as Error).message);
     }
   }, [pid]);
   useEffect(() => {
@@ -104,14 +122,13 @@ function useController(pid: string, tick: number, onUpdated: () => void) {
     ["queued", "running"].includes(task.status),
   );
   useEffect(() => {
-    if (!active) return;
     let alive = true,
       timer: ReturnType<typeof setTimeout>;
     const poll = async () => {
       await load();
-      if (alive) timer = setTimeout(poll, 4000);
+      if (alive) timer = setTimeout(poll, active ? 4000 : 10000);
     };
-    timer = setTimeout(poll, 4000);
+    timer = setTimeout(poll, active ? 4000 : 10000);
     return () => {
       alive = false;
       clearTimeout(timer);
@@ -122,21 +139,22 @@ function useController(pid: string, tick: number, onUpdated: () => void) {
     actionLock.current = true;
     setPending(name);
     setError("");
+    setMessage("");
     try {
-      await work();
+      const result = await work();
       await load();
+      if (result?.message) setMessage(result.message);
       updated.current();
     } catch (failure) {
+      // Another task may have reserved funds since the last GET.
+      await load();
       setError((failure as Error).message);
     } finally {
       actionLock.current = false;
       setPending(null);
     }
   };
-  const available = Math.max(
-    0,
-    Math.min(data?.budget.limit ?? 0, data?.budget.available ?? 0),
-  );
+  const available = availableBudget(data?.budget.limit ?? 0, data?.budget.available ?? 0);
   const canStart =
     !!data?.model_ready &&
     !pending &&
@@ -147,10 +165,20 @@ function useController(pid: string, tick: number, onUpdated: () => void) {
     budget <= available;
   return {
     data,
-    error,
+    error: error || loadError,
+    message,
     pending,
     budget,
-    setBudget,
+    setBudget: (value: number) => {
+      automaticBudget.current = false;
+      setError("");
+      setBudget(value);
+    },
+    useAvailableBudget: () => {
+      automaticBudget.current = true;
+      setError("");
+      setBudget(available);
+    },
     autoPublish,
     setAutoPublish,
     followImports,
@@ -169,6 +197,16 @@ function useController(pid: string, tick: number, onUpdated: () => void) {
           }),
         );
     },
+    reconcileBilling: () =>
+      perform("billing", async () => {
+        const result = await send("/projects/" + pid + "/tasks/billing-reconcile", {});
+        const profiles = result.profiles ?? [result];
+        if (!profiles.length) return { message: result.message };
+        const failed = profiles.filter((item: Row) => !item.reconciled);
+        return { message: failed.length
+          ? "账单未完全核对，保留未核实预留：" + failed.map((item: Row) => item.reason).join("；")
+          : "账单核对完成，可用预算已刷新。" };
+      }),
     cancel: () => {
       if (active)
         return perform("cancel", () => send(`/tasks/${active.id}/cancel`, {}));

@@ -105,10 +105,23 @@ def reconcile_summary_billing(pid):
     body_project(pid);return reconcile(pid)
 @app.post('/api/v1/projects/{pid}/tasks/billing-reconcile')
 def reconcile_task_billing(pid,body:dict):
-    from .summary_billing import reconcile
-    body_project(pid);profile=body.get('profile','material-summary')
-    if profile not in ('material-summary','gpt-fallback','primary'):raise HTTPException(422,'账单核对接口类型无效')
-    return reconcile(pid,profile=profile)
+    from .summary_billing import reconcile,budget
+    body_project(pid);profile=body.get('profile')
+    if profile is not None:
+        if profile not in ('material-summary','gpt-fallback','primary'):raise HTTPException(422,'账单核对接口类型无效')
+        return reconcile(pid,profile=profile)
+    # Query configured routes. A failed query must not
+    # turn into a success toast or release any unresolved request reservation.
+    results=[]
+    for route in ('primary','material-summary','gpt-fallback'):
+        if route=='gpt-fallback' and not model_routing.ready():continue
+        if route=='material-summary' and not security.key_status(route)['configured']:continue
+        if route=='primary' and not security.key_status()['configured']:continue
+        try:results.append({'profile':route,**reconcile(pid,profile=route)})
+        except (ValueError,provider.ProviderError,HTTPException) as error:
+            results.append({'profile':route,'reconciled':False,'reason':security.redact(error)})
+    return {'profiles':results,'budget':budget(pid),
+            'message':None if results else '未找到已配置的账单查询接口，费用预留保持不变。'}
 @app.post('/api/v1/projects/{pid}/materials/resume-summaries')
 def resume_summary_tasks(pid):return material_summary.resume_budget(pid)
 @app.get('/api/v1/files/{fid}/summary/markdown')

@@ -566,7 +566,13 @@ def wake_rule_jobs():
             reconciled.add(pid)
         job=db.one('SELECT * FROM rule_jobs WHERE id=?',(payload.get('rule_job_id'),))
         used=summary_billing.job_charge(payload.get('rule_job_id'))
-        if job and used<float(job['budget_limit']) and summary_billing.budget(pid)['available']>0:
+        cfg=model_routing.config() if payload.get('provider_profile')=='gpt' else provider.config()
+        result=db.loads(task.get('result'),{}) or {}
+        reservation=result.get('budget',{}).get('reservation')
+        if not summary_billing.finite(reservation) or reservation<=0:
+            reservation=float(cfg.get('max_request_cost',2))
+        gpt_ready=payload.get('provider_profile')!='gpt' or bool(job and job['allow_gpt'] and summary_billing.job_charge(job['id'],'gpt')+reservation<=float(job['gpt_budget']))
+        if job and used+reservation<=float(job['budget_limit']) and gpt_ready and summary_billing.budget(pid,reservation)['can_call']:
             # Reuse the same job ledger and work items; a budget wake never
             # resends unresolved remote requests or creates another GPT budget.
             db.execute("UPDATE tasks SET status='queued',error=NULL,updated_at=? WHERE id=?",(db.now(),task['id']))
