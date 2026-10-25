@@ -102,6 +102,32 @@ def ai_fixture(c,p):
         sid=db.uid();db.execute('INSERT INTO sources VALUES(?,?,?,?,?,?,?,?,?)',(sid,f['id'],source['page_id'],db.dumps({'kind':'paragraph','page':1}),text,text,'rule_candidate','native',0))
     return f
 
+
+def test_manual_confirmation_preserves_each_selected_rule_and_does_not_publish(client):
+    p=project(client)
+    chosen=[add(client,p,state='candidate',modality='recommended',scope='abstract',checker='word_range',value={'min':300,'max':500},decision_note='保留原采用依据'),
+            add(client,p,state='candidate',modality='mandatory',checker='reference_min',value=20)]
+    untouched=add(client,p,state='candidate',modality='recommended')
+    for before in chosen:
+        response=client.patch('/api/v1/rules/'+before['id'],json={'state':'confirmed'})
+        assert response.status_code==200,response.text
+        after=response.json()
+        assert after['state']=='confirmed'
+        assert all(after[key]==value for key,value in before.items() if key!='state')
+    assert db.one('SELECT state FROM rules WHERE id=?',(untouched['id'],))['state']=='candidate'
+    assert workspace(client,p)['package'] is None
+    assert not db.rows('SELECT * FROM generation_runs')
+
+
+def test_manual_confirmation_does_not_promote_pending_or_examples_to_publishable_rules(client):
+    p=project(client)
+    for modality in ('pending','example','counterexample'):
+        rule=add(client,p,state='candidate',modality=modality)
+        result=client.patch('/api/v1/rules/'+rule['id'],json={'state':'confirmed'})
+        assert result.status_code==200,result.text
+        assert result.json()['modality']==modality
+    assert workspace(client,p)['readiness']['publishable_count']==0
+
 def test_ai_batches_have_stable_disjoint_sources_and_deduplicate_queue(client):
     p=project(client);f=ai_fixture(client,p);route=f'/api/v1/projects/{p}/rules/ai-extract'
     assert client.get(f'/api/v1/projects/{p}/rules/ai-sources?file_id='+f['id']).json()['total']==3

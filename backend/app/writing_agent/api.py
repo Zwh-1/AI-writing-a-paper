@@ -8,6 +8,52 @@ router=APIRouter(prefix='/projects/{pid}')
 @router.get('/writing-state')
 def project_state(pid):return state(pid)
 
+@router.get('/writing-link')
+def writing_link(pid):
+    """Return the shared state used by research, evidence writing, and the editor."""
+    p=security.require_project(pid);head=state(pid)
+    core_row=db.one('SELECT * FROM thesis_core_versions WHERE id=? AND project_id=?',(head['core_version_id'],pid)) if head['core_version_id'] else None
+    core=db.loads(core_row['content_json'],{}) if core_row else None
+    facts=[]
+    for fact in db.rows('SELECT * FROM facts WHERE project_id=? ORDER BY created_at',(pid,)):
+        synced=evidence.sync_fact(pid,fact['id'])
+        usage=db.rows("SELECT DISTINCT s.id,s.title FROM dependencies d JOIN revisions r ON r.id=d.downstream_id JOIN sections s ON s.id=r.section_id WHERE d.project_id=? AND d.upstream_type='fact' AND d.upstream_id=? ORDER BY s.position",(pid,fact['id']))
+        facts.append({**fact,'evidence_id':synced['id'],'used_by':[dict(row) for row in usage]})
+    artifacts=[]
+    for artifact in db.rows('SELECT * FROM artifacts WHERE project_id=? ORDER BY created_at DESC',(pid,)):
+        synced=evidence.sync_artifact(pid,artifact['id'])
+        artifacts.append({**artifact,'evidence_id':synced['id']})
+    sections=[]
+    for s in db.rows("SELECT * FROM sections WHERE project_id=? AND state!='archived' ORDER BY position",(pid,)):
+        rev=documents.current(s);source_ids=set();fact_ids=set();artifact_ids=set()
+        if rev:
+            for node in documents.nodes(db.loads(rev['document'],{})):
+                attrs=node.get('attrs',{});source_ids.update(attrs.get('sourceIds',[]));fact_ids.update(attrs.get('factIds',[]));artifact_id=attrs.get('artifactId')
+                if artifact_id:artifact_ids.add(artifact_id)
+        contract_id=head['contracts'].get(s['id']);contract_row=db.one('SELECT content_json FROM section_contract_versions WHERE id=? AND project_id=?',(contract_id,pid)) if contract_id else None
+        contract=db.loads(contract_row['content_json'],{}) if contract_row else None
+        if contract:
+            source_ids.update(contract.get('evidence_ids',[]));fact_ids.update(contract.get('fact_ids',[]));artifact_ids.update(contract.get('artifact_ids',[]))
+        session=db.one('SELECT id,status,updated_at FROM writing_sessions WHERE project_id=? AND section_id=? ORDER BY created_at DESC LIMIT 1',(pid,s['id']))
+        sections.append({'section_id':s['id'],'title':s['title'],'goal':s['goal'],'revision_id':s['current_revision_id'],'stale':bool(s['stale']),'stale_reason':s['stale_reason'],'contract_id':contract_id,'contract':contract,'source_ids':sorted(source_ids),'fact_ids':sorted(fact_ids),'artifact_ids':sorted(artifact_ids),'session':dict(session) if session else None})
+    for fact in facts:
+        declared=[{'id':item['section_id'],'title':item['title']} for item in sections if fact['id'] in item['fact_ids']]
+        seen={item['id'] for item in fact['used_by']}
+        fact['used_by']=[*fact['used_by'],*[item for item in declared if item['id'] not in seen]]
+    brief=db.loads(p['brief'],{});explicit_question=brief.get('question','') or (core or {}).get('research_question','');research_question=explicit_question or f'围绕“{p["title"]}”组织项目的需求、设计、实现与验证论证。'
+    project_stats={name:db.one(f'SELECT COUNT(*) AS n FROM {table} WHERE project_id=?',(pid,))['n'] for name,table in [('files','files'),('rules','rules'),('sections','sections'),('facts','facts'),('artifacts','artifacts'),('references','bibliography')]}
+    materials=db.rows("SELECT f.id,f.name,f.role,f.status,f.pages,COUNT(s.id) AS source_count FROM files f LEFT JOIN sources s ON s.file_id=f.id WHERE f.project_id=? AND f.active=1 GROUP BY f.id ORDER BY f.created_at DESC",(pid,))
+    references=[{**r,'metadata':db.loads(r['metadata'],{}),'source_count':db.one('SELECT COUNT(*) AS n FROM sources WHERE file_id=?',(r['file_id'],))['n'] if r['file_id'] else 0} for r in db.rows('SELECT * FROM bibliography WHERE project_id=? ORDER BY created_at DESC',(pid,))]
+    package=db.one('SELECT * FROM rule_packages WHERE id=? AND project_id=?',(p['rule_package_id'],pid)) if p['rule_package_id'] else None
+    rules=[{**r,'operations':db.loads(r['operations'],[])} for r in db.rows("SELECT * FROM rules WHERE project_id=? AND state IN ('confirmed','machine_verified') ORDER BY created_at",(pid,))]
+    ready_snapshot=db.one("SELECT id,created_at,head_commit FROM repository_snapshots WHERE project_id=? AND state='ready' ORDER BY created_at DESC LIMIT 1",(pid,))
+    blockers=[]
+    if not p['title']: blockers.append('项目缺少有效题目')
+    if not sections: blockers.append('项目尚未建立提纲')
+    if not p['rule_package_id']: blockers.append('尚未发布论文规则包')
+    if not head['target_snapshot_id'] and not ready_snapshot: blockers.append('尚未形成可用的项目代码快照')
+    return {'project':{'id':p['id'],'title':p['title'],'paper_type':p['paper_type'],'target_words':p['target_words'],'rule_package_id':p['rule_package_id'],'brief':db.loads(p['brief'],{})},'stats':project_stats,'readiness':{'core_ready':bool(head['core_version_id']),'contracts_ready':sum(bool(item['contract_id']) for item in sections),'snapshot':ready_snapshot,'blockers':blockers},'research_question':research_question,'core_version_id':head['core_version_id'],'core':core,'state':head,'materials':materials,'references':references,'rules':rules,'rule_package':{'id':package['id'],'version':package['version'],'rule_count':len(db.loads(package['rules'],[]))} if package else None,'facts':facts,'artifacts':artifacts,'sections':sections}
+
 @router.patch('/writing-state')
 def patch_state(pid,body:dict):
     values={}
@@ -56,6 +102,8 @@ def claim_item(pid,cid):return claims.get(pid,cid)
 def cores(pid):security.require_project(pid);return {'state':state(pid),'versions':db.rows('SELECT * FROM thesis_core_versions WHERE project_id=? ORDER BY created_at DESC',(pid,))}
 @router.post('/thesis-core')
 def save_core(pid,body:dict):return contracts.save_core(pid,body.get('content',{}),body.get('parent_id'))
+@router.post('/writing-bootstrap')
+def writing_bootstrap(pid):return contracts.bootstrap_project(pid)
 @router.post('/thesis-core/{cid}/publish')
 def publish_core(pid,cid,body:dict):return contracts.publish_core(pid,cid,body['expected_revision'])
 @router.get('/section-contracts/{sid}')

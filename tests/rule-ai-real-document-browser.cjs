@@ -13,6 +13,8 @@ const pw=require('C:/Users/abcta/.cache/codex-runtimes/codex-primary-runtime/dep
   await page.addInitScript(id=>localStorage.setItem('paper_project',id),before.project_id);
   await page.goto(origin+'/#token='+encodeURIComponent(session.bootstrap_token));
   await page.getByRole('button',{name:'论文规则',exact:true}).click();
+  await page.getByRole('tab',{name:'整理与审核',exact:true}).click();
+  await page.getByText('高级整理与独立审核工具',{exact:true}).click();
   await page.getByLabel('选择AI整理的规则文件').selectOption('4682795ddce646d4897bbf922298cee1');
   await page.getByText(/共 36 个可整理来源片段/).waitFor();
   const jobs=page.locator('.rule-jobs'),panel=page.locator('.rule-extraction-panel');

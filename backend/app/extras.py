@@ -61,16 +61,32 @@ def lookup_reference(pid,body:dict):
     return {'candidates':result,'full_text_verified':False}
 
 @router.post('/projects/{pid}/writing-batch')
+@db.atomic
 def batch_writing(pid,body:dict):
     p=security.require_project(pid)
     if not p['rule_package_id']:raise HTTPException(422,'请先发布规则包')
     sections=db.rows("SELECT * FROM sections WHERE project_id=? AND state!='archived' ORDER BY position",(pid,));selection=set(body.get('section_ids',[]));chosen=[s for s in sections if not selection or s['id'] in selection]
     chosen.sort(key=lambda s:(s['kind'] in ('abstract','abstract_en'),s['kind']=='abstract_en',s['position']))
-    created=[]
+    planned=[];skipped=[]
     for s in chosen:
         payload={'section_id':s['id'],'base_revision_id':s['current_revision_id'],'operation':body.get('operation','generate'),'instruction':body.get('instruction',''),'rule_package_id':p['rule_package_id']}
-        tasks.writing_preflight(pid,payload);created.append(tasks.enqueue(pid,'write',payload))
-    return {'tasks':created,'automatic_acceptance':False}
+        if s['kind']=='abstract_en':
+            from .abstract_translation import chinese_abstract
+            try:
+                source=chinese_abstract(pid,s)
+                if any(item['id']==source['id'] for item in chosen):
+                    skipped.append({'section_id':s['id'],'reason':'请先采用并保存本次中文摘要候选，再翻译英文摘要'})
+                    continue
+                if not source['current_revision_id'] or not documents.current(source)['text'].strip():
+                    skipped.append({'section_id':s['id'],'reason':'请先完成并保存中文摘要，再翻译英文摘要'})
+                    continue
+            except HTTPException as error:
+                if error.status_code!=422:raise
+                skipped.append({'section_id':s['id'],'reason':str(error.detail)})
+                continue
+        tasks.writing_preflight(pid,payload);planned.append(payload)
+    created=[tasks.enqueue(pid,'write',payload) for payload in planned]
+    return {'tasks':created,'skipped_sections':skipped,'automatic_acceptance':False}
 
 @router.get('/projects/{pid}/citations')
 def citation_list(pid):
@@ -123,14 +139,25 @@ def rule_history(pid):security.require_project(pid);return db.rows('SELECT * FRO
 @router.get('/projects/{pid}/research-map')
 def research_map(pid):
     project=security.require_project(pid);brief=db.loads(project['brief'],{});result=[]
+    from .writing_agent.common import state
+    head=state(pid)
+    if not brief.get('question') and head['core_version_id']:
+        core=db.one('SELECT content_json FROM thesis_core_versions WHERE id=? AND project_id=?',(head['core_version_id'],pid))
+        if core:
+            core_content=db.loads(core['content_json'],{})
+            brief['question']=core_content.get('research_question','')
     for section in db.rows("SELECT * FROM sections WHERE project_id=? AND state!='archived' ORDER BY position",(pid,)):
-        rev=documents.current(section);source_ids=set();fact_ids=set();claim_count=0
+        rev=documents.current(section);source_ids=set();fact_ids=set();artifact_ids=set();evidence_ids=set();claim_count=0
         if rev:
             for node in documents.nodes(db.loads(rev['document'],{})):
-                attrs=node.get('attrs',{});source_ids.update(attrs.get('sourceIds',[]));fact_ids.update(attrs.get('factIds',[]))
+                attrs=node.get('attrs',{});source_ids.update(attrs.get('sourceIds',[]));fact_ids.update(attrs.get('factIds',[]));
+                if attrs.get('artifactId'):artifact_ids.add(attrs['artifactId'])
                 if attrs.get('sourceIds') or attrs.get('factIds'):claim_count+=1
             for cite in db.rows('SELECT source_ids FROM citations WHERE revision_id=?',(rev['id'],)):source_ids.update(db.loads(cite['source_ids'],[]))
-        result.append({'section_id':section['id'],'title':section['title'],'goal':section['goal'],'revision_id':section['current_revision_id'],'claim_count':claim_count,'source_ids':sorted(source_ids),'fact_ids':sorted(fact_ids),'stale':bool(section['stale'])})
+        contract_id=head['contracts'].get(section['id']);contract=db.one('SELECT content_json FROM section_contract_versions WHERE id=? AND project_id=?',(contract_id,pid)) if contract_id else None
+        contract_content=db.loads(contract['content_json'],{}) if contract else {}
+        evidence_ids.update(contract_content.get('evidence_ids',[]));fact_ids.update(contract_content.get('fact_ids',[]));artifact_ids.update(contract_content.get('artifact_ids',[]))
+        result.append({'section_id':section['id'],'title':section['title'],'goal':section['goal'],'revision_id':section['current_revision_id'],'claim_count':claim_count,'source_ids':sorted(source_ids),'fact_ids':sorted(fact_ids),'artifact_ids':sorted(artifact_ids),'evidence_ids':sorted(evidence_ids),'contract_id':contract_id,'stale':bool(section['stale'])})
     return {'research_question':brief.get('question',''),'sections':result}
 
 @router.post('/projects/{pid}/outline/accept-candidate')

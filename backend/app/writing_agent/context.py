@@ -7,8 +7,8 @@ def assemble(pid,sid,contract_id,profile,remote=True,evidence_ids=None,operation
     p=security.require_project(pid);s=section(sid,pid);head=state(pid);contract=owned('contract',contract_id,pid);c=db.loads(contract['content_json'],{})
     if contract['section_id']!=sid:fail('INVALID_CONTRACT','任务不属于当前章节')
     if not head['core_version_id'] or not head['target_snapshot_id']:fail('PROJECT_NOT_READY','请先发布论文核心并选择代码快照')
-    core=owned('core',head['core_version_id'],pid);snapshot=owned('snapshot',head['target_snapshot_id'],pid)
-    for cid in [*db.loads(core['content_json'],{}).get('claim_versions',[]),*c.get('claim_versions',[])]:
+    core=owned('core',head['core_version_id'],pid);snapshot=owned('snapshot',head['target_snapshot_id'],pid);core_content=db.loads(core['content_json'],{})
+    for cid in [*core_content.get('claim_versions',[]),*c.get('claim_versions',[])]:
         owned('claim',cid,pid)
         for link in db.rows('SELECT evidence_id FROM claim_evidence_links WHERE claim_version_id=?',(cid,)):
             if remote and not evidence.allowed_remote(pid,link['evidence_id']):fail('SOURCE_ACCESS_REVOKED','核心或任务引用了禁止外发的论断依据',403)
@@ -28,7 +28,29 @@ def assemble(pid,sid,contract_id,profile,remote=True,evidence_ids=None,operation
         text=db.dumps(content);version=digest(text);old=db.one("SELECT id FROM evidence_items WHERE project_id=? AND origin_type='author' AND origin_id=? AND origin_version=?",(pid,origin_id,version))
         item=evidence.get(pid,old['id']) if old else evidence.create(pid,{'kind':'author_statement','origin_type':'author','origin_id':origin_id,'text':text,'conditions':['仅代表用户发布的研究意图或章节任务','不能证明实现、执行、部署或效果']})
         intent_ids.append(item['id'])
-    ids=list(dict.fromkeys([*c.get('evidence_ids',[]),*(evidence_ids or []),*intent_ids]))
+    current=documents.current(s)
+    fact_ids=list(dict.fromkeys([*core_content.get('fact_ids',[]),*c.get('fact_ids',[])]))
+    artifact_ids=list(dict.fromkeys([*core_content.get('artifact_ids',[]),*c.get('artifact_ids',[])]))
+    facts=[];fact_evidence_ids=[]
+    if current and remote:
+        from .provenance import revision_permissions
+        revision_permissions(pid,current['id'])
+    for fid in fact_ids:
+        f=db.one('SELECT * FROM facts WHERE id=? AND project_id=?',(fid,pid))
+        if not f:fail('INVALID_FACT','论文核心或章节任务引用了不属于本项目的研究事实')
+        for source_id in db.loads(f['source_ids'],[]):
+            origin=db.one('SELECT file_id FROM sources WHERE id=?',(source_id,))
+            if remote and (not origin or not security.file_allows_remote(origin['file_id'],pid)):fail('SOURCE_ACCESS_REVOKED','事实依据禁止外发',403)
+        facts.append(f)
+        synced=evidence.sync_fact(pid,fid)
+        if remote and not evidence.allowed_remote(pid,synced['id']):fail('SOURCE_ACCESS_REVOKED','研究事实或其来源禁止外发',403)
+        fact_evidence_ids.append(synced['id'])
+    artifact_evidence_ids=[]
+    for aid in artifact_ids:
+        synced=evidence.sync_artifact(pid,aid)
+        if remote and not evidence.allowed_remote(pid,synced['id']):fail('SOURCE_ACCESS_REVOKED','研究产物或其来源禁止外发',403)
+        artifact_evidence_ids.append(synced['id'])
+    ids=list(dict.fromkeys([*c.get('evidence_ids',[]),*fact_evidence_ids,*artifact_evidence_ids,*(evidence_ids or []),*intent_ids]))
     if len(ids)>80:fail('CONTEXT_BUDGET_EXCEEDED','本单元证据过多，请缩小范围')
     ee=[evidence.get(pid,eid,remote) for eid in ids]
     reference_sources={}
@@ -58,18 +80,8 @@ def assemble(pid,sid,contract_id,profile,remote=True,evidence_ids=None,operation
             from .sentences import paragraphs,paragraph_text
             blocks=paragraphs(db.loads(rev['document'],{}));before=next((i for i,x in enumerate(ordered) if x['id']==chapter['id']),0)<at;chosen_blocks=blocks[-2:] if before else blocks[:2];related_text='\n'.join(paragraph_text(n) for n in chosen_blocks);scope='complete_boundary_paragraphs'
         related.append({'section_id':chapter['id'],'title':chapter['title'],'revision_id':rev['id'],'text':related_text,'scope':scope,'full_text_available_via_read_section':True});versions[chapter['id']]=rev['id']
-    current=documents.current(s);facts=[]
-    if current and remote:
-        from .provenance import revision_permissions
-        revision_permissions(pid,current['id'])
-    for fid in c.get('fact_ids',[]):
-        f=db.one('SELECT * FROM facts WHERE id=? AND project_id=?',(fid,pid))
-        if not f:fail('INVALID_FACT','任务事实不属于本项目')
-        for source_id in db.loads(f['source_ids'],[]):
-            origin=db.one('SELECT file_id FROM sources WHERE id=?',(source_id,))
-            if remote and (not origin or not security.file_allows_remote(origin['file_id'],pid)):fail('SOURCE_ACCESS_REVOKED','事实依据禁止外发',403)
-        facts.append(f)
-    payload={'project':{'title':p['title'],'brief':db.loads(p['brief'],{})},'thesis_core':db.loads(core['content_json'],{}),'section':{'id':sid,'title':s['title'],'kind':s['kind'],'goal':s['goal']},'contract':c,'rules':[{'id':r['id'],'statement':r['statement']} for r in rr],'evidence':[{'id':e['id'],'kind':e['kind'],'conditions':e['conditions'],'payload':e['payload']} for e in ee],'facts':facts,'existing_document':db.loads(current['document'],{}) if current else None,'related_sections':related,'terminology':db.rows('SELECT zh,en FROM terms WHERE project_id=?',(pid,))}
+    payload={'project':{'title':p['title'],'brief':db.loads(p['brief'],{})},'thesis_core':core_content,'section':{'id':sid,'title':s['title'],'kind':s['kind'],'goal':s['goal']},'contract':c,'rules':[{'id':r['id'],'statement':r['statement']} for r in rr],'evidence':[{'id':e['id'],'kind':e['kind'],'conditions':e['conditions'],'payload':e['payload']} for e in ee],'facts':facts,'existing_document':db.loads(current['document'],{}) if current else None,'related_sections':related,'terminology':db.rows('SELECT zh,en FROM terms WHERE project_id=?',(pid,))}
+    payload['project_inputs']={'rule_package_id':package['id'],'rule_ids':[r['id'] for r in rr],'evidence_ids':[e['id'] for e in ee],'reference_ids':[r['id'] for r in references],'material_evidence_ids':[e['id'] for e in ee if e['kind'] in ('material_observation','literature')]}
     manifest={'project_id':pid,'section_id':sid,'project_state_revision':head['revision'],'core_version_id':head['core_version_id'],'target_snapshot_id':head['target_snapshot_id'],'contract_version_id':contract_id,'rule_package_id':p['rule_package_id'],'evidence_versions':{e['id']:e['origin_version'] for e in ee},'fact_versions':{f['id']:f['revision'] for f in facts},'related_revisions':versions,'base_revision_id':s['current_revision_id'],'rule_ids':[r['id'] for r in rr],'file_ids':sorted(file_ids),'remote':remote,'profile_fingerprint':profile['route_fingerprint'],'prompt_version':'agent.v1','schema_version':'agent.v1','permissions_hash':digest([(e['id'],evidence.allowed_remote(pid,e['id'])) for e in ee])}
     payload['evidence']=[evidence.for_model(e) for e in ee];payload['references']=[{k:r[k] for k in ('id','metadata','source_ids','verification')} for r in references]
     for item,original in zip(payload['evidence'],ee):

@@ -27,6 +27,7 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'C:/Users/abcta/.c
   try {
     await page.goto('http://127.0.0.1:' + port + '/#token=' + session.bootstrap_token, { waitUntil: 'networkidle' });
     await page.getByRole('button', { name: '资料中心', exact: true }).click();
+    await page.getByRole('tab', { name: '原文核对', exact: true }).click();
     await button().waitFor();
     await panel().getByText('待确认 1 份文件、2 页原文', { exact: false }).waitFor();
     assert(await button().isEnabled());
@@ -74,7 +75,8 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'C:/Users/abcta/.c
     checks.push('excluded_pages_inactive_files_and_other_projects_preserved');
     await complete().scrollIntoViewIfNeeded();
     await page.screenshot({ path: path.join(root, 'docs/screenshots/project-original-review-completed.png') });
-    await page.getByRole('button', { name: '批量待核对文件.txt' }).click();
+    await page.getByRole('tab', { name: '资料库', exact: true }).click();
+    await page.getByRole('button', { name: '批量待核对文件.txt', exact: true }).click();
     await page.locator('.document-review-complete').waitFor();
     await page.locator('.source-review-complete').waitFor();
     assert.equal(await page.getByRole('button', { name: '确认整份文档原文已核对', exact: true }).count(), 0);
@@ -82,14 +84,17 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'C:/Users/abcta/.c
     checks.push('single_document_and_page_controls_reflect_project_confirmation');
     await page.reload({ waitUntil: 'networkidle' });
     await page.getByRole('button', { name: '资料中心', exact: true }).click();
+    await page.getByRole('tab', { name: '原文核对', exact: true }).click();
     await complete().waitFor();
     checks.push('completion_persists_after_reload');
     await page.locator('.project-switch select').selectOption(fixture.other_project_id);
+    await page.getByRole('tab', { name: '原文核对', exact: true }).click();
     await panel().getByText('待确认 1 份文件、2 页原文', { exact: false }).waitFor();
     assert(await button().isEnabled());
     assert.equal(await complete().count(), 0);
     checks.push('switching_projects_does_not_leak_completed_state');
     await page.locator('.project-switch select').selectOption(fixture.blocked_project_id);
+    await page.getByRole('tab', { name: '原文核对', exact: true }).click();
     await panel().getByText('1 份资料尚未就绪', { exact: false }).waitFor();
     assert(await button().isDisabled());
     await panel().locator('summary').click();

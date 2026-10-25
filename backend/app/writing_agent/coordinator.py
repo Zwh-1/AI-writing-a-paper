@@ -9,7 +9,9 @@ STAGES=('investigate','judgment','judgment_check','draft','annotation','semantic
 
 @db.atomic
 def create(pid,body):
-    b=SessionInput.model_validate(body);p=security.require_project(pid);s=section(b.section_id,pid);head=state(pid);contract=owned('contract',b.contract_version_id,pid);profile=profiles.get(pid,b.profile_id)
+    b=SessionInput.model_validate(body);p=security.require_project(pid);s=section(b.section_id,pid)
+    if s['kind']=='abstract_en':fail('ABSTRACT_TRANSLATION_REQUIRED','英文摘要直接翻译已保存的中文摘要，请在提纲计划或写作工作台点击“翻译中文摘要”')
+    head=state(pid);contract=owned('contract',b.contract_version_id,pid);profile=profiles.get(pid,b.profile_id)
     if head['policy'].get('agent_writing_enabled') is False:fail('FEATURE_DISABLED','此项目已关闭有据写作流程',409)
     if head['revision']!=b.expected_project_state_revision or s['current_revision_id']!=b.base_revision_id:fail('INPUT_VERSION_CHANGED','项目或正文版本已变化',409)
     if head['contracts'].get(s['id'])!=contract['id']:fail('INPUT_VERSION_CHANGED','请选择当前已发布的章节任务',409)

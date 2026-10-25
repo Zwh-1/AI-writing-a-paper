@@ -1,5 +1,5 @@
 from pathlib import Path
-import json,zipfile,hashlib,os
+import json,zipfile,hashlib,os,re
 ROOT=Path(__file__).resolve().parents[1]
 VERSION=json.loads((ROOT/'frontend/package.json').read_text(encoding='utf-8'))['version']
 OUTPUT=ROOT.parent/f'砚台论文工作台_{VERSION}_便携版.zip'
@@ -12,6 +12,8 @@ def selected_files():
         if p.is_file():yield p
     if (ROOT/'docs/0.4.0有据写作实现与验收.md').is_file():yield ROOT/'docs/0.4.0有据写作实现与验收.md'
     if (ROOT/'docs/0.4.1剩余功能与验收说明.md').is_file():yield ROOT/'docs/0.4.1剩余功能与验收说明.md'
+    for name in (f'docs/{VERSION}更新与升级说明.md','docs/文献库导入与使用说明.md','docs/文献知识库存储与检索.md','docs/英文摘要翻译说明.md','docs/资料与规则页面组件结构.md','docs/资料与规则AI托管说明.md','docs/从源码运行.md'):
+        if (ROOT/name).is_file():yield ROOT/name
     if (ROOT/'打开真实验收审阅.ps1').is_file():yield ROOT/'打开真实验收审阅.ps1'
     for name in folders:
         folder=ROOT/name
@@ -24,16 +26,23 @@ def selected_files():
 
 def main():
     assert OUTPUT.parent.resolve()==ROOT.parent.resolve()
+    backend_version=re.search(r"APP_VERSION\s*=\s*['\"]([^'\"]+)['\"]",(ROOT/'backend/app/config.py').read_text(encoding='utf-8'))
+    lock=json.loads((ROOT/'frontend/package-lock.json').read_text(encoding='utf-8'))
+    if not backend_version or {VERSION,backend_version[1],lock['version'],lock['packages']['']['version']}!={VERSION}:raise RuntimeError('Frontend, backend and lock file versions do not match')
     files=sorted(set(selected_files()),key=lambda p:str(p));manifest={};size=0
     partial=OUTPUT.with_suffix('.partial.zip')
     with zipfile.ZipFile(partial,'w',zipfile.ZIP_DEFLATED,compresslevel=5) as archive:
         for p in files:
             rel=p.relative_to(ROOT).as_posix()
-            if rel.startswith(('data/','.experimental/')) or Path(rel).name=='credential.dpapi' or rel.endswith('session.json'):raise RuntimeError('Private data was selected for packaging')
-            raw=p.read_bytes();manifest[rel]=hashlib.sha256(raw).hexdigest();size+=len(raw);archive.writestr(rel,raw)
+            if rel.startswith(('data/','.experimental/')) or p.suffix=='.dpapi' or p.name=='workbench.sqlite3' or rel.endswith('session.json') or (p.name.startswith('session-') and p.suffix=='.json'):raise RuntimeError('Private data was selected for packaging')
+            with p.open('rb') as source:manifest[rel]=hashlib.file_digest(source,'sha256').hexdigest()
+            size+=p.stat().st_size;archive.write(p,rel)
         archive.writestr('便携包清单.json',json.dumps({'version':VERSION,'files':manifest,'user_data_included':False,'api_key_included':False},ensure_ascii=False,indent=2))
     with zipfile.ZipFile(partial) as archive:
-        if archive.testzip() is not None:raise RuntimeError('Package integrity verification failed')
+        for relative,expected in manifest.items():
+            with archive.open(relative) as source:actual=hashlib.file_digest(source,'sha256').hexdigest()
+            if actual!=expected:raise RuntimeError('Package integrity verification failed: '+relative)
     os.replace(partial,OUTPUT)
-    print(json.dumps({'package':str(OUTPUT),'files':len(files),'uncompressed_bytes':size,'package_bytes':OUTPUT.stat().st_size,'user_data_included':False,'api_key_included':False},ensure_ascii=False,indent=2))
+    with OUTPUT.open('rb') as source:digest=hashlib.file_digest(source,'sha256').hexdigest()
+    print(json.dumps({'package':str(OUTPUT),'version':VERSION,'files':len(files),'uncompressed_bytes':size,'package_bytes':OUTPUT.stat().st_size,'sha256':digest,'manifest_hashes_verified':True,'user_data_included':False,'api_key_included':False},ensure_ascii=False,indent=2))
 if __name__=='__main__':main()

@@ -53,6 +53,7 @@ def reconcile(pid,profile='material-summary'):
         from . import model_routing
         c,key=model_routing.snapshot();scope=provider.request_scope(c,key)
     elif profile=='material-summary':scope=summary.scope()
+    elif profile=='primary':scope=provider.request_scope(provider.config(),provider.get_key())
     else:raise ValueError('账单接口类型无效')
     with scope:
         cfg=provider.config()

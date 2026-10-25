@@ -10,6 +10,7 @@ from .security import safe_object,require_project
 DEFAULT_FORMAT={'font':'宋体','latin_font':'Times New Roman','font_size':12,'line_spacing':1.5,'first_line_chars':2,'margin_top':25,'margin_bottom':25,'margin_left':30,'margin_right':25,'heading_font':'黑体','reference_superscript':True}
 def format_config(pid): return {**DEFAULT_FORMAT,**db.setting('format:'+pid,{})}
 def bibliography_text(meta):
+    if meta.get('citation_raw'):return str(meta['citation_raw']).strip()
     authors=meta.get('authors','')
     if isinstance(authors,list): authors='，'.join(authors)
     return f"{authors or '【作者待补】'}. {meta.get('title') or '【题名待补】'}{(' ['+meta['type']+']') if meta.get('type') else ''}. {meta.get('journal') or meta.get('publisher') or ''}, {meta.get('year') or '【年份待补】'}{(', '+str(meta['volume'])) if meta.get('volume') else ''}{(':'+str(meta['pages'])) if meta.get('pages') else ''}.{(' DOI:'+meta['doi']) if meta.get('doi') else ''}"

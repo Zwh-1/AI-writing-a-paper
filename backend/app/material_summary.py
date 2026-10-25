@@ -51,10 +51,13 @@ def save_settings(body):
     return settings()
 
 @contextmanager
-def scope():
+def scope(autopilot=False):
     with provider.settings_lock():
         c=config();key=security.get_key(PROFILE)
     if not key:raise HTTPException(422,'请先在“DeepSeek 资料总结设置”填写 x5m5x 的 API key')
+    if autopilot:
+        from .ai_autopilot import priced_config
+        c=priced_config(c,key)
     with provider.request_scope(c,key):yield c
 
 def models():
@@ -140,7 +143,7 @@ def generate(task,payload):
     fid=payload['file_id'];f=preflight(fid)
     if f['project_id']!=task['project_id']:raise ValueError('资料不属于当前项目')
     f,pages,fingerprint=source(fid)
-    with scope() as cfg:
+    with (scope(autopilot=True) if task['kind']=='materials_rules_autopilot' else scope()) as cfg:
         signature=configuration_hash(cfg);old=db.one('SELECT * FROM material_summaries WHERE file_id=?',(fid,))
         if old and old['input_hash']==fingerprint and old['provider_hash']==signature:return {'file_id':fid,'cached':True}
         # Bound both source text and final synthesis; never silently truncate pages.
@@ -159,7 +162,7 @@ def generate(task,payload):
                 tasks.event(task['id'],'核对服务商账单与本地费用预留',progress)
                 summary_billing.reconcile(f['project_id'])
             tasks.event(task['id'],'DeepSeek 正在'+stage,progress)
-            response=tasks.model_call(task,SYSTEM,db.dumps(content),{'file_ids':[fid],'purpose':'material_summary','source_hash':fingerprint,'stage':stage,'pages':sorted(allowed),'progress_phase':'DeepSeek 正在'+stage,'progress_percent':progress})
+            response=tasks.model_call(task,SYSTEM,db.dumps(content),{'file_ids':[fid],'purpose':'material_summary','source_hash':fingerprint,'stage':stage,'pages':sorted(allowed),'progress_phase':'DeepSeek 正在'+stage,'progress_percent':progress,**({'rule_job_id':payload['rule_job_id']} if payload.get('rule_job_id') else {})})
             value=validated(provider.parse_json(response['text']),allowed)
             actual=response.get('provider_snapshot',{}).get('model',cfg['model']);used_models.add(actual)
             db.execute('INSERT OR REPLACE INTO material_summary_parts VALUES(?,?,?,?)',(fid,cache_key,db.dumps({**value,'_models':[actual]}),db.now()))

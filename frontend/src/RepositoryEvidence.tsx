@@ -2,11 +2,12 @@ import {useState} from 'react';
 import {get,post,label,parse,useResource,Row} from './writingShared';
 
 export default function RepositoryEvidence({pid,epoch,onChange,onError}:{pid:string;epoch:number;onChange:()=>void;onError:(s:string)=>void}){
-  const repos=useResource(pid,'/repositories',epoch),snaps=useResource(pid,'/snapshots',epoch),evidence=useResource(pid,'/evidence',epoch),state=useResource(pid,'/writing-state',epoch);
+  const repos=useResource(pid,'/repositories',epoch),snaps=useResource(pid,'/snapshots',epoch),evidence=useResource(pid,'/evidence',epoch),state=useResource(pid,'/writing-state',epoch),rules=useResource(pid,'/rules',epoch),references=useResource(pid,'/references',epoch);
   const [root,setRoot]=useState('D:\\桌面\\edu-sbt-platform'),[allow,setAllow]=useState(false),[selected,setSelected]=useState(''),[query,setQuery]=useState(''),[hits,setHits]=useState<Row[]>([]),[view,setView]=useState<Row|null>(null),[busy,setBusy]=useState(false),[author,setAuthor]=useState('');
   const sid=selected||state.data?.target_snapshot_id||snaps.data?.[0]?.id;
   async function act(fn:()=>Promise<any>,changed=true){setBusy(true);try{await fn();if(changed)onChange();}catch(e){onError((e as Error).message);}finally{setBusy(false);}}
   return <div className="wa-stack">
+    <section className="wa-card"><h3>当前项目写作依据</h3><p>项目规则、资料片段和文献会自动进入章节写作上下文；这里的登记用于确认来源范围，不需要复制到写作任务。</p><div className="wa-project-evidence"><div><strong>论文规则</strong><ul>{((rules.data?.rules??rules.data?.items??[]) as Row[]).slice(0,6).map(r=><li key={r.id}>{r.statement}<small>{label(r.modality)} · {r.scope}</small></li>)}</ul>{!((rules.data?.rules??rules.data?.items??[]) as Row[]).length&&<p>尚未加载规则工作区。</p>}</div><div><strong>文献与资料</strong><ul>{(references.data??[]).slice(0,6).map((r:Row)=><li key={r.id}>{parse(r.metadata)?.title||'未命名文献'}<small>{r.file_id?'已关联原文':'仅有书目信息'}</small></li>)}</ul>{!(references.data??[]).length&&<p>尚未登记文献。</p>}</div></div></section>
     <section className="wa-card"><h3>研究项目来源</h3><p>选择本机项目目录。冻结后的代码有独立版本，工作目录变化不会改写已有证据。</p>
       <form onSubmit={e=>{e.preventDefault();void act(async()=>{const r=await post(pid,'/repositories',{root,egress:allow?'selected_content':'local_only'});await post(pid,`/repositories/${r.id}/snapshots`,{});});}}>
         <label>项目目录<input aria-label="项目代码目录" value={root} onChange={e=>setRoot(e.target.value)} required/></label>

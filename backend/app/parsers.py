@@ -122,10 +122,15 @@ def register_file(pid,name,data,role='research',egress='selected_content'):
     if not data or len(data)>MAX_FILE: raise ValueError('文件为空或超过120MB')
     if role not in ('rules','example','research','draft','data','supervisor') or egress not in ('local_only','selected_content','allowed'): raise ValueError('资料用途或权限无效')
     sha=put_blob(data);old=db.one('SELECT * FROM files WHERE project_id=? AND sha256=? AND role=?',(pid,sha,role))
-    if old: return old,False
+    if old:
+        from .reference_knowledge import register_document
+        register_document(old['id'])
+        return old,False
     fid=db.uid();db.execute('INSERT INTO files(id,project_id,name,sha256,extension,size,role,egress,created_at) VALUES(?,?,?,?,?,?,?,?,?)',(fid,pid,Path(name).name,sha,ext,len(data),role,egress,db.now()))
+    from .reference_knowledge import register_document
+    register_document(fid)
     return db.one('SELECT * FROM files WHERE id=?',(fid,)),True
-def parse_file(fid,progress=lambda *a:None,repair=False):
+def parse_file(fid,progress=lambda *a:None,repair=False,native_only=False):
     """Add missing extraction without deleting stable page/source identities."""
     from . import material_quality
     f=db.one('SELECT * FROM files WHERE id=?',(fid,))
@@ -187,8 +192,8 @@ def parse_file(fid,progress=lambda *a:None,repair=False):
                 except Exception as error:record['object_error']=str(error)[:300]
         from .local_ocr import page_ocr,capabilities
         visual=db.rows('SELECT * FROM pages WHERE file_id=? AND has_visual=1 ORDER BY page_number',(fid,))
-        available=capabilities()['available'] if visual else True
-        for i,page in enumerate(visual):
+        available=capabilities()['available'] if visual and not native_only else True
+        for i,page in enumerate([] if native_only else visual):
             progress(f'本地图片识别 {i+1}/{len(visual)} · 第{page["page_number"]}页',15+int(80*i/max(1,len(visual))))
             if page['review_state']=='not_applicable':
                 record['page_states'][page['id']]['ocr_state']='excluded'
@@ -215,6 +220,8 @@ def parse_file(fid,progress=lambda *a:None,repair=False):
 
             next(iter(record['page_states'].values())).setdefault('errors',[]).append(record['object_error'])
         db.execute('UPDATE files SET status=?,error=NULL WHERE id=?',('ready',fid))
+        from .reference_knowledge import sync_document
+        sync_document(fid)
         material_quality.save(fid,record)
         quality=material_quality.summary(db.one('SELECT * FROM files WHERE id=?',(fid,)))
         progress('解析完成，图片候选仍需人工核对' if quality['state']=='extracted' else '解析结束，仍有缺项需要处理',98)
@@ -226,7 +233,7 @@ def parse_file(fid,progress=lambda *a:None,repair=False):
     except Exception as e:
         db.execute('UPDATE files SET status=?,error=? WHERE id=?',('failed',str(e)[:1000],fid));raise
 
-def keyword_search(pid,query,kind='research',limit=12,remote=False):
+def keyword_search(pid,query,kind='research',limit=12,remote=False,knowledge=False):
     for term in db.rows('SELECT zh,en FROM terms WHERE project_id=?',(pid,)):
         if term['zh'].lower() in query.lower() or term['en'].lower() in query.lower(): query+=' '+term['zh']+' '+term['en']
     terms=list(dict.fromkeys(tokens(query).split()))[:35]
@@ -234,11 +241,15 @@ def keyword_search(pid,query,kind='research',limit=12,remote=False):
     match=' OR '.join('"'+t.replace('"','')+'"' for t in terms);limit=min(max(int(limit),1),100)
     role="s.kind='evidence'" if kind=='research' else ("s.kind IN ('example','counterexample')" if kind=='example' else '1=1')
     permission="AND f.egress!='local_only' AND NOT EXISTS (WITH RECURSIVE origin(id) AS (SELECT parent_file_id FROM file_derivations WHERE child_file_id=f.id UNION SELECT d.parent_file_id FROM file_derivations d JOIN origin o ON d.child_file_id=o.id) SELECT 1 FROM origin o JOIN files p ON p.id=o.id WHERE p.egress='local_only' OR p.active=0 OR p.project_id!=f.project_id)" if remote else ''
-    sql=f"SELECT s.*,f.name,f.role,f.egress,f.extension,p.page_number,p.title AS page_title,p.review_state,bm25(source_fts) AS rank FROM source_fts JOIN sources s ON s.id=source_fts.source_id JOIN files f ON f.id=s.file_id LEFT JOIN pages p ON p.id=s.page_id WHERE source_fts MATCH ? AND f.project_id=? AND f.active=1 AND {role} {permission} ORDER BY rank LIMIT ?"
+    scope=__import__('app.reference_knowledge',fromlist=['scope_sql']).scope_sql() if knowledge else ''
+    sql=f"SELECT s.*,f.name,f.role,f.egress,f.extension,p.page_number,p.title AS page_title,p.review_state,bm25(source_fts) AS rank FROM source_fts JOIN sources s ON s.id=source_fts.source_id JOIN files f ON f.id=s.file_id LEFT JOIN pages p ON p.id=s.page_id WHERE source_fts MATCH ? AND f.project_id=? AND f.active=1 AND {role} {permission} {scope} ORDER BY rank,s.id LIMIT ?"
     return db.rows(sql,(match,pid,limit))
 
 
 def search(pid,query,kind='research',limit=12,remote=False):
+    if kind=='research':
+        from .reference_knowledge import search as knowledge_search
+        return knowledge_search(pid,query,limit,remote)['items']
     from . import retrieval
     if retrieval.config(pid)['enabled']:
         return retrieval.hybrid(pid,query,kind,limit,remote)['items']

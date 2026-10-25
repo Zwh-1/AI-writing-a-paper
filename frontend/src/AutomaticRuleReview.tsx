@@ -17,9 +17,11 @@ export default function AutomaticRuleReview({pid,data,busy,run}:{pid:string;data
   return <section className="panel mb" aria-label="自动规则审核">
     <div className="section-heading"><h2>自动审核与来源政策</h2><span>已有候选可直接处理，无需重新提取</span></div>
     <p className="muted mb">系统检查原文依据、条款性质和适用范围，归并重复项。课程资料默认按建议启用；机器审核与人工确认分别记录。</p>
+    <details className="rule-review-history"><summary>历史审核与完整性记录</summary>
     {(integrity?.findings?.length??0)>0&&<p className="alert">历史响应回放发现 {integrity?.findings?.length} 条排除结论缺少原文依据；已撤回 {integrity?.restored_rule_ids?.length??0} 条自动归档。未发起新的模型调用，原有人工确认保留。</p>}
     {(integrity?.legacy_positive_findings?.length??0)>0&&<p className="muted">另有 {integrity?.legacy_positive_findings?.length} 条历史正面结论被旧关键词筛选归档，原文与判定已集中留存；其中的评分等级和适用条件须保留，尚未自动启用。</p>}
     {(integrity?.text_integrity?.repaired_rule_ids?.length??0)>0&&<p className="alert">完整性检查已按原文补全 {integrity?.text_integrity.repaired_rule_ids.length} 条残缺条款；已撤回 {integrity?.text_integrity.quarantined_rule_ids.length} 条旧机器审核结论，补全内容保留为候选。原文和修复记录可在“核对条款”中查看。</p>}
+    </details>
     {(integrity?.text_integrity?.published_affected_rule_ids?.length??0)>0&&<p className="alert">当前生效的旧规则包含 {integrity?.text_integrity.published_affected_rule_ids.length} 条已撤回的残缺条款，请更新规则包后继续写作。</p>}
     {conditional>0&&<p className="muted">另有 {conditional} 条有条件规范，保留其等级或适用条件，未判为无效要求。</p>}
     <div className="actions"><button className="btn primary" disabled={busy} onClick={()=>run("auto-review",async()=>{const value=await send(`/projects/${pid}/rules/auto-review`,{publish:true});setResult(value);return value},"自动审核已完成，通过的规则已尝试发布")}>自动审核并应用可用规则</button></div>

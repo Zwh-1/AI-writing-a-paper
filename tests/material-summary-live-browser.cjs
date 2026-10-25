@@ -7,9 +7,11 @@ const root=path.resolve(__dirname,'..');const {chromium}=require('C:/Users/abcta
  try {
   await page.goto('http://127.0.0.1:8765/#token='+session.bootstrap_token,{waitUntil:'networkidle'});console.log('Live session opened.');
   await page.getByRole('button',{name:'资料中心',exact:true}).click();
+  await page.getByRole('tab',{name:'AI 处理',exact:true}).click();
+  await page.getByText('资料总结设置与独立整理工具',{exact:true}).click();
   await page.getByTestId('summary-batch').locator('.summary-counters').filter({hasText:/25\s*\/\s*25/}).waitFor();console.log('Live batch reports 25/25.');
   await page.screenshot({path:path.join(root,'docs/screenshots/deepseek-repair-live-batch.png')});
-  await page.getByRole('button',{name:'智评综合等级划分说明.pdf'}).click();
+  await page.getByRole('tab',{name:'资料库',exact:true}).click();await page.getByRole('button',{name:'智评综合等级划分说明.pdf',exact:true}).click();
   const summary=page.getByTestId('material-summary');await summary.getByText('整体概括',{exact:true}).waitFor();
   for(const title of ['核心要点','主题归纳'])assert(await summary.getByText(title,{exact:true}).isVisible());
   assert(await summary.getByRole('button',{name:'总结已保存'}).isDisabled());

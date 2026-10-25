@@ -15,6 +15,9 @@ def event(tid,phase,progress=0,detail=None):
 def enqueue(pid,kind,payload,key=None):
     digest=hashlib.sha256(db.dumps({'kind':kind,'payload':payload}).encode()).hexdigest()
     with db.transaction() as c:
+        if kind=='knowledge_index':
+            active=c.execute("SELECT * FROM tasks WHERE project_id=? AND kind='knowledge_index' AND status IN ('queued','running') ORDER BY created_at LIMIT 1",(pid,)).fetchone()
+            if active:return dict(active)
         if kind=='rules_ai':
             active=c.execute("SELECT * FROM tasks WHERE project_id=? AND kind=? AND input_hash=? AND status IN ('queued','running') ORDER BY created_at LIMIT 1",(pid,kind,digest)).fetchone()
             if active:return dict(active)
@@ -36,6 +39,9 @@ def writing_preflight(pid,payload):
     p=require_project(pid);s=require_section(payload['section_id'])
     if s['project_id']!=pid: raise HTTPException(404,'章节不属于项目')
     if s['state']=='archived':raise HTTPException(409,'已归档章节不能生成')
+    if s['kind']=='abstract_en':
+        from .abstract_translation import prepare
+        prepare(pid,s,payload)
     targets=payload.get('target_node_ids',[])
     if targets:
         revision=documents.current(s);blocks=db.loads(revision['document'],{}).get('content',[]) if revision else [];selected=[n for n in blocks if n.get('attrs',{}).get('nodeId') in targets]
@@ -102,6 +108,9 @@ def _model_call(task,system,user,manifest,images=None):
         c.execute('INSERT INTO generation_runs(id,task_id,project_id,status,model,protocol,manifest,reserved,created_at) VALUES(?,?,?,?,?,?,?,?,?)',(rid,task['id'],p['id'],'pending',cfg['model'],cfg['protocol'],db.dumps(manifest),reservation,db.now()))
     try:
         # Recheck every source and rule provenance immediately before sending.
+        if manifest.get('abstract_translation'):
+            from .abstract_translation import check_source
+            check_source(p['id'],manifest['abstract_translation'])
         for fid in manifest.get('file_ids',[]):
             f=db.one('SELECT * FROM files WHERE id=? AND project_id=?',(fid,p['id']))
             if not f or not __import__('app.security',fromlist=['file_allows_remote']).file_allows_remote(fid,p['id']): raise ValueError('资料或派生内容当前禁止外发')
@@ -119,6 +128,7 @@ def _model_call(task,system,user,manifest,images=None):
         else:result=provider.generate(system,user,images)
         db.execute('UPDATE generation_runs SET status=?,usage=?,cost=?,remote_id=?,manifest=? WHERE id=?',('completed',db.dumps(result['usage']),result['cost'],result['remote_id'],db.dumps({**manifest,'wire_request_hash':result['request_hash'],'output_blob':put_blob(result['text'].encode())}),rid))
         result['provider_snapshot']={k:cfg[k] for k in ('base_url','protocol','model')}
+        result['run_id']=rid
         return result
     except Exception as e:
         partial=e.response_result if isinstance(e,provider.ProviderError) else None
@@ -145,6 +155,9 @@ def _model_call(task,system,user,manifest,images=None):
 def writing(task,payload):
     pid=task['project_id'];p,s=writing_preflight(pid,payload);package=db.one('SELECT * FROM rule_packages WHERE id=?',(payload.get('rule_package_id') or p['rule_package_id'],))
     if not package or package['project_id']!=pid: raise ValueError('规则包不存在')
+    if s['kind']=='abstract_en':
+        from .abstract_translation import translate
+        return translate(task,p,s,payload,package)
     applicable=rules.applicable(package,s,payload.get('operation','generate'));content_rules=[r for r in applicable if r['category']!='format']
     if not content_rules: raise ValueError('当前章节没有适用内容规则，请完善规则范围')
     event(task['id'],'加载规则与检索证据',15)
@@ -245,6 +258,7 @@ def writing(task,payload):
     user=db.dumps(context)
     if len(user)+len(system)>int(provider.config().get('context_limit',100000))*2: raise ValueError('上下文超出应用预算，请缩小章节或资料范围；不会自动丢弃强制规则')
     ids=[r['id'] for r in content_rules];manifest={'rule_package_id':package['id'],'required_rule_ids':ids,'loaded_rule_ids':ids,'rule_text_hash':hashlib.sha256(rule_text.encode()).hexdigest(),'base_revision_id':payload.get('base_revision_id'),'section_id':s['id'],'source_ids':[e['id'] for e in evidence],'file_ids':sorted(file_ids),'fact_revisions':{f['id']:f['revision'] for f in allowed_facts}}
+    manifest['knowledge_documents']={e['knowledge_document_id']:e['knowledge_document_version'] for e in evidence if e.get('knowledge_document_id')}
     from .writing_agent.common import state,digest
     writing_head=state(pid)
     manifest['writing_state']={'project_id':pid,'section_id':s['id'],'core_version_id':writing_head['core_version_id'],'target_snapshot_id':writing_head['target_snapshot_id'],'contract_version_id':writing_head['contracts'].get(s['id']),'rule_package_id':p['rule_package_id'],'evidence_versions':{},'project_brief_hash':digest(db.loads(p['brief'],{}))}
@@ -364,6 +378,10 @@ def dispatch(task):
     if kind=='material_summary':
         from .material_summary import generate
         return generate(task,p)
+    if kind=='materials_rules_autopilot':
+        from .ai_autopilot import process,priced_config
+        with provider.request_scope(priced_config(provider.config(),provider.get_key()),provider.get_key()):
+            return process(task,p)
     if kind=='support_check': return support_check(task,p)
     if kind=='semantic_review': return semantic_review(task)
     if kind=='rules_ai':
@@ -383,7 +401,21 @@ def dispatch(task):
             try:results.append(page_ocr(page['id'],p.get('language','zh-Hans-CN')))
             except Exception as error:results.append({'page_id':page['id'],'error':str(error)[:300]})
         return {'pages':len(pages),'results':results,'external_requests':False,'requires_human_review':True}
-    if kind=='parse': return parsers.parse_file(p['file_id'],lambda phase,percent:event(task['id'],phase,percent),repair=p.get('repair',False))
+    if kind=='parse':
+        options={'repair':p.get('repair',False)}
+        if p.get('native_only'):options['native_only']=True
+        result=parsers.parse_file(p['file_id'],lambda phase,percent:event(task['id'],phase,percent),**options)
+        original=db.one('SELECT role FROM files WHERE id=?',(p['file_id'],))
+        if original and original['role']=='research':
+            from .reference_knowledge import schedule_index
+            schedule_index(pid)
+        if not p.get('skip_ai_autopilot'):
+            from .ai_autopilot import schedule
+            schedule(pid)
+        return result
+    if kind=='knowledge_index':
+        from .reference_knowledge import build_index
+        return build_index(pid,lambda done,total:event(task['id'],f'文献知识库向量索引 {done}/{total}',10+int(85*done/max(1,total))))
     if kind=='extract_rules': return rules.extract(pid)
     if kind=='write': return writing(task,p)
     if kind=='review':
@@ -452,7 +484,9 @@ def run_one():
     try:
         event(task['id'],'准备执行',5);result=dispatch(task)
         state='succeeded'
-        if task['kind']=='rules_ai' and result.get('automatic') and not result.get('complete'):
+        if task['kind']=='materials_rules_autopilot' and not result.get('complete'):
+            state='budget_blocked' if result.get('pause_reason') and '预算' in result['pause_reason'] else 'incomplete'
+        elif task['kind']=='rules_ai' and result.get('automatic') and not result.get('complete'):
             state='budget_blocked' if any(i['state']=='budget_wait' for i in result['unresolved_items']) else 'incomplete'
             if state=='incomplete' and not result.get('pause_reason') and db.one("SELECT w.item_key FROM rule_work_items w JOIN rule_job_items j ON j.project_id=w.project_id AND j.item_key=w.item_key WHERE j.task_id=? AND w.state='needs_resolution' AND w.attempts<2 LIMIT 1",(task['id'],)):
                 state='queued'
@@ -461,7 +495,7 @@ def run_one():
         db.execute('UPDATE tasks SET status=?,result=?,updated_at=?,lease_until=NULL WHERE id=? AND attempt=?',(state,db.dumps(result),db.now(),task['id'],task['attempt']))
     except InterruptedError as e: db.execute("UPDATE tasks SET status='cancelled',error=?,updated_at=?,lease_until=NULL WHERE id=?",(str(e),db.now(),task['id']))
     except Exception as e:
-        status='budget_blocked' if task['kind'] in ('material_summary','rules_ai') and isinstance(e,BudgetExceeded) else 'outcome_unknown' if isinstance(e,provider.ProviderError) and e.unknown else 'failed'
+        status='budget_blocked' if task['kind'] in ('material_summary','rules_ai','materials_rules_autopilot') and isinstance(e,BudgetExceeded) else 'outcome_unknown' if isinstance(e,provider.ProviderError) and e.unknown else 'failed'
         saved_result=db.loads(db.one('SELECT result FROM tasks WHERE id=?',(task['id'],))['result'],{}) or {}
         result_value=db.dumps(saved_result) if saved_result else None
         completed=db.one("SELECT manifest FROM generation_runs WHERE task_id=? AND status IN ('completed','completed_invalid') ORDER BY created_at DESC LIMIT 1",(task['id'],))

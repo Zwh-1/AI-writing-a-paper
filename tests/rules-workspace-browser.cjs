@@ -76,15 +76,19 @@ const pw = require("C:/Users/abcta/.cache/codex-runtimes/codex-primary-runtime/d
       origin + "/#token=" + encodeURIComponent(session.bootstrap_token),
     );
     await page.getByRole("button", { name: "论文规则", exact: true }).click();
+    await page.getByRole("tab", { name: "发布与设置", exact: true }).click();
     await page
       .getByRole("heading", { name: "发布前检查", exact: true })
       .waitFor();
+    await page.getByRole("tab", { name: "整理与审核", exact: true }).click();
+  await page.getByText('高级整理与独立审核工具',{exact:true}).click();
     await page.getByLabel("选择AI整理的规则文件").waitFor();
     assert(
       (await page.locator(".rule-extraction-panel").getAttribute("open")) !==
         null,
     );
     await passed("extraction_controls_visible_without_hidden_discovery");
+    await page.getByRole("tab", { name: "条款管理", exact: true }).click();
     await page.getByRole("button", { name: "手工添加", exact: true }).click();
     let dialog = page.getByRole("dialog");
     await dialog
@@ -121,14 +125,17 @@ const pw = require("C:/Users/abcta/.cache/codex-runtimes/codex-primary-runtime/d
       320,
     );
     await passed("structured_range_edit_and_confirmation");
-    await page.getByRole("button", { name: "发布规则包", exact: true }).click();
+    await page.getByRole("button", { name: "检查并发布", exact: true }).click();
+    assert(await page.getByRole("button", { name: "发布规则包", exact: true }).isDisabled());
     assert.equal((await state()).package, null);
     await passed("conflict_blocks_publication_in_ui");
+    await page.getByRole("tab", { name: "条款管理", exact: true }).click();
     await page
       .locator(".rule-list .rule-row")
       .filter({ hasText: conflict1.statement })
       .getByRole("button", { name: "排除", exact: true })
       .click();
+    await page.getByRole("tab", { name: "发布与设置", exact: true }).click();
     await page
       .getByText("发布条件已满足。待确认条款及正反例不进入规则包。", {
         exact: true,
@@ -137,7 +144,7 @@ const pw = require("C:/Users/abcta/.cache/codex-runtimes/codex-primary-runtime/d
     await page.getByRole("button", { name: "发布规则包", exact: true }).click();
     await page.getByText("当前生效：规则包 V1", { exact: true }).waitFor();
     await passed("exclude_conflict_then_publish");
-    await page
+    await page.locator(".rule-publication")
       .getByRole("button", { name: "查看生效快照", exact: true })
       .click();
     dialog = page.getByRole("dialog", { name: "生效规则快照" });
@@ -147,6 +154,7 @@ const pw = require("C:/Users/abcta/.cache/codex-runtimes/codex-primary-runtime/d
     assert(!snapshot.includes("手工新增但仍需核对的要求"));
     await page.getByRole("button", { name: "关闭原文依据" }).click();
     await passed("published_snapshot_contains_only_eligible_rules");
+    await page.getByRole("tab", { name: "条款管理", exact: true }).click();
     await page.getByLabel("搜索规则", { exact: true }).fill("摘要");
     assert.equal(await page.locator(".rule-list .rule-row").count(), 1);
     await page
@@ -157,12 +165,14 @@ const pw = require("C:/Users/abcta/.cache/codex-runtimes/codex-primary-runtime/d
     await dialog.getByLabel("采用 / 排除依据").fill("核对后的适用依据");
     await dialog.getByRole("button", { name: "保存规则", exact: true }).click();
     await dialog.waitFor({ state: "hidden" });
+    await page.getByRole("tab", { name: "发布与设置", exact: true }).click();
     await page
       .getByText("有尚未发布的修改；当前写作仍加载已发布版本。", {
         exact: true,
       })
       .waitFor();
     await passed("search_and_unpublished_change_detection");
+    await page.getByRole("tab", { name: "条款管理", exact: true }).click();
     await page.getByLabel("搜索规则", { exact: true }).fill("");
     await page.getByRole("tab", { name: /已排除/ }).click();
     await page.getByRole("button", { name: "恢复待确认", exact: true }).click();
@@ -173,7 +183,7 @@ const pw = require("C:/Users/abcta/.cache/codex-runtimes/codex-primary-runtime/d
       .waitFor();
     await passed("rejected_rule_can_be_restored");
     await page.getByLabel("搜索规则").fill("手工新增");
-    await page.getByLabel("选择当前筛选规则").check();
+    await page.getByLabel("选择本页规则").check();
     await page.getByRole("button", { name: "排除所选", exact: true }).click();
     await page.getByText("没有匹配的规则", { exact: true }).waitFor();
     assert.equal(
@@ -205,6 +215,7 @@ const pw = require("C:/Users/abcta/.cache/codex-runtimes/codex-primary-runtime/d
     );
     assert.equal(upload.status(), 200, await upload.text());
     const imported = await upload.json();
+    await page.getByRole("tab", { name: "整理与审核", exact: true }).click();
     await page
       .getByRole("button", { name: "从课件整理候选", exact: true })
       .click();
@@ -219,6 +230,7 @@ const pw = require("C:/Users/abcta/.cache/codex-runtimes/codex-primary-runtime/d
     await passed("local_extraction_reports_real_task_result");
     const sourced = (await state()).rules.find((r) => r.source_id);
     assert(sourced);
+    await page.getByRole("tab", { name: "条款管理", exact: true }).click();
     await page.getByLabel("搜索规则").fill(sourced.statement);
     await page.locator(".rule-list .rule-source-link").first().click();
     dialog = page.getByRole("dialog", { name: "规则原文依据" });
@@ -237,6 +249,8 @@ const pw = require("C:/Users/abcta/.cache/codex-runtimes/codex-primary-runtime/d
     await page.locator(".source-review-complete").waitFor();
     await page.locator(".modal>header .icon-button").click();
     await passed("source_opens_exact_page_and_persists_review");
+    await page.getByRole("tab", { name: "整理与审核", exact: true }).click();
+    await page.getByLabel("规则整理处理方式").selectOption("manual");
     await page
       .getByLabel("选择AI整理的规则文件")
       .selectOption(sourced.source_file_id);
@@ -269,6 +283,7 @@ const pw = require("C:/Users/abcta/.cache/codex-runtimes/codex-primary-runtime/d
     await passed('ai_submission_keeps_offset_through_task_refresh_mocked');
     await page.unroute(jobsPattern);await page.unroute(planPattern);await page.unroute(extractPattern);
     await page.waitForFunction(()=>!document.querySelector('.rule-jobs')?.textContent.includes('AI 规则整理 · 排队中'));
+    await page.getByRole("tab", { name: "条款管理", exact: true }).click();
     await page.getByLabel("搜索规则").fill("");
     await page.screenshot({
       path: path.join(root, "docs/screenshots/rules-repair/desktop.png"),

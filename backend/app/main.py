@@ -19,6 +19,12 @@ async def lifespan(app):
 app=FastAPI(title='砚台 · 论文工作台',version=APP_VERSION,lifespan=lifespan)
 from .writing_agent.api import router as writing_agent_router
 app.include_router(writing_agent_router,prefix='/api/v1')
+from .ai_autopilot_api import router as ai_autopilot_router
+app.include_router(ai_autopilot_router,prefix='/api/v1')
+from .reference_library import router as reference_library_router
+app.include_router(reference_library_router,prefix='/api/v1')
+from .reference_knowledge import router as reference_knowledge_router
+app.include_router(reference_knowledge_router,prefix='/api/v1')
 from pydantic import ValidationError
 @app.exception_handler(ValidationError)
 async def writing_contract_error(request,error):
@@ -163,6 +169,8 @@ def patch_file(fid,body:dict):
         old_kind='example' if f['role']=='example' else 'rule_candidate' if f['role']=='rules' else 'commentary' if f['role'] in ('draft','supervisor') else 'evidence'
         new_kind='example' if body['role']=='example' else 'rule_candidate' if body['role']=='rules' else 'commentary' if body['role'] in ('draft','supervisor') else 'evidence'
         db.execute('UPDATE sources SET kind=? WHERE file_id=? AND kind=?',(new_kind,fid,old_kind))
+    from .reference_knowledge import sync_document
+    sync_document(fid)
     documents.fact_changed(f['project_id'],fid);return file_record(fid)
 @app.get('/api/v1/files/{fid}/download')
 def download_file(fid):
@@ -200,7 +208,10 @@ def review_page(page_id,body:dict):
         db.execute('INSERT INTO sources VALUES(?,?,?,?,?,?,?,?,?)',(sid,p['file_id'],page_id,db.dumps({'kind':'manual_transcript','page':p['page_number']}),text,text,'rule_candidate' if file_record(p['file_id'])['role']=='rules' else 'example' if file_record(p['file_id'])['role']=='example' else 'evidence','manual',1))
         db.execute('INSERT INTO source_fts VALUES(?,?)',(sid,parsers.tokens(text)))
         db.execute('UPDATE pages SET text=text||? WHERE id=?',('\n[人工核对转录]\n'+text,page_id))
-    db.execute('UPDATE pages SET review_state=?,review_note=? WHERE id=?',(state,body.get('review_note',''),page_id));db.execute('UPDATE sources SET verified=? WHERE page_id=?',(int(state=='reviewed'),page_id));return page_detail(page_id)
+    db.execute('UPDATE pages SET review_state=?,review_note=? WHERE id=?',(state,body.get('review_note',''),page_id));db.execute('UPDATE sources SET verified=? WHERE page_id=?',(int(state=='reviewed'),page_id))
+    from .reference_knowledge import sync_document
+    sync_document(p['file_id'])
+    return page_detail(page_id)
 @app.post('/api/v1/pages/{page_id}/ocr')
 def ocr_page(page_id):
     p=page_detail(page_id);return tasks.enqueue(p['project_id'],'ocr',{'page_id':page_id})
@@ -384,7 +395,9 @@ def add_fact(pid,body:dict):
     if body.get('artifact_id') and not db.one('SELECT id FROM artifacts WHERE id=? AND project_id=?',(body['artifact_id'],pid)):raise HTTPException(422,'研究产物不属于当前项目')
     for source_id in body.get('source_ids',[]):
         if source(source_id)['project_id']!=pid: raise HTTPException(422,'来源不属于项目')
-    db.execute('INSERT INTO facts(id,project_id,label,statement,status,verification,source_ids,artifact_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)',(fid,pid,body.get('label','研究事实'),body.get('statement',''),body.get('status','planned'),body.get('verification','unverified'),db.dumps(body.get('source_ids',[])),body.get('artifact_id'),stamp,stamp));documents.fact_changed(pid,fid);return db.one('SELECT * FROM facts WHERE id=?',(fid,))
+    db.execute('INSERT INTO facts(id,project_id,label,statement,status,verification,source_ids,artifact_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)',(fid,pid,body.get('label','研究事实'),body.get('statement',''),body.get('status','planned'),body.get('verification','unverified'),db.dumps(body.get('source_ids',[])),body.get('artifact_id'),stamp,stamp))
+    from .writing_agent.evidence import sync_fact
+    sync_fact(pid,fid);documents.fact_changed(pid,fid);return db.one('SELECT * FROM facts WHERE id=?',(fid,))
 @app.patch('/api/v1/facts/{fid}')
 def patch_fact(fid,body:dict):
     f=db.one('SELECT * FROM facts WHERE id=?',(fid,))
@@ -395,7 +408,8 @@ def patch_fact(fid,body:dict):
     db.execute('INSERT INTO fact_revisions VALUES(?,?,?,?)',(db.uid(),fid,db.dumps(f),db.now()))
     for key in ('label','statement','status','verification','source_ids','artifact_id'):
         if key in body: db.execute(f'UPDATE facts SET {key}=?,revision=revision+1,updated_at=? WHERE id=?',(db.dumps(body[key]) if key=='source_ids' else body[key],db.now(),fid))
-    documents.fact_changed(f['project_id'],fid);return db.one('SELECT * FROM facts WHERE id=?',(fid,))
+    from .writing_agent.evidence import sync_fact
+    sync_fact(f['project_id'],fid);documents.fact_changed(f['project_id'],fid);return db.one('SELECT * FROM facts WHERE id=?',(fid,))
 @app.get('/api/v1/projects/{pid}/references')
 def references(pid): body_project(pid);return db.rows('SELECT * FROM bibliography WHERE project_id=?',(pid,))
 @app.post('/api/v1/projects/{pid}/references')
@@ -407,9 +421,11 @@ def add_reference(pid,body:dict):
 def patch_reference(rid,body:dict):
     r=db.one('SELECT * FROM bibliography WHERE id=?',(rid,))
     if not r: raise HTTPException(404,'文献不存在')
+    fid=body.get('file_id',r['file_id'])
+    if fid and file_record(fid)['project_id']!=r['project_id']:raise HTTPException(422,'文献文件不属于项目')
     db.execute('INSERT INTO bibliography_revisions VALUES(?,?,?,?)',(db.uid(),rid,r['metadata'],db.now()))
     documents.fact_changed(r['project_id'],rid)
-    db.execute('UPDATE bibliography SET metadata=?,verification=?,revision=revision+1 WHERE id=?',(db.dumps(body.get('metadata',db.loads(r['metadata'],{}))),body.get('verification',r['verification']),rid));return db.one('SELECT * FROM bibliography WHERE id=?',(rid,))
+    db.execute('UPDATE bibliography SET metadata=?,file_id=?,verification=?,revision=revision+1 WHERE id=?',(db.dumps(body.get('metadata',db.loads(r['metadata'],{}))),fid,body.get('verification',r['verification']),rid));return db.one('SELECT * FROM bibliography WHERE id=?',(rid,))
 @app.get('/api/v1/projects/{pid}/mentor-tasks')
 def mentor_tasks(pid): body_project(pid);return db.rows('SELECT * FROM mentor_tasks WHERE project_id=?',(pid,))
 @app.post('/api/v1/projects/{pid}/mentor-tasks')
@@ -424,7 +440,28 @@ def patch_mentor(tid,body:dict):
 @app.get('/api/v1/projects/{pid}/terms')
 def terms(pid): body_project(pid);return db.rows('SELECT * FROM terms WHERE project_id=?',(pid,))
 @app.post('/api/v1/projects/{pid}/terms')
-def add_term(pid,body:dict): body_project(pid);db.execute('INSERT INTO terms VALUES(?,?,?,?) ON CONFLICT(project_id,zh) DO UPDATE SET en=excluded.en',(db.uid(),pid,body['zh'],body['en']));return terms(pid)
+def add_term(pid,body:dict):
+    body_project(pid);zh,en=term_values(body)
+    db.execute('INSERT INTO terms VALUES(?,?,?,?) ON CONFLICT(project_id,zh) DO UPDATE SET en=excluded.en',(db.uid(),pid,zh,en));return terms(pid)
+
+def term_values(body):
+    zh=str(body.get('zh') or '').strip();en=str(body.get('en') or '').strip()
+    if not zh or not en or len(zh)>300 or len(en)>600:raise HTTPException(422,'请填写有效的中英文术语')
+    return zh,en
+
+@app.patch('/api/v1/projects/{pid}/terms/{tid}')
+def edit_term(pid,tid,body:dict):
+    body_project(pid);old=db.one('SELECT * FROM terms WHERE id=? AND project_id=?',(tid,pid))
+    if not old:raise HTTPException(404,'术语不存在于当前项目')
+    zh,en=term_values(body)
+    if db.one('SELECT id FROM terms WHERE project_id=? AND zh=? AND id!=?',(pid,zh,tid)):raise HTTPException(409,'该中文术语已存在，请编辑已有记录')
+    db.execute('UPDATE terms SET zh=?,en=? WHERE id=?',(zh,en,tid));db.audit(pid,'term_edited',{'previous':old,'zh':zh,'en':en});return terms(pid)
+
+@app.delete('/api/v1/projects/{pid}/terms/{tid}')
+def delete_term(pid,tid):
+    body_project(pid);old=db.one('SELECT * FROM terms WHERE id=? AND project_id=?',(tid,pid))
+    if not old:raise HTTPException(404,'术语不存在于当前项目')
+    db.execute('DELETE FROM terms WHERE id=?',(tid,));db.audit(pid,'term_deleted',old);return {'deleted':True}
 @app.get('/api/v1/projects/{pid}/artifacts')
 def artifacts(pid): body_project(pid);return db.rows('SELECT * FROM artifacts WHERE project_id=? ORDER BY created_at DESC',(pid,))
 @app.post('/api/v1/projects/{pid}/artifacts')
@@ -483,8 +520,10 @@ def download_backup(bid):
 @app.post('/api/v1/backups/restore')
 async def restore_backup(file:UploadFile=File(...)): return exports.restore_backup(await file.read(2_000_000_001))
 @app.get('/api/v1/tasks')
-def task_list(project_id:str|None=None):
-    rows=db.rows('SELECT * FROM tasks'+(' WHERE project_id=?' if project_id else '')+' ORDER BY created_at DESC LIMIT 100',(project_id,) if project_id else ())
+def task_list(project_id:str|None=None,summary:bool=False):
+    fields='id,project_id,kind,status,phase,progress,error,cancel_requested,attempt,created_at,updated_at' if summary else '*'
+    rows=db.rows('SELECT '+fields+' FROM tasks'+(' WHERE project_id=?' if project_id else '')+' ORDER BY created_at DESC LIMIT 100',(project_id,) if project_id else ())
+    if summary:return [{**t,'error':provider.readable_error(t['error'])} for t in rows]
     from .rule_review_receipts import receipt
     return [{**t,'error':provider.readable_error(t['error']),**({'review_receipt':receipt(t)} if t['kind']=='rules_ai' else {})} for t in rows]
 @app.get('/api/v1/tasks/{tid}')
@@ -498,7 +537,11 @@ def task(tid):
     return t
 @app.post('/api/v1/tasks/{tid}/cancel')
 def cancel(tid):
-    t=task(tid);db.execute('UPDATE tasks SET cancel_requested=1,status=CASE WHEN status=\'queued\' THEN \'cancelled\' ELSE status END WHERE id=?',(tid,));return task(tid)
+    t=task(tid)
+    with db.transaction():
+        db.execute('UPDATE tasks SET cancel_requested=1,status=CASE WHEN status=\'queued\' THEN \'cancelled\' ELSE status END WHERE id=?',(tid,))
+        db.execute("UPDATE tasks SET cancel_requested=1,status=CASE WHEN status='queued' THEN 'cancelled' ELSE status END WHERE project_id=? AND json_extract(payload,'$.parent_task_id')=? AND status IN ('queued','running')",(t['project_id'],tid))
+    return task(tid)
 @app.post('/api/v1/tasks/{tid}/retry')
 def retry(tid,body:dict):
     t=task(tid)

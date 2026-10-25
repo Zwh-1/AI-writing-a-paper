@@ -1,23 +1,23 @@
-import RulesWorkspace from "./RulesWorkspace";
 import SentenceLocator from "./SentenceLocator";
 import { lazy, Suspense } from "react";
+import WorkspaceDialog from "./workspace/WorkspaceDialog";
+import OutlineWorkspace from "./outline/OutlineWorkspace";
+const RulesWorkspace = lazy(() => import("./RulesWorkspace"));
+const MaterialsWorkspace = lazy(() => import("./materials/MaterialsWorkspace"));
 const AgentWriting = lazy(() => import("./AgentWriting"));
+const ReferencesWorkspace = lazy(() => import("./references/ReferencesWorkspace"));
 import GptFallbackSettings from "./GptFallbackSettings";
-import { MaterialSummary, MaterialSummarySettings, MaterialSummaryBatch, summaryStateLabels } from "./MaterialSummary";
-import ProjectOriginalReview from "./ProjectOriginalReview";
+import { MaterialSummary, MaterialSummarySettings } from "./MaterialSummary";
 import AdvancedPage, { StreamPreview } from "./Advanced";
 import katex from "katex";
 import { version as appVersion } from "../package.json";
 import {
-  OutlineManager,
   FormatPlans,
   ManualRuleReview,
   CandidateMerge,
   PageSourceTools,
-  MaterialAutomation,
   ReadinessPanel,
   ImpactPanel,
-  RetrievalEvaluation,
 } from "./Completion";
 import {
   useState,
@@ -411,8 +411,12 @@ function App() {
   useEffect(() => {
     if (!ready) return;
     let alive = true;
-    const poll = () =>
-      api("/tasks" + (pid ? "?project_id=" + pid : ""))
+    let polling = false;
+    const controller = new AbortController();
+    const poll = () => {
+      if (polling || !alive) return;
+      polling = true;
+      api("/tasks?summary=true" + (pid ? "&project_id=" + pid : ""), { signal: controller.signal })
         .then((d) => {
           if (!alive) return;
           setAllTasks(d);
@@ -420,12 +424,15 @@ function App() {
           if (lastTaskSig.current !== sig) refresh();
           lastTaskSig.current = sig;
         })
-        .catch(() => {});
+        .catch(() => {})
+        .finally(() => { polling = false; });
+    };
     poll();
     const id = setInterval(poll, 2500);
     return () => {
       alive = false;
       clearInterval(id);
+      controller.abort();
     };
   }, [ready, pid]);
   const taskOpen = async (t: Row) => {
@@ -573,7 +580,7 @@ function App() {
               <span className="avatar">研</span>
             </div>
           </header>
-          <main>
+          <main className={page === "outline" ? "outline-main" : page === "references" ? "references-main" : undefined}>
             {page === "settings" ? (
               <SettingsPage />
             ) : !project || project.id !== pid ? (
@@ -593,7 +600,7 @@ function App() {
                 {page === "rules" && <Rules />}
                 {page === "outline" && <Outline />}
                 {page === "editor" && <Writing />}
-                {page === "agent-writing" && <Suspense fallback={<p>正在打开有据写作…</p>}><AgentWriting pid={pid} tick={tick} /></Suspense>}
+                {page === "agent-writing" && <Suspense fallback={<p>正在打开有据写作…</p>}><AgentWriting pid={pid} tick={tick} onOpenEditor={(sectionId)=>{localStorage.setItem("paper_section",sectionId);setPage("editor");}} onOpenResearch={()=>setPage("research")} /></Suspense>}
                 {page === "research" && <Research />}
                 {page === "references" && <References />}
                 {page === "review" && <Review />}
@@ -720,7 +727,9 @@ function App() {
                         ocr_local: "本地页面OCR",
                         ocr_local_batch: "本地批量OCR",
                         rules_ai: "AI结构化规则整理",
+                        materials_rules_autopilot: "资料与规则 AI 托管",
                         outline_ai: "规划提纲",
+                        knowledge_index: "更新文献知识库",
                         provider_probe: "验证模型生成",
                         provider_image_probe: "验证模型图片识别",
                       } as Row
@@ -1065,309 +1074,8 @@ function Overview() {
   );
 }
 function Materials() {
-  const { pid, tick, act, notify, refresh } = useApp();
-  const { data: files } = useLoad("/projects/" + pid + "/files", tick);
-  const activeFiles: Row[] = files?.filter((file: Row) => file.active) ?? [];
-  const [upload, setUpload] = useState(false),
-    [selected, setSelected] = useState<Row | null>(null),
-    [query, setQuery] = useState(""),
-    [matches, setMatches] = useState<Row[] | null>(null);
-  const [busy, setBusy] = useState(false);
-  return (
-    <>
-      <PageTitle
-        title="资料中心"
-        description="规则、示例与研究证据各归其位，每一页都保留原始出处。"
-        actions={
-          <>
-            <Button
-              onClick={() =>
-                act(
-                  () => send("/projects/" + pid + "/imports/local", {}),
-                  "已导入“格式”目录，解析在后台进行",
-                )
-              }
-            >
-              <FolderOpen size={16} />
-              导入现有格式目录
-            </Button>
-            <Button onClick={() => act(() => send("/projects/" + pid + "/materials/repair", {}), "本地补解析已排队，进度可在任务中心查看；不调用模型 API")}>
-              修复解析缺项
-            </Button>
-            <Button variant="primary" onClick={() => setUpload(true)}>
-              <Plus size={16} />
-              添加资料
-            </Button>
-          </>
-        }
-      />
-      <MaterialSummarySettings onSaved={refresh} />
-      <MaterialSummaryBatch pid={pid} tick={tick} onUpdated={refresh} onOpen={(fid) => { const match = files?.find((f: Row) => f.id === fid); if (match) setSelected(match); }} />
-      {files?.length > 0 && <section className="panel material-health" data-testid="material-health">
-        <strong>解析覆盖情况</strong>
-        <span>在用资料 {activeFiles.length} 份</span>
-        <span>待补图片识别 {activeFiles.reduce((n: number, f: Row) => n + (f.parse_quality?.ocr_pending_pages ?? 0), 0)} 页</span>
-        <span>识别缺项 {activeFiles.reduce((n: number, f: Row) => n + (f.parse_quality?.ocr_failed_pages ?? 0), 0)} 页</span>
-        <span>待核对原文 {activeFiles.reduce((n: number, f: Row) => n + (f.parse_quality?.unreviewed_pages ?? 0), 0)} 页</span>
-        <small>导入后自动提取文字并执行本地 OCR。原文核对用于检查提取文字是否准确，不代表 AI 总结已审核；论文规则仍需单独确认。</small>
-        <ProjectOriginalReview key={pid} pid={pid} tick={tick} act={act} onRefresh={refresh} />
-      </section>}
-      <div className="searchbar">
-        <Search size={18} />
-        <input
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="检索所有资料中的关键词或问题"
-          onKeyDown={async (e) => {
-            if (e.key === "Enter") {
-              setBusy(true);
-              try {
-                setMatches(
-                  await send("/projects/" + pid + "/search", {
-                    query,
-                    kind: "all",
-                  }),
-                );
-              } catch (x) {
-                notify((x as Error).message, true);
-              } finally {
-                setBusy(false);
-              }
-            }
-          }}
-        />
-        {busy ? (
-          <LoaderCircle className="spin" size={18} />
-        ) : (
-          <Button
-            onClick={async () => {
-              const d = await act(
-                () =>
-                  send("/projects/" + pid + "/search", { query, kind: "all" }),
-                "",
-              );
-              if (d) setMatches(d);
-            }}
-          >
-            检索
-          </Button>
-        )}
-        {matches && (
-          <button className="icon-button" onClick={() => setMatches(null)}>
-            <X size={16} />
-          </button>
-        )}
-      </div>
-      {matches ? (
-        <div className="panel">
-          {matches.length ? (
-            matches.map((m) => (
-              <div className="search-result" key={m.id}>
-                <div>
-                  <Badge value={roles[m.role]} />
-                  <span>
-                    {m.name} · {sourceLocation(m)}
-                  </span>
-                </div>
-                <p>{m.text}</p>
-                <button
-                  className="text-button"
-                  onClick={() =>
-                    setSelected({
-                      ...files?.find((f: Row) => f.id === m.file_id),
-                      initialPage: m.page_number,
-                    })
-                  }
-                >
-                  打开资料
-                  <ArrowUpRight size={14} />
-                </button>
-              </div>
-            ))
-          ) : (
-            <Empty
-              title="未找到对应材料"
-              detail="尝试术语或相近关键词，也可以继续补充资料。"
-            />
-          )}
-        </div>
-      ) : (
-        <section className="panel no-padding">
-          <div className="section-heading padded">
-            <h2>
-              项目资料 <span className="count">{files?.length ?? 0}</span>
-            </h2>
-            <span>相同内容自动去重 · 原件保留</span>
-          </div>
-          {files?.length ? (
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>文件名称</th>
-                  <th>用途</th>
-                  <th>解析状态</th>
-                  <th>页数</th>
-                  <th>外发策略</th>
-                  <th />
-                </tr>
-              </thead>
-              <tbody>
-                {files.map((f: Row) => (
-                  <tr key={f.id}>
-                    <td>
-                      <button
-                        className="file-name"
-                        onClick={() => setSelected(f)}
-                      >
-                        <span
-                          className={`file-icon ${f.extension === ".pptx" ? "orange" : ""}`}
-                        >
-                          <FileText size={18} />
-                        </span>
-                        <div>
-                          <strong>{f.name}</strong>
-                          {!f.active && <small>已停用，不计入全部文件原文核对</small>}
-                          <small>
-                            {(f.size / 1024 / 1024).toFixed(1)} MB ·{" "}
-                            {date(f.created_at)}
-                          </small>
-                        </div>
-                      </button>
-                      {f.error && <p className="error-text">{f.error}</p>}
-                      <button className="material-summary-entry" onClick={() => setSelected(f)}>概括与分点</button>
-                    </td>
-                    <td>
-                      <select
-                        className="small-select"
-                        value={f.role}
-                        onChange={(e) =>
-                          act(
-                            () =>
-                              send(
-                                "/files/" + f.id,
-                                { role: e.target.value },
-                                "PATCH",
-                              ),
-                            "用途已更新",
-                          )
-                        }
-                      >
-                        {Object.entries(roles).map(([k, v]) => (
-                          <option key={k} value={k}>
-                            {v}
-                          </option>
-                        ))}
-                      </select>
-                    </td>
-                    <td className="parse-status-cell">
-                      <span className={"summary-file-state summary-state-" + f.summary_state}>{summaryStateLabels[f.summary_state] ?? "尚未总结"}</span>
-                      <Badge value={f.parse_quality?.label ?? f.status} tone={["failed", "partial"].includes(f.parse_quality?.state) ? "red" : f.parse_quality?.state === "extracted" ? "" : "amber"} />
-                      <small className="parse-coverage">图片识别 {f.parse_quality?.ocr_completed_pages ?? 0} 页 · 待补 {f.parse_quality?.ocr_pending_pages ?? 0} 页</small>
-                      {!!f.parse_quality?.ocr_failed_pages && <small className="error-text">缺项 {f.parse_quality.ocr_failed_pages} 页，打开查看原因</small>}
-                      <small className="parse-coverage">原文核对 {f.parse_quality?.reviewed_pages ?? 0}/{f.pages || 0} 页</small>
-                    </td>
-                    <td>{f.pages || "—"}</td>
-                    <td>
-                      <select
-                        className="small-select"
-                        value={f.egress}
-                        onChange={(e) =>
-                          act(
-                            () =>
-                              send(
-                                "/files/" + f.id,
-                                { egress: e.target.value },
-                                "PATCH",
-                              ),
-                            "使用权限已更新",
-                          )
-                        }
-                      >
-                        <option value="selected_content">选定片段</option>
-                        <option value="local_only">仅限本地</option>
-                        <option value="allowed">允许按任务使用</option>
-                      </select>
-                    </td>
-                    <td>
-                      <button
-                        className="icon-button"
-                        onClick={() => setSelected(f)}
-                      >
-                        <ArrowUpRight size={18} />
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          ) : (
-            <Empty
-              title="先把资料放进来"
-              detail="支持 PPTX、PDF、DOCX、TXT、Markdown、CSV 和 XLSX。"
-            >
-              <Button onClick={() => setUpload(true)}>
-                <Upload size={16} />
-                导入第一份资料
-              </Button>
-            </Empty>
-          )}
-        </section>
-      )}
-      <RetrievalEvaluation pid={pid} tick={tick} act={act} />
-      <MaterialAutomation pid={pid} tick={tick} act={act} />
-      {upload && (
-        <Modal title="添加项目资料" onClose={() => setUpload(false)}>
-          <form
-            onSubmit={async (e) => {
-              e.preventDefault();
-              const form = new FormData(e.currentTarget);
-              const d = await act(
-                () =>
-                  api("/projects/" + pid + "/files", {
-                    method: "POST",
-                    body: form,
-                  }),
-                "文件已保存，正在后台解析",
-              );
-              if (d) setUpload(false);
-            }}
-          >
-            <Field label="选择文件">
-              <input
-                type="file"
-                name="file"
-                required
-                accept=".pptx,.pdf,.docx,.txt,.md,.csv,.xlsx,.bib,.ris"
-              />
-            </Field>
-            <Field label="资料用途">
-              <select name="role">
-                {Object.entries(roles).map(([k, v]) => (
-                  <option key={k} value={k}>
-                    {v}
-                  </option>
-                ))}
-              </select>
-            </Field>
-            <Field label="模型使用范围">
-              <select name="egress">
-                <option value="selected_content">允许按任务发送选定片段</option>
-                <option value="local_only">仅在本地使用</option>
-                <option value="allowed">允许按任务使用</option>
-              </select>
-            </Field>
-            <Button type="submit" variant="primary">
-              <Upload size={15} />
-              导入并解析
-            </Button>
-          </form>
-        </Modal>
-      )}
-      {selected && (
-        <SourceViewer file={selected} onClose={() => setSelected(null)} />
-      )}
-    </>
-  );
+  const { pid, tick, act, notify, refresh, setPage } = useApp();
+  return <Suspense fallback={<div className="panel muted" role="status">正在打开资料中心…</div>}><MaterialsWorkspace key={pid} pid={pid} tick={tick} act={act} notify={notify} refresh={refresh} onRules={() => setPage("rules")} renderSource={(file, onClose) => <SourceViewer file={file} onClose={onClose} />} /></Suspense>;
 }
 function SourceViewer({ file, onClose }: { file: Row; onClose: () => void }) {
   const { tick, act, notify } = useApp();
@@ -1390,7 +1098,7 @@ function SourceViewer({ file, onClose }: { file: Row; onClose: () => void }) {
   const documentReviewComplete = Boolean(parseReport?.pages) && parseReport.unreviewed_pages === 0;
   useEffect(() => { setTranscript(""); setReason(""); }, [p?.id]);
   return (
-    <Modal title={file.name} wide onClose={onClose}>
+    <WorkspaceDialog title={file.name} wide onClose={onClose} closeLabel="关闭资料查看" busy={reviewBusy || documentReviewBusy}>
       <div className="viewer-toolbar">
         <Button onClick={() => act(() => send("/files/" + file.id + "/reparse", {}), "已排队执行本地补解析，保留来源和人工修改")}>补解析 / 重试缺项</Button>
         {file.extension === ".pptx" && <Button disabled={renderJob?.status === "running" || renderJob?.status === "queued"} onClick={async () => { const job = await act(() => send("/projects/" + file.project_id + "/advanced/office", {file_id:file.id}), "原版式预览正在本地准备"); if (job) setRenderTask(job.id); }}>对照整页原件</Button>}
@@ -1592,247 +1300,27 @@ function SourceViewer({ file, onClose }: { file: Row; onClose: () => void }) {
           detail="可在任务中心查看进度，解析完成后会出现在这里。"
         />
       )}
-    </Modal>
+    </WorkspaceDialog>
   );
 }
 function Rules() {
   const { pid, tick, act, setPage, refresh } = useApp();
-  return <RulesWorkspace pid={pid} tick={tick} act={act} refresh={refresh} onMaterials={()=>setPage("materials")} onTasks={()=>document.querySelector<HTMLButtonElement>(".task-trigger")?.click()} renderSource={(file,onClose)=><SourceViewer file={file} onClose={onClose}/>}/>;
+  return <Suspense fallback={<div className="panel muted" role="status">正在打开论文规则…</div>}><RulesWorkspace pid={pid} tick={tick} act={act} refresh={refresh} onMaterials={()=>setPage("materials")} onTasks={()=>document.querySelector<HTMLButtonElement>(".task-trigger")?.click()} renderSource={(file,onClose)=><SourceViewer file={file} onClose={onClose}/>}/></Suspense>;
 }
 
 function Outline() {
   const { pid, tick, act, setPage } = useApp();
-  const { data } = useLoad("/projects/" + pid + "/sections", tick);
-  const [editing, setEditing] = useState<Row | null>(null);
-  const total = data?.reduce((n: number, s: Row) => n + s.target_words, 0) ?? 0;
   return (
-    <>
-      <PageTitle
-        title="让每一章都有明确任务。"
-        description="明确写作目标、篇幅与前置材料，再从准备充分的章节开始。"
-        actions={
-          <>
-            <Button
-              onClick={() =>
-                act(
-                  () => send("/projects/" + pid + "/outline/template", {}),
-                  "基础提纲已建立，可按实际要求修改",
-                )
-              }
-            >
-              <ListTree size={15} />
-              使用类型提纲
-            </Button>
-            <Button
-              onClick={() =>
-                act(
-                  () => send("/projects/" + pid + "/outline/ai", {}),
-                  "提纲候选任务已创建，结果在任务中心",
-                )
-              }
-            >
-              <Sparkles size={15} />
-              AI 规划候选
-            </Button>
-            <Button
-              onClick={() => {
-                if (
-                  confirm(
-                    "将按章节顺序创建候选生成任务，逐次调用可能计费；候选不会自动覆盖正文。确认继续？",
-                  )
-                )
-                  act(
-                    () => send("/projects/" + pid + "/writing-batch", {}),
-                    "连续生成任务已创建，请在任务中心逐一审阅",
-                  );
-              }}
-            >
-              <Sparkles size={15} />
-              连续生成候选
-            </Button>
-            <Button variant="primary" onClick={() => setEditing({})}>
-              <Plus size={15} />
-              新增章节
-            </Button>
-          </>
-        }
-      />
-      <OutlineManager pid={pid} tick={tick} act={act} />
-      <div className="summary-strip">
-        <span>
-          共 <strong>{data?.length ?? 0}</strong> 个章节
-        </span>
-        <span>
-          分配篇幅 <strong>{total.toLocaleString()}</strong>
-        </span>
-        <span>
-          待复查{" "}
-          <strong>{data?.filter((s: Row) => s.stale).length ?? 0}</strong>
-        </span>
-      </div>
-      <div className="panel no-padding">
-        {data?.length ? (
-          data.map((s: Row, i: number) => (
-            <div className="outline-row" key={s.id}>
-              <div className="outline-index">
-                {String(i + 1).padStart(2, "0")}
-              </div>
-              <div className="grow">
-                <h3>{s.title}</h3>
-                <p>{s.goal || "还没有填写本节写作目标"}</p>
-                <small>
-                  目标 {s.target_words} 字 ·{" "}
-                  {s.current_revision_id ? "已有正文" : "尚未写作"}{" "}
-                  {s.stale ? " · 需要复查" : ""}
-                </small>
-              </div>
-              <Badge
-                value={
-                  s.stale
-                    ? "待复查"
-                    : s.state === "empty"
-                      ? "待写作"
-                      : "已有草稿"
-                }
-              />
-              <Button onClick={() => setEditing(s)}>编辑计划</Button>
-              <button
-                className="icon-button"
-                onClick={() => {
-                  localStorage.setItem("paper_section", s.id);
-                  setPage("editor");
-                }}
-              >
-                <ArrowUpRight size={18} />
-              </button>
-            </div>
-          ))
-        ) : (
-          <Empty
-            title="建立论文的章节结构"
-            detail="使用类型提纲开始，或逐章添加。自动建议仍需按学校要求确认。"
-          />
-        )}
-      </div>
-      {editing && (
-        <Modal
-          title={editing.id ? "编辑章节计划" : "新增章节"}
-          onClose={() => setEditing(null)}
-        >
-          <form
-            onSubmit={async (e) => {
-              const f = formValues(e);
-              const d = await act(
-                () =>
-                  send(
-                    editing.id
-                      ? "/sections/" + editing.id
-                      : "/projects/" + pid + "/sections",
-                    {
-                      ...f,
-                      target_words: Number(f.target_words),
-                      position: Number(f.position),
-                      dependencies: f.dependencies
-                        ? f.dependencies.split(",").filter(Boolean)
-                        : [],
-                    },
-                    editing.id ? "PATCH" : "POST",
-                  ),
-                "章节计划已保存",
-              );
-              if (d) setEditing(null);
-            }}
-          >
-            <Field label="章节标题">
-              <input name="title" required defaultValue={editing.title ?? ""} />
-            </Field>
-            <div className="form-grid">
-              <Field label="章节类型">
-                <select name="kind" defaultValue={editing.kind ?? "body"}>
-                  {[
-                    "body",
-                    "abstract",
-                    "abstract_en",
-                    "introduction",
-                    "literature",
-                    "requirements",
-                    "system_design",
-                    "implementation",
-                    "methods",
-                    "results",
-                    "discussion",
-                    "conclusion",
-                  ].map((k) => (
-                    <option key={k} value={k}>
-                      {
-                        (
-                          {
-                            body: "正文",
-                            abstract: "中文摘要",
-                            abstract_en: "英文摘要",
-                            introduction: "绪论",
-                            literature: "文献综述",
-                            requirements: "需求分析",
-                            system_design: "系统设计",
-                            implementation: "系统实现",
-                            methods: "研究方法",
-                            results: "结果/测试",
-                            discussion: "讨论",
-                            conclusion: "结论",
-                          } as Row
-                        )[k]
-                      }
-                    </option>
-                  ))}
-                </select>
-              </Field>
-              <Field label="目标字数">
-                <input
-                  name="target_words"
-                  type="number"
-                  defaultValue={editing.target_words ?? 1500}
-                />
-              </Field>
-              <Field label="目录排序">
-                <input
-                  name="position"
-                  type="number"
-                  defaultValue={editing.position ?? (data?.length ?? 0) + 1}
-                />
-              </Field>
-            </div>
-            <Field label="写作目标 / 完成条件">
-              <textarea
-                name="goal"
-                rows={4}
-                defaultValue={editing.goal ?? ""}
-              />
-            </Field>
-            <Field
-              label="依赖章节"
-              hint="选择一个主要前置章节；需要多个时可逐次编辑计划。"
-            >
-              <select
-                name="dependencies"
-                defaultValue={parse(editing.dependencies, []).join(",")}
-              >
-                <option value="">无明确前置章节</option>
-                {data
-                  ?.filter((s: Row) => s.id !== editing.id)
-                  .map((s: Row) => (
-                    <option key={s.id} value={s.id}>
-                      {s.title}
-                    </option>
-                  ))}
-              </select>
-            </Field>
-            <Button type="submit" variant="primary">
-              保存计划
-            </Button>
-          </form>
-        </Modal>
-      )}
-    </>
+    <OutlineWorkspace
+      key={pid}
+      pid={pid}
+      tick={tick}
+      act={act}
+      onWrite={(sectionId) => {
+        localStorage.setItem("paper_section", sectionId);
+        setPage("editor");
+      }}
+    />
   );
 }
 const StableIds = Extension.create({
@@ -1954,6 +1442,7 @@ function Writing() {
   const { data: refs } = useLoad("/projects/" + pid + "/references", tick);
   const { data: artifacts } = useLoad("/projects/" + pid + "/artifacts", tick);
   const { data: facts } = useLoad("/projects/" + pid + "/facts", tick);
+  const { data: writingLink } = useLoad("/projects/" + pid + "/writing-link", tick);
   const { data: history } = useLoad(
     sid ? "/sections/" + sid + "/revisions" : null,
     tick,
@@ -1993,15 +1482,10 @@ function Writing() {
         title="写作工作台"
         description="让每段论述有依据，让每次修改可追溯。"
         actions={
-          <Button
-            onClick={() => {
-              refresh();
-              setHistoryOpen(true);
-            }}
-          >
-            <History size={16} />
-            版本历史
-          </Button>
+          <>
+            <Button onClick={() => setPage("agent-writing")}><BookOpen size={16} />有据写作</Button>
+            <Button onClick={() => { refresh(); setHistoryOpen(true); }}><History size={16} />版本历史</Button>
+          </>
         }
       />
       <div className="writing-layout">
@@ -2052,15 +1536,17 @@ function Writing() {
                 await act(
                   () =>
                     send("/sections/" + sid + "/writing-tasks", {
-                      operation,
+                      operation: latest.section.kind === "abstract_en" ? "translate" : operation,
                       base_revision_id: latest.section.current_revision_id,
                       instruction,
                       target_node_ids: targetNodeIds,
                     }),
-                  "写作任务已创建；完成后在任务中心审阅候选稿",
+                  latest.section.kind === "abstract_en"
+                    ? "英文摘要翻译候选已创建；请在任务中心审阅后采用"
+                    : "写作任务已创建；完成后在任务中心审阅候选稿",
                 );
               }}
-              operation={operation}
+              operation={content.section.kind === "abstract_en" ? "translate" : operation}
               setOperation={setOperation}
               instruction={instruction}
               setInstruction={setInstruction}
@@ -2073,6 +1559,17 @@ function Writing() {
           )}
         </div>
         <aside className="evidence-panel">
+          {writingLink?.sections?.find((item: Row) => item.section_id === sid) && (() => {
+            const current = writingLink.sections.find((item: Row) => item.section_id === sid);
+            const linkedFacts = (writingLink.facts ?? []).filter((fact: Row) => current.fact_ids?.includes(fact.id));
+            return <section className="writing-link-card">
+              <div className="section-heading"><h3>本节研究链路</h3><Badge value={current.stale ? "stale" : current.revision_id ? "draft" : "pending"} /></div>
+              <p className="muted small">{current.contract?.goal || "尚未发布章节写作任务"}</p>
+              <p className="small">研究事实 {linkedFacts.length} 项 · 任务证据 {current.source_ids?.length ?? 0} 项</p>
+              {linkedFacts.map((fact: Row) => <button className="text-button writing-link-fact" key={fact.id} onClick={() => notify(`${fact.label}：${fact.statement}`)}>{fact.label}</button>)}
+              <button className="text-button" onClick={() => setPage("agent-writing")}>在有据写作中核验任务 <ArrowUpRight size={14} /></button>
+            </section>;
+          })()}
           <div className="tabs">
             <button
               className={panel === "sources" ? "active" : ""}
@@ -2233,6 +1730,7 @@ function RichEditor({
   setInstruction,
 }: any) {
   const { act, notify, pid } = useApp();
+  const isEnglishAbstract = content.section.kind === "abstract_en";
   const revision = useRef(content.section.current_revision_id),
     dirty = useRef(false),
     saving = useRef(false),
@@ -2648,36 +2146,36 @@ function RichEditor({
       <div className="ai-composer">
         <div>
           <Sparkles size={17} />
-          <strong>辅助本节写作</strong>
-          <span>先加载规则，再检索证据</span>
+          <strong>{isEnglishAbstract ? "英文摘要翻译" : "辅助本节写作"}</strong>
+          <span>{isEnglishAbstract ? "直接翻译已保存的中文摘要" : "先加载规则，再检索证据"}</span>
         </div>
         <textarea
           value={instruction}
           onChange={(e) => setInstruction(e.target.value)}
-          placeholder="例如：结合已有资料补充方案比较，保留所有已确认事实。"
+          placeholder={isEnglishAbstract ? "可补充专业术语的英文译法或英文表达偏好。" : "例如：结合已有资料补充方案比较，保留所有已确认事实。"}
           rows={3}
         />
-        <label className="checkbox">
+        {!isEnglishAbstract && <label className="checkbox">
           <input
             type="checkbox"
             checked={selectionOnly}
             onChange={(e) => setSelectionOnly(e.target.checked)}
           />
           仅改写当前/选中的连续段落，其余正文保持原样
-        </label>
+        </label>}
         <div className="composer-bottom">
           <select
             aria-label="写作操作"
             value={operation}
             onChange={(e) => setOperation(e.target.value)}
           >
-            {[
+            {(isEnglishAbstract ? [["translate", "翻译中文摘要"]] : [
               ["generate", "生成本节"],
               ["revise", "定向修改"],
               ["expand", "扩写"],
               ["compress", "压缩"],
               ["translate", "翻译"],
-            ].map(([k, v]) => (
+            ]).map(([k, v]) => (
               <option key={k} value={k}>
                 {v}
               </option>
@@ -2691,7 +2189,7 @@ function RichEditor({
                 return;
               }
               const selected: string[] = [];
-              if (selectionOnly && editor) {
+              if (!isEnglishAbstract && selectionOnly && editor) {
                 const { from, to } = editor.state.selection;
                 editor.state.doc.forEach((node, pos) => {
                   if (
@@ -2707,7 +2205,7 @@ function RichEditor({
                 }
               }
               if (await saveNow()) {
-                if (selectionOnly && editor) {
+                if (!isEnglishAbstract && selectionOnly && editor) {
                   selected.length = 0;
                   const { from, to } = editor.state.selection;
                   editor.state.doc.forEach((node, pos) => {
@@ -2719,12 +2217,12 @@ function RichEditor({
                       selected.push(node.attrs.nodeId);
                   });
                 }
-                await onGenerate(selectionOnly ? selected : []);
+                await onGenerate(!isEnglishAbstract && selectionOnly ? selected : []);
               }
             }}
           >
             <Sparkles size={15} />
-            生成候选稿
+            {isEnglishAbstract ? "翻译中文摘要" : "生成候选稿"}
           </Button>
         </div>
       </div>
@@ -2886,10 +2384,11 @@ function TaskDetail({ task, onClose }: { task: Row; onClose: () => void }) {
   );
 }
 function Research() {
-  const { pid, tick, act } = useApp();
+  const { pid, tick, act, setPage } = useApp();
   const { data: facts } = useLoad("/projects/" + pid + "/facts", tick),
     { data: artifacts } = useLoad("/projects/" + pid + "/artifacts", tick),
-    { data: files } = useLoad("/projects/" + pid + "/files", tick);
+    { data: files } = useLoad("/projects/" + pid + "/files", tick),
+    { data: writingLink } = useLoad("/projects/" + pid + "/writing-link", tick);
   const [editing, setEditing] = useState<Row | null>(null),
     [upload, setUpload] = useState(false),
     [analysis, setAnalysis] = useState(false);
@@ -2901,6 +2400,7 @@ function Research() {
         actions={
           <>
             <ChartTools />
+            <Button onClick={() => setPage("agent-writing")}><BookOpen size={15} />进入有据写作</Button>
             <Button onClick={() => setAnalysis(true)}>
               <FlaskConical size={15} />
               描述性统计
@@ -2917,6 +2417,14 @@ function Research() {
         }
       />
       <ResearchMap />
+      <section className="panel research-chain">
+        <div className="section-heading"><h2>写作链路状态</h2><span>研究事实 → 章节任务 → 正文复核</span></div>
+        <div className="research-chain-grid">
+          <button onClick={() => setEditing({})}><FlaskConical size={18} /><strong>{facts?.length ?? 0} 项研究事实</strong><small>登记后可绑定到章节任务</small></button>
+          <button onClick={() => setPage("agent-writing")}><BookOpen size={18} /><strong>{writingLink?.sections?.filter((s: Row) => s.contract_id).length ?? 0} 个章节任务</strong><small>发布目标、事实和证据</small></button>
+          <button onClick={() => setPage("editor")}><PenLine size={18} /><strong>{writingLink?.sections?.filter((s: Row) => s.revision_id).length ?? 0} 个正文版本</strong><small>回到编辑器核对关联</small></button>
+        </div>
+      </section>
       <div className="panel">
         <div className="section-heading">
           <h2>研究事实与成果</h2>
@@ -2938,8 +2446,9 @@ function Research() {
                     修订 {f.revision} · {date(f.updated_at)}
                   </small>
                 </div>
+                {!!writingLink?.facts?.find((item: Row) => item.id === f.id)?.used_by?.length && <small>已用于：{writingLink.facts.find((item: Row) => item.id === f.id).used_by.map((item: Row) => item.title).join("、")}</small>}
               </div>
-              <Button onClick={() => setEditing(f)}>编辑依据</Button>
+              <div className="actions"><Button onClick={() => setEditing(f)}>编辑依据</Button><Button onClick={() => { const first = writingLink?.facts?.find((item: Row) => item.id === f.id)?.used_by?.[0]; if (first) { localStorage.setItem("paper_section", first.id); setPage("editor"); } else setPage("agent-writing"); }}>进入写作</Button></div>
             </div>
           ))
         ) : (
@@ -3153,204 +2662,16 @@ function Research() {
 }
 function References() {
   const { pid, tick, act } = useApp();
-  const { data: refs } = useLoad("/projects/" + pid + "/references", tick),
-    { data: files } = useLoad("/projects/" + pid + "/files", tick),
-    { data: terms } = useLoad("/projects/" + pid + "/terms", tick);
-  const [editing, setEditing] = useState<Row | null>(null),
-    [term, setTerm] = useState(false);
   return (
-    <>
-      <PageTitle
-        title="文献有出处，术语有统一。"
-        description="书目信息与论据支持性分别核查，只有摘要时保留核查范围。"
-        actions={
-          <>
-            <Button onClick={() => setTerm(true)}>
-              <Languages size={16} />
-              新增术语
-            </Button>
-            <Button variant="primary" onClick={() => setEditing({})}>
-              <Plus size={15} />
-              登记文献
-            </Button>
-          </>
-        }
+    <Suspense fallback={<div className="panel muted" role="status">正在打开文献与术语…</div>}>
+      <ReferencesWorkspace
+        key={pid}
+        pid={pid}
+        tick={tick}
+        act={act}
+        renderSource={(file, onClose) => <SourceViewer file={file} onClose={onClose} />}
       />
-      <ReferenceTools />
-      <section className="panel no-padding">
-        <div className="section-heading padded">
-          <h2>
-            参考文献 <span className="count">{refs?.length ?? 0}</span>
-          </h2>
-          <span>引用序号在正文和导出时统一计算</span>
-        </div>
-        {refs?.length ? (
-          refs.map((r: Row, i: number) => {
-            const m = parse(r.metadata);
-            return (
-              <div className="reference-row" key={r.id}>
-                <span className="ref-index">[{i + 1}]</span>
-                <div className="grow">
-                  <h3>{m.title || "题名待补"}</h3>
-                  <p>
-                    {Array.isArray(m.authors)
-                      ? m.authors.join("，")
-                      : m.authors || "作者待补"}{" "}
-                    · {m.year || "年份待补"} ·{" "}
-                    {m.journal || m.publisher || "出版信息待补"}
-                  </p>
-                  <small>
-                    {m.doi ? "DOI: " + m.doi : "未填写 DOI"}
-                    {m.scope === "abstract_only" ? " · 仅摘要" : ""}
-                  </small>
-                </div>
-                <Badge value={r.verification} />
-                <Button onClick={() => setEditing(r)}>核对书目</Button>
-              </div>
-            );
-          })
-        ) : (
-          <Empty
-            title="建立可核对的文献记录"
-            detail="填写作者、题名和年份并关联原文，书目正确不代表正文论断已获支持。"
-          />
-        )}
-      </section>
-      <section className="panel mt">
-        <div className="section-heading">
-          <h2>中英文术语表</h2>
-          <span>摘要、正文与翻译共用</span>
-        </div>
-        <div className="term-list">
-          {terms?.map((t: Row) => (
-            <div key={t.id}>
-              <strong>{t.zh}</strong>
-              <ArrowRight size={14} />
-              <span>{t.en}</span>
-            </div>
-          ))}
-        </div>
-        {!terms?.length && <p className="muted">还没有登记术语。</p>}
-      </section>
-      {editing && (
-        <Modal title="参考文献信息与原文" wide onClose={() => setEditing(null)}>
-          <form
-            onSubmit={async (e) => {
-              const f = formValues(e);
-              const { file_id, verification, ...metadata } = f;
-              const d = await act(
-                () =>
-                  send(
-                    editing.id
-                      ? "/references/" + editing.id
-                      : "/projects/" + pid + "/references",
-                    { metadata, file_id: file_id || null, verification },
-                    editing.id ? "PATCH" : "POST",
-                  ),
-                "文献已保存",
-              );
-              if (d) setEditing(null);
-            }}
-          >
-            <Field label="文献题名">
-              <input
-                name="title"
-                required
-                defaultValue={parse(editing.metadata).title ?? ""}
-              />
-            </Field>
-            <div className="form-grid">
-              {[
-                ["作者（原文顺序）", "authors"],
-                ["年份", "year"],
-                ["期刊/出版信息", "journal"],
-                ["DOI", "doi"],
-                ["卷期", "volume"],
-                ["页码", "pages"],
-              ].map(([label, key]) => (
-                <Field key={key} label={label}>
-                  <input
-                    name={key}
-                    defaultValue={parse(editing.metadata)[key] ?? ""}
-                  />
-                </Field>
-              ))}
-            </div>
-            <Field label="原文文件">
-              <select name="file_id" defaultValue={editing.file_id ?? ""}>
-                <option value="">暂不关联</option>
-                {files
-                  ?.filter((f: Row) => ["research", "example"].includes(f.role))
-                  .map((f: Row) => (
-                    <option key={f.id} value={f.id}>
-                      {f.name}
-                    </option>
-                  ))}
-              </select>
-            </Field>
-            <div className="form-grid">
-              <Field label="书目核查">
-                <select
-                  name="verification"
-                  defaultValue={editing.verification ?? "unverified"}
-                >
-                  <option value="unverified">待核实</option>
-                  <option value="human_confirmed">已人工核对</option>
-                  <option value="metadata_matched">已与元数据匹配</option>
-                </select>
-              </Field>
-              <Field label="文献语种">
-                <select
-                  name="language"
-                  defaultValue={parse(editing.metadata).language ?? ""}
-                >
-                  <option value="">待确认</option>
-                  <option value="zh">中文</option>
-                  <option value="en">英文</option>
-                  <option value="other">其他外文</option>
-                </select>
-              </Field>
-              <Field label="资料范围">
-                <select
-                  name="scope"
-                  defaultValue={parse(editing.metadata).scope ?? "full_text"}
-                >
-                  <option value="full_text">全文</option>
-                  <option value="abstract_only">只有摘要</option>
-                  <option value="metadata_only">仅书目元数据</option>
-                </select>
-              </Field>
-            </div>
-            <Button type="submit" variant="primary">
-              保存书目
-            </Button>
-          </form>
-        </Modal>
-      )}
-      {term && (
-        <Modal title="新增或修订术语" onClose={() => setTerm(false)}>
-          <form
-            onSubmit={async (e) => {
-              const d = await act(
-                () => send("/projects/" + pid + "/terms", formValues(e)),
-                "术语已保存",
-              );
-              if (d) setTerm(false);
-            }}
-          >
-            <Field label="中文术语">
-              <input name="zh" required />
-            </Field>
-            <Field label="对应英文">
-              <input name="en" required />
-            </Field>
-            <Button type="submit" variant="primary">
-              保存术语
-            </Button>
-          </form>
-        </Modal>
-      )}
-    </>
+    </Suspense>
   );
 }
 function Review() {
@@ -4722,7 +4043,7 @@ function ResearchMap() {
             <tr>
               <th>章节</th>
               <th>有关联依据的段落</th>
-              <th>原文 / 事实</th>
+              <th>原文 / 事实 / 产物</th>
               <th>状态</th>
             </tr>
           </thead>
@@ -4742,7 +4063,7 @@ function ResearchMap() {
                 </td>
                 <td>{s.claim_count}</td>
                 <td>
-                  {s.source_ids.length} / {s.fact_ids.length}
+                  {s.source_ids.length} / {s.fact_ids.length} / {s.artifact_ids?.length ?? 0}
                 </td>
                 <td>
                   <Badge

@@ -18,6 +18,8 @@ const root=path.resolve(__dirname,'..'),origin='http://127.0.0.1:8765';let token
    await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({id:'mock-submission',kind:'rules_ai',status:'queued'})});
   });
   await page.goto(origin+'/#token='+encodeURIComponent(token));await page.getByRole('button',{name:'论文规则',exact:true}).click();
+  await page.getByRole('tab',{name:'整理与审核',exact:true}).click();
+  await page.getByText('高级整理与独立审核工具',{exact:true}).click();
   const card=page.getByRole('region',{name:'自动规则审核'}),jobs=page.locator('.rule-jobs');
   assert.equal(await page.getByLabel('疑难规则审核模型').inputValue(),'primary');checks.push('primary_model_selected_by_default');
   await jobs.getByText(pause,{exact:true}).waitFor();await jobs.getByText(/缩小批次补齐 2 次/).waitFor();await jobs.getByText(/仍有 67 条没有有效审核结论/).waitFor();

@@ -1,4 +1,5 @@
 import RuleEditor from "./RuleEditor";
+import RuleTaskReview from "./RuleTaskReview";
 import { useEffect, useRef, useState } from "react";
 import { api, send } from "./client";
 type Row = Record<string, any>;
@@ -7,6 +8,7 @@ type Props = {
   tick: number;
   act: (fn: () => Promise<any>, message?: string) => Promise<any>;
   refresh?: () => void;
+  onRuleSource?: (rule: Row) => void;
 };
 function useData(path: string, tick: number, hold = false) {
   const [data, set] = useState<any>(null);
@@ -664,7 +666,7 @@ export function MaterialAutomation({ pid, tick, act }: Props) {
     </details>
   );
 }
-export function AIRuleExtraction({ pid, tick, act, refresh }: Props) {
+export function AIRuleExtraction({ pid, tick, act, refresh, onRuleSource }: Props) {
   const [files] = useData("/projects/" + pid + "/files", tick);
   const [fileId, setFileId] = useState("__all__");
   const [limit, setLimit] = useState(40);
@@ -826,7 +828,7 @@ export function AIRuleExtraction({ pid, tick, act, refresh }: Props) {
         <span>自动分批、断点续跑、机器审核 · 按预算执行</span>
       </summary>
       <p className="muted mb">
-        上方“从课件整理候选”使用本地关键词整理，不调用模型。AI
+        “从课件整理候选”使用本地关键词整理，不调用模型。AI
         整理会保留原文依据，自动分类、校验和归并。通过机器审核的要求可进入规则包；实际冲突按组汇总。
       </p>
       <div className="rule-extraction-fields">
@@ -935,7 +937,7 @@ export function AIRuleExtraction({ pid, tick, act, refresh }: Props) {
           {visibleJobs.map((t) => {
             const result = safe(t.result);
             return (
-              <div key={t.id}>
+              <div key={t.id} data-task-id={t.id}>
                 <div className="grow">
                   <strong>
                     {safe(t.payload).review_existing_only ? "疑难规则自动复核" : t.kind === "rules_ai" ? "AI 规则整理" : "本地候选整理"} ·{" "}
@@ -952,7 +954,10 @@ export function AIRuleExtraction({ pid, tick, act, refresh }: Props) {
                         : t.error || (result.automatic ? "可用规则已保存，未完成范围已登记，可续接；结果未知的请求不会自动重发。" : "任务已结束")}
                   </p>
                   {result.total_batches != null && <p className="muted">已保存 {result.completed_batches ?? 0}/{result.total_batches} 批 · 已处理 {result.processed_source_units ?? 0}/{result.selected_source_units ?? ""} 个片段{result.reused_batches ? " · 复用 " + result.reused_batches + " 个已完成批次" : ""}</p>}
-                  {result.review && <p className="muted">{result.review.accepted_count!==undefined ? `本次通过 ${result.review.accepted_count} 条 · 参考 ${result.review.reference_count} 条 · 不确定 ${result.review.uncertain_count} 条 · 未审核 ${result.review.unreviewed_count} 条` : `全项目机器审核通过 ${result.review.machine_verified??0} 条（非本次新增通过数）`} · 复用判定 {result.review.reused_decisions??0} 条</p>}
+                  {result.review && <>
+                    {result.review.accepted_count === undefined && <p className="muted">全项目机器审核通过 {result.review.machine_verified ?? 0} 条（非本次新增通过数） · 复用判定 {result.review.reused_decisions ?? 0} 条</p>}
+                    <RuleTaskReview projectId={pid} taskId={t.id} review={result.review} tick={`${t.updated_at}:${tick}`} onSource={onRuleSource} />
+                  </>}
                   {result.review?.unreviewed_count > 0 && <p className="alert">仍有 {result.review.unreviewed_count} 条没有有效审核结论，未计为完成，原候选保留。</p>}
                   {(result.review?.recovery_requests??result.recovery_requests??0)>0&&<p className="muted">已使用主模型缩小批次补齐 {result.review?.recovery_requests??result.recovery_requests} 次，完成结果逐批保存。</p>}
                   {(result.review?.pause_reason||result.pause_reason)&&<p className="alert">{result.review?.pause_reason||result.pause_reason}</p>}

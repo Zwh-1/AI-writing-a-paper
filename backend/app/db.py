@@ -93,6 +93,7 @@ def init():
             upgrade(c)
             from pathlib import Path
             c.executescript((Path(__file__).parents[1]/'migrations/006_rule_automation.sql').read_text(encoding='utf-8'))
+            c.executescript((Path(__file__).parents[1]/'migrations/011_reference_knowledge.sql').read_text(encoding='utf-8'))
             return
         if version==1:
             from pathlib import Path
@@ -116,6 +117,7 @@ def init():
         c.executescript((Path(__file__).parents[1]/'migrations/006_rule_automation.sql').read_text(encoding='utf-8'))
         from .writing_agent.migrations import upgrade
         upgrade(c)
+        c.executescript((Path(__file__).parents[1]/'migrations/011_reference_knowledge.sql').read_text(encoding='utf-8'))
 
 def rows(sql,args=()):
     active=_ACTIVE.get()

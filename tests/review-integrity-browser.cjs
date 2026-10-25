@@ -11,6 +11,9 @@ const root=path.resolve(__dirname,'..'),origin='http://127.0.0.1:8765';let token
   const auth=await context.request.post(origin+'/api/v1/session',{data:{token}});assert.equal(auth.status(),200);
   await page.addInitScript(id=>localStorage.setItem('paper_project',id),pid);
   await page.goto(origin+'/#token='+encodeURIComponent(token));await page.getByRole('button',{name:'论文规则',exact:true}).click();
+  await page.getByRole('tab',{name:'整理与审核',exact:true}).click();
+  await page.getByText('高级整理与独立审核工具',{exact:true}).click();
+  await page.getByText('历史审核与完整性记录',{exact:true}).click();
   const card=page.getByRole('region',{name:'自动规则审核'});await card.getByText(/历史响应回放发现/).waitFor();
   await card.getByText(/26 条历史正面结论/).waitFor();
   const selector=page.getByLabel('疑难规则审核模型');await selector.selectOption('gpt');assert.equal(await selector.inputValue(),'gpt');

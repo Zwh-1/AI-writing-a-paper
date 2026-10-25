@@ -196,4 +196,6 @@ def page_ocr(page_id,language='zh-Hans-CN'):
     diagnostic={'ocr_state':'partial' if errors and recognized else 'failed' if errors else 'complete' if text else 'no_text','ocr_chars':len(text),'asset_count':len(assets),'recognized_assets':len(recognized),'errors':errors,'warnings':warnings,'language':language,'ocr_version':OCR_VERSION,'completed_at':db.now()}
     record=db.setting(material_quality.key(file['id']),{'sha256':file['sha256'],'page_states':{}})
     record.setdefault('page_states',{}).setdefault(page_id,{}).update(diagnostic);material_quality.save(file['id'],record)
+    from .reference_knowledge import sync_document
+    sync_document(file['id'])
     return {'page_id':page_id,'text':text,'source_ids':source_ids,'engine':'Windows.Media.Ocr','external_requests':False,'requires_human_review':True,'language':language,'diagnostic':diagnostic}

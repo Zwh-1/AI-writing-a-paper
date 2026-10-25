@@ -102,6 +102,7 @@ const pw = require("C:/Users/abcta/.cache/codex-runtimes/codex-primary-runtime/d
       origin + "/#token=" + encodeURIComponent(session.bootstrap_token),
     );
     await page.getByRole("button", { name: "论文规则", exact: true }).click();
+    await page.getByRole("tab", { name: /^重复与冲突/ }).click();
     await page
       .getByRole("heading", { name: "先检查重复条款", exact: true })
       .waitFor();
@@ -155,6 +156,7 @@ const pw = require("C:/Users/abcta/.cache/codex-runtimes/codex-primary-runtime/d
     assert.equal(w.rules.find((r) => r.id === candidate.id).state, "rejected");
     assert.equal(w.rules.find((r) => r.id === different.id).state, "candidate");
     pass("merge_preserves_confirmed_rule_and_different_quantity");
+    await page.getByRole("tab", { name: "条款管理", exact: true }).click();
     const primary = page
       .locator(".rule-list .rule-row")
       .filter({
@@ -167,6 +169,7 @@ const pw = require("C:/Users/abcta/.cache/codex-runtimes/codex-primary-runtime/d
     await page.getByRole("dialog", { name: "规则原文依据" }).waitFor();
     await page.getByRole("button", { name: "关闭原文依据" }).click();
     pass("merged_source_remains_accessible_from_kept_rule");
+    await page.getByRole("tab", { name: /^重复与冲突/ }).click();
     await panel.locator("summary").filter({ hasText: "最近归并记录" }).click();
     await panel
       .getByRole("button", { name: "恢复本次归并", exact: true })

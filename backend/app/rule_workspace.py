@@ -32,9 +32,11 @@ def diagnostics(pid,items=None):
     pending_pages=db.rows("SELECT p.id,p.file_id,p.page_number,p.title,f.name,f.extension,f.role FROM pages p JOIN files f ON f.id=p.file_id WHERE f.project_id=? AND f.role='rules' AND f.active=1 AND p.review_state NOT IN ('reviewed','not_applicable') ORDER BY f.created_at,p.page_number",(pid,))
     from .rule_governance import page_covered
     pending_pages=[p for p in pending_pages if not page_covered(db.one('SELECT * FROM pages WHERE id=?',(p['id'],)))]
-    from .rule_governance import machine_valid
+    from .rule_governance import machine_validity
     publishable=[r for r in items if r['state'] in ('confirmed','machine_verified') and r['modality'] in ('mandatory','recommended')]
-    stale_machine=[r for r in publishable if r['state']=='machine_verified' and not machine_valid(r)]
+    machine_rules=[r for r in publishable if r['state']=='machine_verified']
+    validity=machine_validity(pid,machine_rules)
+    stale_machine=[r for r in machine_rules if not validity[r['id']]]
     invalid=[r for r in publishable if r['source_id'] and (not r['source_active'] or r['source_role']!='rules' or r['source_review_state']=='not_applicable')]
     blockers=[]
     unresolved=[r for r in items if r['state']=='candidate' and r.get('machine_review') and r['machine_review']['outcome']=='conflict']

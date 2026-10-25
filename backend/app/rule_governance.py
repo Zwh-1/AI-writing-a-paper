@@ -120,9 +120,15 @@ def rubric_candidate(rule,source):
 
 def current_decisions(pid):
     result={}
-    for row in db.rows('SELECT * FROM rule_decisions WHERE project_id=? AND restored=0 ORDER BY id',(pid,)):
+    for row in latest_decision_rows(pid):
         result[row['rule_id']]={'id':row['id'],'outcome':row['outcome'],'reasons':db.loads(row['reasons'],[]),'version':row['version'],'source_hash':row['source_hash']}
     return result
+
+
+def latest_decision_rows(pid):
+    return db.rows('''SELECT d.* FROM rule_decisions d JOIN
+        (SELECT rule_id,MAX(id) AS id FROM rule_decisions WHERE project_id=? AND restored=0 GROUP BY rule_id) latest
+        ON latest.id=d.id''',(pid,))
 
 
 @db.atomic
@@ -141,13 +147,27 @@ def restore(pid,decision_id):
 
 def machine_valid(rule):
     row=db.one('SELECT * FROM rule_decisions WHERE rule_id=? AND restored=0 ORDER BY id DESC LIMIT 1',(rule['id'],))
-    if not row or row['outcome']!='machine_verified':return False
     source=db.one('SELECT s.*,f.sha256 AS file_sha256,f.name AS source_file,p.text AS page_text FROM sources s JOIN files f ON f.id=s.file_id LEFT JOIN pages p ON p.id=s.page_id WHERE s.id=?',(rule['source_id'],))
+    return machine_matches(rule,row,source)
+
+
+def machine_matches(rule,row,source):
+    if not row or row['outcome']!='machine_verified':return False
     if not source or row['source_hash']!=source_hash(source):return False
     from .rule_text_integrity import inspect_rule
     if inspect_rule(rule,source)['needs_attention']:return False
     after=db.loads(row['after_row'],{})
     return all(rule.get(k)==after.get(k) for k in ('statement','state','modality','scope','checker','rule_key','value','category','operations','source_id'))
+
+
+def machine_validity(pid,items):
+    """Apply the same evidence checks using one current decision/source snapshot."""
+    if not items:return {}
+    decisions={row['rule_id']:row for row in latest_decision_rows(pid)}
+    sources={row['id']:row for row in db.rows('''SELECT s.*,f.sha256 AS file_sha256,f.name AS source_file,p.text AS page_text
+        FROM sources s JOIN files f ON f.id=s.file_id LEFT JOIN pages p ON p.id=s.page_id
+        WHERE f.project_id=? AND s.id IN (SELECT source_id FROM rules WHERE project_id=? AND state='machine_verified')''',(pid,pid))}
+    return {rule['id']:machine_matches(rule,decisions.get(rule['id']),sources.get(rule['source_id'])) for rule in items}
 
 
 def page_hash(page):return hashlib.sha256(db.dumps([page['text'],[(s['id'],source_hash(s)) for s in db.rows('SELECT s.*,f.sha256 AS file_sha256 FROM sources s JOIN files f ON f.id=s.file_id WHERE s.page_id=? ORDER BY s.id',(page['id'],))]]).encode()).hexdigest()

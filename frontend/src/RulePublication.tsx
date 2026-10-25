@@ -1,0 +1,135 @@
+import {
+  AlertTriangle,
+  ArrowUpRight,
+  CheckCircle2,
+  ShieldCheck,
+} from "lucide-react";
+type Row = Record<string, any>;
+export default function RulePublication({
+  data,
+  busy,
+  onPublish,
+  onSnapshot,
+  onBlocker,
+  onPage,
+}: {
+  data: Row;
+  busy: boolean;
+  onPublish: () => void;
+  onSnapshot: () => void;
+  onBlocker: (blocker: Row) => void;
+  onPage: (page: Row) => void;
+}) {
+  const ready = data.readiness;
+  return (
+    <section
+      className="panel mb rule-publication"
+      id="rule-publication"
+      aria-label="发布前检查"
+    >
+      <div className="section-heading">
+        <div>
+          <h2>发布前检查</h2>
+          <p className="muted">检查适用要求与原文，发布后供后续写作使用。</p>
+        </div>
+        <span
+          className={`rules-status-pill ${ready.can_publish ? "is-ready" : "is-pending"}`}
+        >
+          {ready.can_publish ? "可以发布" : `${ready.blockers.length} 项待处理`}
+        </span>
+      </div>
+      <div className="rule-package-status">
+        <ShieldCheck size={23} />
+        <div>
+          <strong>
+            {data.package
+              ? `当前生效：规则包 V${data.package.version}`
+              : "还没有生效规则包"}
+          </strong>
+          <p>
+            {data.package
+              ? ready.dirty
+                ? "有尚未发布的修改；当前写作仍加载已发布版本。"
+                : `当前已确认的要求与生效版本一致，共 ${ready.package_rule_count} 条。`
+              : "核对资料页、确认适用要求后即可发布。"}
+          </p>
+        </div>
+        {data.package && (
+          <button className="btn" onClick={onSnapshot}>
+            查看生效快照
+          </button>
+        )}
+      </div>
+      <div className="rules-publication-counts">
+        <span>
+          本次可发布 <strong>{ready.publishable_count}</strong> 条
+        </span>
+        <span>
+          待核对资料 <strong>{ready.pending_pages.length}</strong> 页
+        </span>
+        <span>
+          候选条款 <strong>{ready.counts.candidate}</strong> 条
+        </span>
+      </div>
+      {ready.blockers.map((blocker: Row) => (
+        <div className="rule-blocker" key={blocker.code}>
+          <AlertTriangle size={16} />
+          <span>{blocker.message}</span>
+          <button className="text-button" onClick={() => onBlocker(blocker)}>
+            {["RULE_CONFLICT", "RULE_AUTOMATIC_CONFLICTS"].includes(
+              blocker.code,
+            )
+              ? "处理冲突"
+              : blocker.code === "RULE_DUPLICATES"
+                ? "处理重复"
+                : blocker.code === "RULE_CONFIRMATION_REQUIRED"
+                  ? "查看待确认"
+                  : blocker.code === "RULE_SOURCE_INACTIVE"
+                    ? "复核条款"
+                    : blocker.code === "RULE_MACHINE_REVIEW_STALE"
+                      ? "更新自动审核"
+                      : "核对资料"}
+            <ArrowUpRight size={13} />
+          </button>
+        </div>
+      ))}
+      {ready.pending_pages.length > 0 && (
+        <details className="rule-advanced">
+          <summary>查看待核对页面（{ready.pending_pages.length}）</summary>
+          <div className="rule-pending-pages">
+            {ready.pending_pages.map((page: Row) => (
+              <button
+                key={page.id}
+                className="text-button"
+                onClick={() => onPage(page)}
+              >
+                {page.name} · 第{page.page_number}页<ArrowUpRight size={13} />
+              </button>
+            ))}
+          </div>
+        </details>
+      )}
+      {ready.can_publish && (
+        <p className="rule-ready">
+          <CheckCircle2 size={16} />
+          发布条件已满足。待确认条款及正反例不进入规则包。
+        </p>
+      )}
+      <div className="rules-publish-action">
+        <button
+          className="btn primary"
+          disabled={busy || !ready.can_publish}
+          onClick={onPublish}
+        >
+          <ShieldCheck size={16} />
+          {busy ? "正在发布…" : "发布规则包"}
+        </button>
+        <small>
+          {ready.dirty
+            ? "发布后更新写作使用的规则版本。"
+            : "每次发布保留独立的规则快照。"}
+        </small>
+      </div>
+    </section>
+  );
+}

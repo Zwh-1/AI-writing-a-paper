@@ -134,6 +134,11 @@ def adopt_legacy(sid,body,key=''):
     if not task:fail('NOT_FOUND','候选任务不存在或未完成',404)
     output=db.loads(task['result'],{});manifest=output.get('manifest',{});p=security.require_project(pid)
     if output.get('section_id')!=sid or not output.get('document'):fail('INVALID_CANDIDATE','候选稿无有效结构')
+    if s['kind']=='abstract_en' and not manifest.get('abstract_translation'):
+        fail('ABSTRACT_TRANSLATION_REQUIRED','此英文摘要候选未记录中文摘要翻译来源，请重新翻译后采用',409)
+    if manifest.get('abstract_translation'):
+        from ..abstract_translation import check_source
+        check_source(pid,manifest['abstract_translation'])
     if manifest.get('rule_package_id')!=p['rule_package_id']:fail('INPUT_VERSION_CHANGED','候选稿依据的规则已更新',409)
     for fid,version in manifest.get('fact_revisions',{}).items():
         fact=db.one('SELECT revision FROM facts WHERE id=? AND project_id=?',(fid,pid))
