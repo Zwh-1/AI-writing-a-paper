@@ -103,6 +103,12 @@ def material_summary_batch_status(pid):return material_summary.batch_status(pid)
 def reconcile_summary_billing(pid):
     from .summary_billing import reconcile
     body_project(pid);return reconcile(pid)
+@app.post('/api/v1/projects/{pid}/tasks/billing-reconcile')
+def reconcile_task_billing(pid,body:dict):
+    from .summary_billing import reconcile
+    body_project(pid);profile=body.get('profile','material-summary')
+    if profile not in ('material-summary','gpt-fallback','primary'):raise HTTPException(422,'账单核对接口类型无效')
+    return reconcile(pid,profile=profile)
 @app.post('/api/v1/projects/{pid}/materials/resume-summaries')
 def resume_summary_tasks(pid):return material_summary.resume_budget(pid)
 @app.get('/api/v1/files/{fid}/summary/markdown')

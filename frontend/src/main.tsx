@@ -2258,7 +2258,7 @@ function RichEditor({
   );
 }
 function TaskDetail({ task, onClose }: { task: Row; onClose: () => void }) {
-  const { act, refresh, notify } = useApp();
+  const { pid, act, refresh, notify } = useApp();
   const [t, setT] = useState(task),
     [selected, setSelected] = useState<string[]>([]);
   const result = t.result ?? {};
@@ -2332,7 +2332,7 @@ function TaskDetail({ task, onClose }: { task: Row; onClose: () => void }) {
       </div>
       {unresolved.length ? <div className="alert compact">已保存可用规则。以下原文片段没有得到完整远端结论，恢复时会复用已完成批次，只处理这些未完成范围。</div> : <div className="success-box"><CheckCircle2 size={20} /><span>当前结果没有列出未完成片段。</span></div>}
       {unresolved.length > 0 && <ul className="task-unresolved-list">{unresolved.slice(0,20).map((item:Row,i:number)=><li key={item.source_id||i}><strong>{item.source_id ? "来源 "+item.source_id.slice(0,10)+"…" : "未定位来源"}</strong><span>{item.state} · {item.error}</span></li>)}</ul>}
-      {["incomplete","outcome_unknown","budget_blocked","failed"].includes(t.status) && <div className="actions"><Button variant="primary" onClick={recover}>恢复未完成批次</Button><Button onClick={onClose}>稍后处理</Button></div>}
+      {["incomplete","outcome_unknown","budget_blocked","failed"].includes(t.status) && <div className="actions"><Button variant="primary" onClick={recover}>恢复未完成批次</Button>{(budget.pending_bill_calls||budget.pending_bill_reserved||t.status==="budget_blocked")&&<Button onClick={()=>void act(()=>send("/projects/"+pid+"/tasks/billing-reconcile",{profile:"gpt-fallback"}),"已核对 GPT 账单范围")}>核对 GPT 账单并继续</Button>}<Button onClick={onClose}>稍后处理</Button></div>}
       <details><summary>查看原始规则结果</summary><pre className="source-content">{JSON.stringify(result,null,2)}</pre></details>
       <details><summary>查看任务输入</summary><pre className="source-content">{JSON.stringify(t.payload??{},null,2)}</pre></details>
     </Modal>;
