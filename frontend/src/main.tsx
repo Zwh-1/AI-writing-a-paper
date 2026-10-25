@@ -2312,6 +2312,31 @@ function TaskDetail({ task, onClose }: { task: Row; onClose: () => void }) {
       <details><summary>查看任务输入</summary><pre className="source-content">{JSON.stringify(t.payload??{},null,2)}</pre></details>
     </Modal>;
   }
+  if (t.kind === "rules_ai") {
+    const unresolved = result.unresolved_items ?? [];
+    const recover = () => act(
+      () => send("/tasks/" + t.id + "/retry", {
+        acknowledge_possible_duplicate_charge: true,
+        retry_unknown: true,
+        retry_invalid: true,
+      }),
+      "已保存当前规则结果，并重新排队恢复未完成批次",
+    );
+    return <Modal title="规则整理结果与恢复" wide onClose={onClose}>
+      <div className="inline"><Badge value={t.status} /><strong>{t.phase || "AI 结构化规则整理"}</strong></div>
+      {t.error && <div className="alert">{t.error}</div>}
+      <div className="task-recovery-summary">
+        <div><strong>新增候选</strong><span>{result.added ?? 0} 条</span><small>本次新增 {result.added_this_attempt ?? 0} 条</small></div>
+        <div><strong>原文片段</strong><span>{result.processed_source_units ?? 0}/{result.selected_source_units ?? 0}</span><small>批次 {result.completed_batches ?? 0}/{result.total_batches ?? 0}</small></div>
+        <div><strong>待恢复</strong><span>{unresolved.length} 个</span><small>复用批次 {result.reused_batches ?? 0} 个</small></div>
+      </div>
+      {unresolved.length ? <div className="alert compact">已保存可用规则。以下原文片段没有得到完整远端结论，恢复时会复用已完成批次，只处理这些未完成范围。</div> : <div className="success-box"><CheckCircle2 size={20} /><span>当前结果没有列出未完成片段。</span></div>}
+      {unresolved.length > 0 && <ul className="task-unresolved-list">{unresolved.slice(0,20).map((item:Row,i:number)=><li key={item.source_id||i}><strong>{item.source_id ? "来源 "+item.source_id.slice(0,10)+"…" : "未定位来源"}</strong><span>{item.state} · {item.error}</span></li>)}</ul>}
+      {["incomplete","outcome_unknown","budget_blocked","failed"].includes(t.status) && <div className="actions"><Button variant="primary" onClick={recover}>恢复未完成批次</Button><Button onClick={onClose}>稍后处理</Button></div>}
+      <details><summary>查看原始规则结果</summary><pre className="source-content">{JSON.stringify(result,null,2)}</pre></details>
+      <details><summary>查看任务输入</summary><pre className="source-content">{JSON.stringify(t.payload??{},null,2)}</pre></details>
+    </Modal>;
+  }
   return (
     <Modal title="任务结果与候选审阅" wide onClose={onClose}>
       <div className="inline">
