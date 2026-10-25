@@ -163,7 +163,11 @@ def writing(task,payload):
     event(task['id'],'加载规则与检索证据',15)
     chapter_terms={'system_design':'架构 模块 数据库 接口 设计','implementation':'实现 功能 模块 代码','requirements':'需求 用户 业务 功能','results':'实验 测试 样本 指标 结果 性能','methods':'研究方法 实验 过程 技术路线','literature':'文献 研究 方法 比较 局限','introduction':'研究背景 意义 问题 现状','abstract':'研究 问题 方法 结果 结论','conclusion':'结果 结论 不足 展望'}
     query=s['title']+' '+s['goal']+' '+payload.get('instruction','')+' '+chapter_terms.get(s['kind'],'')
-    evidence=parsers.search(pid,query,limit=12,remote=True)
+    evidence=parsers.search(pid,query,limit=8,remote=True)
+    # Legacy section writing used to send every retrieved passage in full and
+    # routinely exceeded the provider snapshot budget. Keep the strongest
+    # passages and trim optional prose before the request is measured.
+    evidence=[{**item,'text':str(item.get('text',''))[:7000]} for item in evidence]
     refs=db.rows('SELECT * FROM bibliography WHERE project_id=?',(pid,));facts=db.rows('SELECT * FROM facts WHERE project_id=?',(pid,));allowed_facts=[];file_ids={e['file_id'] for e in evidence}
     for f in facts:
         source_ids=db.loads(f['source_ids'],[]); permitted=True
@@ -254,9 +258,15 @@ def writing(task,payload):
     if targets:system+=' 本次仅改写选中的段落，不能加入其他章节或重复选区之外内容。'
     examples=parsers.search(pid,query,kind='example',limit=3,remote=True)
     for example in examples:file_ids.add(example['file_id'])
-    context['writing_examples']=[{'text':x['text'],'kind':x['kind'],'instruction':'只参考组织与写法，不作为本项目结果或研究证据'} for x in examples]
+    context['writing_examples']=[{'text':str(x['text'])[:3000],'kind':x['kind'],'instruction':'只参考组织与写法，不作为本项目结果或研究证据'} for x in examples]
     user=db.dumps(context)
-    if len(user)+len(system)>int(provider.config().get('context_limit',100000))*2: raise ValueError('上下文超出应用预算，请缩小章节或资料范围；不会自动丢弃强制规则')
+    context_limit=int(provider.config().get('context_limit',100000))*2
+    if len(user)+len(system)>context_limit:
+        context['sources']=context['sources'][:4]
+        context['references']=context['references'][:8]
+        context['writing_examples']=context['writing_examples'][:1]
+        user=db.dumps(context)
+    if len(user)+len(system)>context_limit: raise ValueError('本节项目资料超过接口上下文预算，请减少关联资料后重试；强制规则已保留')
     ids=[r['id'] for r in content_rules];manifest={'rule_package_id':package['id'],'required_rule_ids':ids,'loaded_rule_ids':ids,'rule_text_hash':hashlib.sha256(rule_text.encode()).hexdigest(),'base_revision_id':payload.get('base_revision_id'),'section_id':s['id'],'source_ids':[e['id'] for e in evidence],'file_ids':sorted(file_ids),'fact_revisions':{f['id']:f['revision'] for f in allowed_facts}}
     manifest['knowledge_documents']={e['knowledge_document_id']:e['knowledge_document_version'] for e in evidence if e.get('knowledge_document_id')}
     from .writing_agent.common import state,digest

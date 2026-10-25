@@ -1712,6 +1712,7 @@ main {
   gap: 2px;
 }
 .writing-link-card{padding:14px 0 16px;margin-bottom:14px;border-bottom:1px solid var(--line);font-size:12px}.writing-link-card .section-heading{margin-bottom:8px}.writing-link-card .section-heading h3{font-size:14px}.writing-link-fact{display:block;width:100%;text-align:left;margin:5px 0;white-space:normal}.research-chain{margin-bottom:18px}.research-chain-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.research-chain-grid>button{display:flex;align-items:flex-start;gap:8px;flex-direction:column;text-align:left;padding:16px;border:1px solid var(--line);border-radius:8px;background:#fbfdfb;color:var(--text);cursor:pointer}.research-chain-grid>button:hover{border-color:var(--green);background:#f4faf6}.research-chain-grid small{color:var(--muted);line-height:1.6}@media(max-width:700px){.research-chain-grid{grid-template-columns:1fr}}
+.task-group-note{display:block;color:#a27a38!important;margin-top:4px}
 .evidence-panel .mini-search input {
   font-size: 10px;
 }

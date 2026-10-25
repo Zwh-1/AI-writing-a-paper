@@ -333,6 +333,21 @@ function PageTitle({
     </div>
   );
 }
+function taskGroups(tasks: Row[]) {
+  const groups: { task: Row; count: number }[] = [];
+  const index = new Map<string, number>();
+  for (const task of tasks) {
+    if (["succeeded", "cancelled"].includes(task.status)) continue;
+    const grouped = ["failed", "budget_blocked", "incomplete"].includes(task.status);
+    const key = grouped ? `${task.kind}:${task.status}:${task.error ?? task.phase ?? ""}` : task.id;
+    const existing = index.get(key);
+    if (existing === undefined) {
+      index.set(key, groups.length);
+      groups.push({ task, count: 1 });
+    } else groups[existing].count += 1;
+  }
+  return groups;
+}
 function formValues(e: FormEvent<HTMLFormElement>) {
   e.preventDefault();
   return Object.fromEntries(new FormData(e.currentTarget).entries()) as Record<
@@ -419,8 +434,9 @@ function App() {
       api("/tasks?summary=true" + (pid ? "&project_id=" + pid : ""), { signal: controller.signal })
         .then((d) => {
           if (!alive) return;
-          setAllTasks(d);
-          const sig = d.map((t: Row) => t.id + t.status).join();
+          const visible = d.filter((t: Row) => !["succeeded", "cancelled"].includes(t.status));
+          setAllTasks(visible);
+          const sig = visible.map((t: Row) => t.id + t.status).join();
           if (lastTaskSig.current !== sig) refresh();
           lastTaskSig.current = sig;
         })
@@ -494,6 +510,7 @@ function App() {
     taskOpen,
     archiveProject,
   };
+  const groupedTasks = taskGroups(allTasks);
   return (
     <AppContext.Provider value={ctx}>
       <div className="app-shell">
@@ -702,8 +719,8 @@ function App() {
       )}
       {showTasks && (
         <Modal title="任务中心" wide onClose={() => setShowTasks(false)}>
-          {allTasks.length ? (
-            allTasks.map((t) => (
+          {groupedTasks.length ? (
+            groupedTasks.map(({ task: t, count }) => (
               <div className="task-row" key={t.id}>
                 <div className="task-icon">
                   {t.status === "running" ? (
@@ -738,6 +755,7 @@ function App() {
                   <small>
                     {t.phase || "等待执行"} · {date(t.created_at)}
                   </small>
+                  {count > 1 && <small className="task-group-note">相同问题任务 {count} 个，已合并显示</small>}
                   {t.error && <p className="error-text">{t.error}</p>}
                 </div>
                 <Badge value={t.status} />
