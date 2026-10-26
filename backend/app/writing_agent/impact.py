@@ -27,6 +27,8 @@ def references(manifest):
         result.update((kind,str(key)) for key in manifest.get(field,{}))
     result.update(('source',str(x)) for x in manifest.get('source_ids',[]))
     result.update(('file',str(x)) for x in manifest.get('file_ids',[]))
+    result.update(('knowledge_unit',str(x)) for x in manifest.get('knowledge_unit_versions',{}))
+    result.update(('document_reading',str(x)) for x in manifest.get('document_reading_versions',{}))
     result.update(('section',str(x)) for x in manifest.get('related_revisions',{}))
     result.update(('revision',str(x)) for x in manifest.get('related_revisions',{}).values())
     for field,kind in (('core_version_id','core'),('contract_version_id','contract'),('target_snapshot_id','snapshot'),('rule_package_id','rule_package')):
@@ -53,6 +55,8 @@ def change_roots(pid,kind,identity):
     if kind=='repository':
         roots.update(('snapshot',r['id']) for r in db.rows('SELECT id FROM repository_snapshots WHERE binding_id=? AND project_id=?',(identity,pid)))
     if kind=='file':roots.update(('source',r['id']) for r in db.rows('SELECT id FROM sources WHERE file_id=?',(identity,)))
+    if kind=='file':roots.update(('knowledge_unit',r['id']) for r in db.rows('SELECT u.id FROM knowledge_units u JOIN knowledge_parses p ON p.id=u.parse_id WHERE p.file_id=?',(identity,)))
+    if kind=='file':roots.update(('document_reading',r['id']) for r in db.rows('SELECT id FROM document_readings WHERE file_id=?',(identity,)))
     for e in db.rows('SELECT id,origin_type,origin_id FROM evidence_items WHERE project_id=?',(pid,)):
         parent=('snapshot' if e['origin_type']=='code' else e['origin_type'],e['origin_id'])
         if parent in roots:roots.add(('evidence',e['id']))
@@ -117,6 +121,27 @@ def resolve_manual(pid,sid,body):
     project_stale(sid);return reasons(pid,sid)
 
 def check_manifest(pid,manifest):
+    from ..knowledge_units import get as get_unit
+    from fastapi import HTTPException
+    unit_conflicts=[]
+    from ..document_reading import context as reading_context
+    for identity,version in manifest.get('document_reading_versions',{}).items():
+        try:
+            reading=reading_context(pid,identity,remote=bool(manifest.get('remote')))
+            if not reading['current'] or reading['version']!=version:unit_conflicts.append('文献阅读:'+identity)
+        except HTTPException:unit_conflicts.append('文献阅读:'+identity)
+    if 'knowledge_selection' in manifest and sorted(manifest['knowledge_selection'])!=sorted(r['unit_id'] for r in db.rows('SELECT unit_id FROM knowledge_selections WHERE section_id=?',(manifest.get('section_id'),))):unit_conflicts.append('章节证据选择')
+    for uid,version in manifest.get('knowledge_unit_versions',{}).items():
+        try:
+            item=get_unit(pid,uid,remote=bool(manifest.get('remote')))
+            if not item['current'] or item['content_hash']!=version or item['review_state']=='excluded':unit_conflicts.append('知识单元:'+uid)
+        except HTTPException:unit_conflicts.append('知识单元:'+uid)
+    for scope in manifest.get('knowledge_read_scopes',{}).values():
+        for uid in scope.get('passage_ids',[]):
+            try:
+                item=get_unit(pid,uid,remote=bool(manifest.get('remote')))
+                if not item['current'] or item['review_state']=='excluded':unit_conflicts.append('相邻原文:'+uid)
+            except HTTPException:unit_conflicts.append('相邻原文:'+uid)
     from . import evidence
     from .. import security
     current=state(pid);p=security.require_project(pid);conflicts=[]
@@ -127,6 +152,15 @@ def check_manifest(pid,manifest):
     if current['target_snapshot_id']!=manifest.get('target_snapshot_id'):conflicts.append('研究快照')
     if p['rule_package_id']!=manifest.get('rule_package_id'):conflicts.append('论文规则')
     sid=manifest.get('section_id')
+    if manifest.get('continuity_outline_hash') is not None:
+        from ..writing_continuity import outline,outline_hash
+        if outline_hash(outline(pid))!=manifest['continuity_outline_hash']:conflicts.append('全篇提纲')
+    if manifest.get('terminology_hash') is not None:
+        from .common import digest
+        if digest(db.rows('SELECT zh,en FROM terms WHERE project_id=?',(pid,)))!=manifest['terminology_hash']:conflicts.append('全文术语')
+    for chapter,revision in manifest.get('empty_section_revisions',{}).items():
+        row=db.one('SELECT current_revision_id FROM sections WHERE id=? AND project_id=?',(chapter,pid))
+        if not row or row['current_revision_id']!=revision:conflicts.append('新增正文:'+chapter)
     if current['contracts'].get(sid)!=manifest.get('contract_version_id'):conflicts.append('章节任务')
     for chapter,version in manifest.get('contract_versions',{}).items():
         if current['contracts'].get(chapter)!=version:conflicts.append('章节任务:'+chapter)
@@ -144,7 +178,14 @@ def check_manifest(pid,manifest):
     for chapter,revision in manifest.get('related_revisions',{}).items():
         section=db.one('SELECT current_revision_id FROM sections WHERE id=? AND project_id=?',(chapter,pid))
         if not section or section['current_revision_id']!=revision:conflicts.append('关联正文:'+chapter)
-    return conflicts
+        elif manifest.get('remote'):
+            from .provenance import revision_permissions
+            from fastapi import HTTPException
+            try:revision_permissions(pid,revision)
+            except HTTPException as error:
+                if error.status_code!=403:raise
+                conflicts.append('关联正文外发权限:'+chapter)
+    return conflicts+unit_conflicts
 
 def revision_changed(pid,sid,new_revision):
     with db.transaction():

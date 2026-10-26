@@ -45,6 +45,10 @@ def run(pid):
     for f in facts:
         if f['status'] in ('implemented','measured') and not db.loads(f['source_ids'],[]) and not f['artifact_id']: add('实际成果缺少材料关联：'+f['label'],'unknown','warning',method='human')
     for t in db.rows('SELECT * FROM mentor_tasks WHERE project_id=? AND status NOT IN (\'rechecked\',\'dismissed\')',(pid,)): add('导师意见尚未复查：'+t['comment'][:100],sid=t['section_id'])
+    from .figure_standards import evaluate as evaluate_figures
+    for item in evaluate_figures(pid)['items']:
+        rev=next((s['current_revision_id'] for s in sections if s['id']==item['section_id']),None)
+        add(item['message'],item['result'],item['severity'],item['section_id'],rev,method=item['method'],evidence=db.dumps({'node_id':item['node_id'],'figure_check':item['code']}))
     with db.transaction() as c:
         previous=[dict(r) for r in c.execute('SELECT * FROM findings WHERE project_id=?',(pid,)).fetchall()]
         if previous: c.execute('INSERT INTO project_revisions VALUES(?,?,?,?,?)',(db.uid(),pid,'review_history',db.dumps(previous),db.now()))

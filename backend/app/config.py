@@ -10,4 +10,4 @@ for name in ('objects', 'previews', 'exports', 'backups', 'logs', 'tmp'):
 DB_PATH = DATA / 'workbench.sqlite3'
 MAX_FILE = 120 * 1024 * 1024
 MAX_UNPACKED = 600 * 1024 * 1024
-APP_VERSION = '0.5.0'
+APP_VERSION = '0.6.1'

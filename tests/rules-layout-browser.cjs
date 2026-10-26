@@ -42,6 +42,33 @@ const diagnosticErrors = [];
     assert.equal(await catalog.locator('.rule-row').count(), Math.min(10, before.rules.length));
     assert.equal(await page.getByLabel('选择AI整理的规则文件').isVisible(), false);
     checks.push('catalog_is_default_and_other_workflows_are_separate');
+    const overview = page.getByRole('region', { name: '规则概况与发布状态' });
+    const out = path.join(root, '.runtime/rules-refactor'); fs.mkdirSync(out, { recursive: true });
+    const metrics = [
+      ['全部提取记录', before.rules.length, /^全部记录/],
+      ['可纳入规则包', before.readiness.publishable_count, /^可纳入规则包/],
+      ['仅供参考', before.readiness.counts.reference_only, /^仅供参考/],
+      ['已归并 / 排除', before.readiness.counts.rejected, /^已归并/],
+      ['待确认 / 分类', before.readiness.counts.candidate, /^待确认/],
+    ];
+    for (const [label, count, tab] of metrics) {
+      const metric = overview.getByRole('button', { name: new RegExp('^' + label) });
+      assert.equal(Number(await metric.locator('strong').innerText()), count);
+      await page.getByLabel('搜索规则', { exact: true }).fill('筛选快捷入口应清除此搜索_20261025');
+      const sourceOption = await page.getByLabel('按规则出处筛选').locator('option').last().getAttribute('value');
+      await page.getByLabel('按规则出处筛选').selectOption(sourceOption);
+      await metric.click();
+      assert.equal(await page.getByRole('tab', { name: tab }).getAttribute('aria-selected'), 'true');
+      assert.equal(await page.getByLabel('搜索规则', { exact: true }).inputValue(), '');
+      assert.equal(await page.getByLabel('按规则出处筛选').inputValue(), '');
+      assert.equal(await catalog.locator('.rule-row').count(), Math.min(10, count));
+      assert((await catalog.locator('.rule-batch-bar').innerText()).includes(`筛选结果 ${count} 条`));
+    }
+    assert.equal(metrics.slice(1).reduce((sum, item) => sum + item[1], 0), before.rules.length);
+    assert((await overview.locator('.rules-count-explanation').innerText()).includes('按组统计'));
+    await overview.getByRole('button', { name: /^全部提取记录/ }).click();
+    await overview.screenshot({ path: path.join(out, 'overview-desktop.png') });
+    checks.push('record_breakdown_matches_backend_and_shortcuts_clear_stale_filters');
     const firstIds = await catalog.locator('.rule-row').evaluateAll(rows => rows.map(row => row.dataset.ruleId));
     if (before.rules.length > 10) {
       await page.getByRole('button', { name: '下一页规则', exact: true }).click();
@@ -72,12 +99,11 @@ const diagnosticErrors = [];
     await page.getByRole('heading', { name: '没有匹配的规则', exact: true }).waitFor();
     await page.getByRole('button', { name: '清除筛选', exact: true }).first().click();
     await catalog.locator('.rule-row').first().waitFor();
-    await page.locator('.rules-metrics > button').nth(1).click();
+    await overview.getByRole('button', { name: /^待确认/ }).click();
     assert.equal(await page.getByRole('tab', { name: /^待确认/ }).getAttribute('aria-selected'), 'true');
     assert.equal(await catalog.locator('.rule-row').count(), Math.min(10, before.readiness.counts.candidate));
-    await page.getByRole('tab', { name: /^全部规则/ }).click();
+    await page.getByRole('tab', { name: /^全部记录/ }).click();
     checks.push('search_empty_state_metrics_filters_source_and_editor_work');
-    const out = path.join(root, '.runtime/rules-refactor'); fs.mkdirSync(out, { recursive: true });
     await page.screenshot({ path: path.join(out, 'catalog-desktop.png'), fullPage: true });
     const desktopHeight = await page.locator('.rules-workspace').evaluate(node => Math.round(node.getBoundingClientRect().height));
     assert(desktopHeight < 1700, `Desktop workspace is unexpectedly tall: ${desktopHeight}`);
@@ -101,6 +127,14 @@ const diagnosticErrors = [];
     await page.screenshot({ path: path.join(out, 'issues-desktop.png'), fullPage: true });
     await page.getByRole('button', { name: '检查并发布', exact: true }).click();
     assert(await page.getByRole('region', { name: '发布前检查' }).isVisible());
+    const publication = page.getByRole('region', { name: '发布前检查' });
+    assert((await publication.locator('.rules-publication-counts').innerText()).includes(`本次纳入 ${before.readiness.publishable_count} 条`));
+    const scope = publication.locator('.rules-publication-scope');
+    assert((await scope.innerText()).includes(`其余 ${before.rules.length - before.readiness.publishable_count} 条`));
+    await scope.getByRole('button', { name: /^仅供参考/ }).click();
+    assert.equal(await page.getByRole('tab', { name: /^仅供参考/ }).getAttribute('aria-selected'), 'true');
+    await page.getByRole('button', { name: '检查并发布', exact: true }).click();
+    checks.push('publication_explains_unpublished_records_and_links_to_reference_filter');
     assert.equal(intercepted.filter(item => item.kind === 'publish').length, 0);
     if (before.readiness.can_publish) {
       await page.getByRole('button', { name: '发布规则包', exact: true }).click();
@@ -126,7 +160,41 @@ const diagnosticErrors = [];
     await page.getByRole('button', { name: '手工添加', exact: true }).click();
     await page.getByRole('button', { name: '关闭规则编辑', exact: true }).click();
     await page.screenshot({ path: path.join(out, 'catalog-mobile.png'), fullPage: true });
+    await overview.screenshot({ path: path.join(out, 'overview-mobile.png') });
     checks.push('keyboard_navigation_and_all_four_mobile_views_have_no_overflow');
+    const fixture = structuredClone(before);
+    fixture.rules = [
+      ['confirmed', 'mandatory'],
+      ['machine_verified', 'recommended'],
+      ['confirmed', 'example'],
+      ['confirmed', 'counterexample'],
+      ['confirmed', 'pending'],
+      ['candidate', 'mandatory'],
+      ['reference_only', 'mandatory'],
+      ['rejected', 'recommended'],
+    ].map(([state, modality], index) => ({ ...before.rules[0], id: `count-fixture-${index}`, statement: `统计口径验收记录 ${index}`, state, modality }));
+    fixture.package = null;
+    fixture.readiness = { ...fixture.readiness, publishable_count: 2, package_rule_count: 0, can_publish: false, dirty: false, pending_pages: [], blockers: [{ code: 'RULE_SOURCE_INACTIVE', message: '验收：一条要求来源失效，发布仍需通过来源检查', rule_ids: ['count-fixture-0'] }] };
+    await page.route(`**/api/v1/projects/${pid}/rules`, route => route.fulfill({ json: fixture }));
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.getByRole('button', { name: '论文规则', exact: true }).click();
+    await overview.getByRole('button', { name: /^全部提取记录/ }).waitFor();
+    const edgeMetrics = [
+      [/^全部提取记录/, 8], [/^可纳入规则包/, 2], [/^仅供参考/, 3], [/^已归并/, 1], [/^待确认/, 2],
+    ];
+    for (const [name, count] of edgeMetrics) {
+      const metric = overview.getByRole('button', { name });
+      assert.equal(Number(await metric.locator('strong').innerText()), count);
+      await metric.click();
+      assert.equal(await catalog.locator('.rule-row').count(), count);
+    }
+    await overview.getByRole('button', { name: /^可纳入规则包/ }).click();
+    assert.deepEqual(await catalog.locator('.rule-row').evaluateAll(rows => rows.map(row => row.dataset.ruleId)), ['count-fixture-0', 'count-fixture-1']);
+    await page.getByRole('button', { name: '检查并发布', exact: true }).click();
+    assert(await page.getByRole('button', { name: '发布规则包', exact: true }).isDisabled());
+    assert((await page.locator('.rules-publication-counts').innerText()).includes('本次纳入 2 条'));
+    assert((await page.locator('.rules-publication-scope').innerText()).includes('其余 6 条'));
+    checks.push('confirmed_examples_stay_reference_pending_purpose_stays_review_and_source_blockers_still_prevent_publication');
     const after = await (await context.request.get(origin + `/api/v1/projects/${pid}/rules`)).json();
     assert.deepEqual(after.rules, before.rules);
     assert.deepEqual(after.package, before.package);

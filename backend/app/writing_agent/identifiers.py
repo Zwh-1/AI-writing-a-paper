@@ -1,7 +1,7 @@
 """Short, scoped model-facing identifiers; persistent IDs and source text never change."""
 from copy import deepcopy
 
-FIELDS={'id','nodeId','node_id','node_ids','sentence_id','evidence_ids','reference_ids','issue_id','section_id','revision_id'}
+FIELDS={'id','nodeId','node_id','node_ids','sentence_id','evidence_ids','reference_ids','issue_id','section_id','revision_id','source_id','source_ids','file_id','file_ids','material_evidence_ids','rule_ids','parent_id','dependencies','depends_on_sections','current_revision_id','target_node_ids','knowledge_unit_id','knowledge_unit_ids','knowledgeUnitIds','unit_id','unit_ids','reading_id','document_reading_ids','documentReadingIds','passage_id','passage_ids'}
 STAGES={'judgment','judgment_check','draft','annotation','semantic','coherence','regression','paper_chunk','paper_cross_passages','paper_navigation'}
 
 def encode(payload,manifest):
@@ -11,11 +11,19 @@ def encode(payload,manifest):
         if isinstance(value,str) and value and value not in mapping:
             counters[prefix]=counters.get(prefix,0)+1;mapping[value]=prefix+str(counters[prefix])
     for identity in manifest.get('evidence_versions',{}):add(identity,'E')
+    for source in manifest.get('source_evidence',{}).values():add(source.get('source_id'),'D')
+    for identity in manifest.get('knowledge_unit_versions',{}):add(identity,'U')
+    for identity in manifest.get('document_reading_versions',{}):add(identity,'Q')
+    for identity in manifest.get('file_ids',[]):add(identity,'F')
+    for rule in payload.get('rules',[]):
+        if isinstance(rule,dict):add(rule.get('id'),'L')
     for row in payload.get('references',[]):add(row.get('id'),'B')
     for row in payload.get('sentences',[]):
         add(row.get('id'),'S');add(row.get('node_id'),'P')
     for row in payload.get('prior_issues',[]):add(row.get('issue_id'),'I')
     if payload.get('section'):add(payload['section'].get('id'),'C')
+    for row in payload.get('outline',[]):
+        add(row.get('id'),'C');add(row.get('current_revision_id'),'R')
     for row in [*payload.get('related_sections',[]),*payload.get('available_section_versions',[])]:
         add(row.get('section_id'),'C');add(row.get('revision_id'),'R')
     def collect(value):

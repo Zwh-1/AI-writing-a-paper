@@ -53,45 +53,57 @@ def assemble(pid,sid,contract_id,profile,remote=True,evidence_ids=None,operation
     ids=list(dict.fromkeys([*c.get('evidence_ids',[]),*fact_evidence_ids,*artifact_evidence_ids,*(evidence_ids or []),*intent_ids]))
     if len(ids)>80:fail('CONTEXT_BUDGET_EXCEEDED','本单元证据过多，请缩小范围')
     ee=[evidence.get(pid,eid,remote) for eid in ids]
-    reference_sources={}
+    reference_sources={};reference_units={};reference_readings={}
     for e in ee:
+        if e['origin_type']=='document_reading':
+            fid=e['payload']['file_id'];file_ids.add(fid);reference_sources.setdefault(fid,[])
+            reference_units.setdefault(fid,[]).extend(p['unit_id'] for p in e['payload']['passages'])
+            reference_readings.setdefault(fid,[]).append(e['origin_id'])
+        if e['origin_type']=='knowledge_unit':
+            fid=e['payload']['file_id'];file_ids.add(fid);reference_sources.setdefault(fid,[])
+            reference_units.setdefault(fid,[]).append(e['origin_id'])
         if e['origin_type']=='source':
             source=db.one('SELECT file_id FROM sources WHERE id=?',(e['origin_id'],))
             if source:
                 file_ids.add(source['file_id']);reference_sources.setdefault(source['file_id'],[]).append(e['origin_id'])
-    references=[{**r,'metadata':db.loads(r['metadata'],{}),'source_ids':reference_sources[r['file_id']]} for r in db.rows('SELECT * FROM bibliography WHERE project_id=?',(pid,)) if r['file_id'] in reference_sources]
+    references=[{**r,'metadata':db.loads(r['metadata'],{}),'source_ids':reference_sources[r['file_id']],'knowledge_unit_ids':list(dict.fromkeys(reference_units.get(r['file_id'],[]))),'document_reading_ids':reference_readings.get(r['file_id'],[])} for r in db.rows('SELECT * FROM bibliography WHERE project_id=?',(pid,)) if r['file_id'] in reference_sources]
     for e in ee:
         if not e['version_current'] or e['validity'] not in ('current','historical'):fail('INPUT_VERSION_CHANGED','证据已过期',409)
-    chosen=set(c.get('depends_on_sections',[]));ordered=db.rows("SELECT * FROM sections WHERE project_id=? AND state!='archived' ORDER BY position",(pid,))
-    at=next((i for i,x in enumerate(ordered) if x['id']==sid),0)
-    chosen.update(x['id'] for x in ordered[max(0,at-1):at+2] if x['id']!=sid)
-    related=[];versions={}
-    for chapter in ordered:
-        if chapter['id'] not in chosen or not chapter['current_revision_id']:continue
-        rev=documents.current(chapter)
-        if remote:
-            from .provenance import revision_permissions
-            revision_permissions(pid,rev['id'])
-        for d in db.rows("SELECT upstream_id FROM dependencies WHERE revision_id=? AND upstream_type='source'",(rev['id'],)):
-            origin=db.one('SELECT file_id FROM sources WHERE id=?',(d['upstream_id'],))
-            if remote and (not origin or not security.file_allows_remote(origin['file_id'],pid)):fail('SOURCE_ACCESS_REVOKED','关联正文的派生来源禁止外发',403)
-        if chapter['id'] in c.get('depends_on_sections',[]):related_text=rev['text'];scope='full_required_dependency'
-        else:
-            from .sentences import paragraphs,paragraph_text
-            blocks=paragraphs(db.loads(rev['document'],{}));before=next((i for i,x in enumerate(ordered) if x['id']==chapter['id']),0)<at;chosen_blocks=blocks[-2:] if before else blocks[:2];related_text='\n'.join(paragraph_text(n) for n in chosen_blocks);scope='complete_boundary_paragraphs'
-        related.append({'section_id':chapter['id'],'title':chapter['title'],'revision_id':rev['id'],'text':related_text,'scope':scope,'full_text_available_via_read_section':True});versions[chapter['id']]=rev['id']
+    from ..writing_continuity import collect
+    continuity,continuity_manifest,continuity_files=collect(pid,sid,c.get('depends_on_sections',[]),remote)
+    related=continuity['related_sections'];versions=continuity_manifest['related_revisions'];file_ids.update(continuity_files)
     payload={'project':{'title':p['title'],'brief':db.loads(p['brief'],{})},'thesis_core':core_content,'section':{'id':sid,'title':s['title'],'kind':s['kind'],'goal':s['goal']},'contract':c,'rules':[{'id':r['id'],'statement':r['statement']} for r in rr],'evidence':[{'id':e['id'],'kind':e['kind'],'conditions':e['conditions'],'payload':e['payload']} for e in ee],'facts':facts,'existing_document':db.loads(current['document'],{}) if current else None,'related_sections':related,'terminology':db.rows('SELECT zh,en FROM terms WHERE project_id=?',(pid,))}
     payload['project_inputs']={'rule_package_id':package['id'],'rule_ids':[r['id'] for r in rr],'evidence_ids':[e['id'] for e in ee],'reference_ids':[r['id'] for r in references],'material_evidence_ids':[e['id'] for e in ee if e['kind'] in ('material_observation','literature')]}
     manifest={'project_id':pid,'section_id':sid,'project_state_revision':head['revision'],'core_version_id':head['core_version_id'],'target_snapshot_id':head['target_snapshot_id'],'contract_version_id':contract_id,'rule_package_id':p['rule_package_id'],'evidence_versions':{e['id']:e['origin_version'] for e in ee},'fact_versions':{f['id']:f['revision'] for f in facts},'related_revisions':versions,'base_revision_id':s['current_revision_id'],'rule_ids':[r['id'] for r in rr],'file_ids':sorted(file_ids),'remote':remote,'profile_fingerprint':profile['route_fingerprint'],'prompt_version':'agent.v1','schema_version':'agent.v1','permissions_hash':digest([(e['id'],evidence.allowed_remote(pid,e['id'])) for e in ee])}
-    payload['evidence']=[evidence.for_model(e) for e in ee];payload['references']=[{k:r[k] for k in ('id','metadata','source_ids','verification')} for r in references]
+    payload.update(continuity);manifest.update(continuity_manifest);manifest['terminology_hash']=digest(payload['terminology'])
+    from ..source_payload import compact_reference_metadata
+    payload['evidence']=[evidence.for_model(e) for e in ee];payload['references']=[{**{k:r[k] for k in ('id','source_ids','knowledge_unit_ids','document_reading_ids','verification')},'metadata':compact_reference_metadata(r['metadata'])} for r in references]
+    manifest['reference_metadata_hashes']={r['id']:digest(r['metadata']) for r in references}
+    manifest['evidence_payload_hashes']={e['id']:e['payload_hash'] for e in ee}
     for item,original in zip(payload['evidence'],ee):
         field='thesis_core' if original['origin_type']=='author' and original['origin_id']==core['id'] else 'contract' if original['origin_type']=='author' and original['origin_id']==contract['id'] else None
         if field:
             if db.loads(original['payload'].get('text'),None)==payload[field]:item['payload']={'context_field':field,'scope':'同一输入中该字段的完整作者声明；不代表实现或运行证据','original_payload_hash':original['payload_hash']}
     payload['evidence']=share_exact_code_text(payload['evidence'])
-    manifest['permission_stamps']={e['id']:evidence.permission_stamp(pid,e['id']) for e in ee};manifest['project_brief_hash']=digest(db.loads(p['brief'],{}));manifest['context_policy_version']='phase_scoped.v4'
+    manifest['permission_stamps']={e['id']:evidence.permission_stamp(pid,e['id']) for e in ee};manifest['project_brief_hash']=digest(db.loads(p['brief'],{}));manifest['context_policy_version']='phase_scoped.v5.whole_source_retrieval'
     manifest['reference_versions']={r['id']:r['revision'] for r in references}
     manifest['operation']=operation
+    manifest['rule_modalities']={r['id']:r['modality'] for r in rr}
+    manifest['source_evidence']={e['id']:{'source_id':e['origin_id'],'file_id':e['payload'].get('file_id'),'title':db.one('SELECT name FROM files WHERE id=?',(e['payload'].get('file_id'),))['name']} for e in ee if e['origin_type']=='source'}
+    manifest['source_evidence'].update({e['id']:{'knowledge_unit_id':e['origin_id'],'file_id':e['payload']['file_id'],'title':db.one('SELECT name FROM files WHERE id=?',(e['payload']['file_id'],))['name']} for e in ee if e['origin_type']=='knowledge_unit'})
+    manifest['knowledge_unit_versions']={e['origin_id']:e['payload']['unit_hash'] for e in ee if e['origin_type']=='knowledge_unit'}
+    manifest['knowledge_read_scopes']={e['origin_id']:{'parse_id':e['payload']['parse_id'],'scope':e['payload']['scope'],'passage_ids':[p['id'] for p in e['payload']['passages']]} for e in ee if e['origin_type']=='knowledge_unit'}
+    manifest['knowledge_selection']=sorted(r['unit_id'] for r in db.rows('SELECT unit_id FROM knowledge_selections WHERE section_id=?',(sid,)))
+    manifest['document_reading_versions']={e['origin_id']:e['origin_version'] for e in ee if e['origin_type']=='document_reading'}
+    manifest['source_evidence'].update({e['id']:{'reading_id':e['origin_id'],'file_id':e['payload']['file_id'],'title':db.one('SELECT name FROM files WHERE id=?',(e['payload']['file_id'],))['name']} for e in ee if e['origin_type']=='document_reading'})
+    pinned=set(evidence_ids or [])
+    for cid in [*core_content.get('claim_versions',[]),*c.get('claim_versions',[])]:pinned.update(row['evidence_id'] for row in db.rows('SELECT evidence_id FROM claim_evidence_links WHERE claim_version_id=?',(cid,)))
+    pinned.update(c.get('required_evidence_ids',[]));manifest['pinned_evidence_ids']=sorted(pinned)
+    from pathlib import Path
+    binding=owned('repository',snapshot['binding_id'],pid)
+    paths=db.rows('SELECT relative_path FROM repository_snapshot_files WHERE snapshot_id=? ORDER BY relative_path',(snapshot['id'],))
+    entry_paths=[row['relative_path'] for row in paths if row['relative_path'].count('/')<=1 and (row['relative_path'].lower().endswith(('readme.md','package.json','pom.xml','build.gradle','requirements.txt')))]
+    payload['repository']={'snapshot_id':snapshot['id'],'head_commit':snapshot.get('head_commit'),'project_directory_name':Path(binding['root_path_local']).name,'entry_paths':entry_paths[:12]}
     return payload,manifest
 
 def share_exact_code_text(items):
@@ -122,20 +134,18 @@ def select_evidence(items,selected):
         selected.update(added)
 
 def save_context(step_id,payload,manifest,system,cfg):
+    from .packing import fit
+    fit(payload,manifest,system,cfg)
     from ..source_payload import token_upper_bound
     reserve=int(cfg.get('max_output_tokens',8192));limit=int(cfg.get('context_limit',32000))
     def estimate_payload():
         from .identifiers import encode
         model_payload,_=encode(payload,manifest)
         return token_upper_bound(system,db.dumps({'messages':[{'role':'user','content':db.dumps(model_payload)}],'tools':[]}))
-    # Optional boundary passages can be recovered by the expansion stage. Keep
-    # explicit dependency chapters and every condition/rule/evidence item.
-    if estimate_payload()+reserve>limit:
-        optional=[r for r in payload.get('related_sections',[]) if r.get('scope')=='complete_boundary_paragraphs']
-        if optional:
-            payload['related_sections']=[r for r in payload['related_sections'] if r.get('scope')!='complete_boundary_paragraphs']
-            payload['omitted_optional_boundary_sections']=[{'section_id':r['section_id'],'revision_id':r['revision_id'],'reason':'budget; full original available through bounded coherence expansion'} for r in optional]
-            omitted={r['section_id'] for r in optional};manifest['related_revisions']={sid:rid for sid,rid in manifest.get('related_revisions',{}).items() if sid not in omitted};manifest['optional_context_omissions']=payload['omitted_optional_boundary_sections']
+    # Optional excerpts may be recovered by the expansion stage. Explicit
+    # dependencies and already expanded premises retain their version guards.
+    from ..writing_continuity import fit_optional
+    fit_optional(payload,manifest,lambda:estimate_payload()+reserve<=limit)
     serialized=db.dumps(payload)
     for profile in ('','gpt-fallback','material-summary'):
         key=security.get_key(profile)
@@ -144,7 +154,7 @@ def save_context(step_id,payload,manifest,system,cfg):
     model_payload,_=encode(payload,manifest)
     frame={'messages':[{'role':'user','content':db.dumps(model_payload)}],'tools':[]}
     estimate=token_upper_bound(system,db.dumps(frame))
-    if estimate+reserve>limit:fail('CONTEXT_BUDGET_EXCEEDED','必要规则、证据和正文超过预算；请缩小单元或提高已验证的接口预算',input_estimate=estimate,reserved_output=reserve,limit=limit)
+    if estimate+reserve>limit:fail('CONTEXT_BUDGET_EXCEEDED','完整论文正文、必要规则和证据超过预算；未截断全文，请调整已验证的接口上下文配置或缩小项目资料范围',input_estimate=estimate,reserved_output=reserve,limit=limit)
     identity=db.uid();budget={'input_estimate':estimate,'reserved_generated_total':reserve,'context_limit':limit,'estimate_method':'utf8_bytes_plus_protocol_reserve','reasoning_and_visible_share_limit':'provider_specific_not_double_counted'}
     db.execute('INSERT INTO writing_contexts VALUES(?,?,?,?,?,?,?)',(identity,step_id,blob(manifest),blob(payload),digest(payload),db.dumps(budget),manifest.get('permissions_hash','')))
     return identity

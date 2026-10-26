@@ -73,13 +73,16 @@ def cross_encoder_rerank(query,candidates,model):
     return [{**item,'rerank_rank':position} for position,item in enumerate(ranked,1)]
 
 
-def hybrid(pid,query,kind='research',limit=12,remote=False,force=False,knowledge=False):
+def hybrid(pid,query,kind='research',limit=12,remote=False,force=False,knowledge=False,rerank_override=None):
     from .parsers import keyword_search
     from .security import file_allows_remote
     started=time.perf_counter();cfg=config(pid);limit=min(100,max(1,int(limit)))
     if knowledge:
         policy=db.setting('reference_knowledge:'+pid,{})
         cfg={**cfg,'rerank':'cross_encoder' if policy.get('rerank_enabled',True) else 'fusion'}
+    if rerank_override is not None:
+        if rerank_override not in ('fusion','cross_encoder'):raise ValueError('重排覆盖策略无效')
+        cfg={**cfg,'rerank':rerank_override}
     pool=min(100,max(int(cfg['candidate_k']),limit));stage_start=time.perf_counter()
     keyword=keyword_search(pid,query,kind,pool,remote,**({'knowledge':True} if knowledge else {}))
     timings={'bm25':round((time.perf_counter()-stage_start)*1000,3)}
@@ -89,7 +92,7 @@ def hybrid(pid,query,kind='research',limit=12,remote=False,force=False,knowledge
     scope=__import__('app.reference_knowledge',fromlist=['scope_sql']).scope_sql() if knowledge else ''
     permissions={}
     def eligible_source(source):
-        if kind=='research' and source['kind']!='evidence':return False
+        if kind=='research' and not knowledge and source['kind']!='evidence':return False
         if kind=='example' and source['kind'] not in ('example','counterexample'):return False
         if remote:
             fid=source['file_id']

@@ -1,4 +1,6 @@
 import SentenceLocator from "./SentenceLocator";
+import WritingSources from "./WritingSources";
+import PaperVisualsButton from "./PaperVisuals";
 import { lazy, Suspense } from "react";
 import WorkspaceDialog from "./workspace/WorkspaceDialog";
 import OutlineWorkspace from "./outline/OutlineWorkspace";
@@ -7,6 +9,7 @@ const MaterialsWorkspace = lazy(() => import("./materials/MaterialsWorkspace"));
 const AgentWriting = lazy(() => import("./AgentWriting"));
 const ReferencesWorkspace = lazy(() => import("./references/ReferencesWorkspace"));
 import GptFallbackSettings from "./GptFallbackSettings";
+import ImageGenerationSettings from "./ImageGenerationSettings";
 import { MaterialSummary, MaterialSummarySettings } from "./MaterialSummary";
 import AdvancedPage, { StreamPreview } from "./Advanced";
 import katex from "katex";
@@ -33,7 +36,7 @@ import { createRoot } from "react-dom/client";
 import { useEditor, EditorContent } from "@tiptap/react";
 import { Node, Extension, mergeAttributes } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
-import { Table } from "@tiptap/extension-table";
+import { Table, TableView } from "@tiptap/extension-table";
 import TableRow from "@tiptap/extension-table-row";
 import TableHeader from "@tiptap/extension-table-header";
 import TableCell from "@tiptap/extension-table-cell";
@@ -617,7 +620,7 @@ function App() {
                 {page === "rules" && <Rules />}
                 {page === "outline" && <Outline />}
                 {page === "editor" && <Writing />}
-                {page === "agent-writing" && <Suspense fallback={<p>正在打开有据写作…</p>}><AgentWriting pid={pid} tick={tick} onOpenEditor={(sectionId)=>{localStorage.setItem("paper_section",sectionId);setPage("editor");}} onOpenResearch={()=>setPage("research")} /></Suspense>}
+                {page === "agent-writing" && <Suspense fallback={<p>正在打开有据写作…</p>}><AgentWriting pid={pid} tick={tick} onOpenEditor={(sectionId)=>{localStorage.setItem("paper_section",sectionId);setPage("editor");}} onOpenResearch={()=>setPage("research")} onOpenProject={()=>setPage("overview")} onOpenSettings={()=>setPage("settings")} onOpenRules={()=>setPage("rules")} /></Suspense>}
                 {page === "research" && <Research />}
                 {page === "references" && <References />}
                 {page === "review" && <Review />}
@@ -737,6 +740,8 @@ function App() {
                         parse: "解析资料",
                         extract_rules: "整理规则",
                         write: "论文写作",
+                        paper_visual: "论文图表候选",
+                        paper_image: "GPT 图片生成与修改",
                         review: "论文检查",
                         export: "导出论文",
                         backup: "创建备份",
@@ -748,6 +753,7 @@ function App() {
                         autopilot_exception_repair: "修复资料与规则例外",
                         outline_ai: "规划提纲",
                         knowledge_index: "更新文献知识库",
+                        evidence_knowledge_build: "构建结构化证据知识库",
                         provider_probe: "验证模型生成",
                         provider_image_probe: "验证模型图片识别",
                       } as Row
@@ -1372,6 +1378,9 @@ const StableIds = Extension.create({
         attributes: {
           sourceIds: { default: [], renderHTML: () => ({}) },
           factIds: { default: [], renderHTML: () => ({}) },
+          knowledgeUnitIds: { default: [], renderHTML: () => ({}) },
+          documentReadingIds: { default: [], renderHTML: () => ({}) },
+          describesFigureId: { default: "", parseHTML: (e:HTMLElement)=>e.getAttribute("data-describes-figure")||"", renderHTML:(a:Row)=>a.describesFigureId?{"data-describes-figure":a.describesFigureId}:{} },
           nodeId: {
             default: null,
             parseHTML: (e: HTMLElement) => e.getAttribute("data-node-id"),
@@ -1406,6 +1415,39 @@ const Citation = Node.create({
   },
 });
 let artifactImages: Record<string, string> = {};
+let figureLabels: Record<string,string> = {};
+let activeFigureSection = "";
+const CrossReference = Node.create({
+  name:"crossReference",inline:true,group:"inline",atom:true,
+  addAttributes(){return {targetId:{default:""},targetSectionId:{default:""},nodeId:{default:null}}},
+  parseHTML(){return [{tag:"span[data-figure-reference]"}]},
+  renderHTML({HTMLAttributes}){return ["span",{"data-figure-reference":HTMLAttributes.targetId,"data-target-section":HTMLAttributes.targetSectionId,class:"paper-crossref"},figureLabels[HTMLAttributes.targetSectionId+":"+HTMLAttributes.targetId]||"[图表引用]"]},
+  addNodeView(){return ({node})=>{let current=node;const dom=document.createElement("span");dom.className="paper-crossref";dom.contentEditable="false";const sync=()=>{dom.textContent=figureLabels[current.attrs.targetSectionId+":"+current.attrs.targetId]||"[图表引用待核对]";dom.dataset.figureReference=current.attrs.targetId;};sync();window.addEventListener("paper-figure-index",sync);return {dom,update(next:any){if(next.type.name!=="crossReference")return false;current=next;sync();return true;},ignoreMutation:()=>true,destroy(){window.removeEventListener("paper-figure-index",sync)}};}}
+});
+class ThesisTableView extends TableView {
+  constructor(...args: ConstructorParameters<typeof TableView>) { super(...args); this.syncAttributes(); }
+  syncAttributes() {
+    this.table.dataset.tableStyle = this.node.attrs.tableStyle || "grid";
+    this.table.dataset.caption = this.node.attrs.caption || "";
+    this.table.dataset.note = this.node.attrs.note || "";
+  }
+  update(node: Parameters<TableView["update"]>[0]) {
+    const updated = super.update(node);
+    if (updated) this.syncAttributes();
+    return updated;
+  }
+}
+const ThesisTable = Table.extend({
+  addAttributes() {
+    return {
+      ...this.parent?.(),
+      tableStyle: { default: "grid", parseHTML: (element: HTMLElement) => element.getAttribute("data-table-style") || "grid", renderHTML: (attrs: Row) => ({ "data-table-style": attrs.tableStyle }) },
+      caption: { default: "", parseHTML: (element: HTMLElement) => element.getAttribute("data-caption") || "", renderHTML: (attrs: Row) => ({ "data-caption": attrs.caption }) },
+      note: { default: "", parseHTML: (element: HTMLElement) => element.getAttribute("data-note") || "", renderHTML: (attrs: Row) => ({ "data-note": attrs.note }) },
+      artifactId: { default: null, parseHTML: (element: HTMLElement) => element.getAttribute("data-table-artifact"), renderHTML: (attrs: Row) => attrs.artifactId ? ({ "data-table-artifact": attrs.artifactId }) : ({}) },
+    };
+  },
+});
 const Figure = Node.create({
   name: "figure",
   group: "block",
@@ -1415,6 +1457,7 @@ const Figure = Node.create({
       artifactId: { default: "" },
       caption: { default: "" },
       nodeId: { default: null },
+      diagramType: { default: "" }, figurePurpose: { default: "" }, explanationNodeId: { default: "" }, relatedSectionIds: { default: [] },
     };
   },
   parseHTML() {
@@ -1434,6 +1477,7 @@ const Figure = Node.create({
       ["figcaption", {}, HTMLAttributes.caption || "研究图表"],
     ];
   },
+  addNodeView(){return ({node})=>{let current=node;const dom=document.createElement("figure"),img=document.createElement("img"),caption=document.createElement("figcaption");dom.append(img,caption);const sync=()=>{dom.dataset.artifact=current.attrs.artifactId;img.src=artifactImages[current.attrs.artifactId]??"";img.alt=current.attrs.caption;const label=figureLabels[activeFigureSection+":"+current.attrs.nodeId];caption.textContent=(label?label+" ":"")+(current.attrs.caption||"研究图表");};sync();window.addEventListener("paper-figure-index",sync);return {dom,update(next:any){if(next.type.name!=="figure")return false;current=next;sync();return true;},ignoreMutation:()=>true,destroy(){window.removeEventListener("paper-figure-index",sync)}};}}
 });
 const Formula = Node.create({
   name: "formula",
@@ -1480,8 +1524,7 @@ function Writing() {
     [instruction, setInstruction] = useState(""),
     [operation, setOperation] = useState("generate"),
     [saveState, setSaveState] = useState("已保存"),
-    [sourceQuery, setSourceQuery] = useState(""),
-    [sourceResults, setSourceResults] = useState<Row[]>([]),
+    [sourceFile, setSourceFile] = useState<Row | null>(null),
     [panel, setPanel] = useState("sources");
   useEffect(() => {
     if (sections?.length && !sections.some((s: Row) => s.id === sid))
@@ -1592,7 +1635,7 @@ function Writing() {
             const current = writingLink.sections.find((item: Row) => item.section_id === sid);
             const linkedFacts = (writingLink.facts ?? []).filter((fact: Row) => current.fact_ids?.includes(fact.id));
             return <section className="writing-link-card">
-              <div className="section-heading"><h3>本节研究链路</h3><Badge value={current.stale ? "stale" : current.revision_id ? "draft" : "pending"} /></div>
+              <div className="section-heading"><h3>本节研究链路</h3>{current.revision_id||current.stale?<Badge value={current.stale ? "stale" : "draft"} />:<span className="badge">待写作</span>}</div>
               <p className="muted small">{current.contract?.goal || "尚未发布章节写作任务"}</p>
               <p className="small">研究事实 {linkedFacts.length} 项 · 任务证据 {current.source_ids?.length ?? 0} 项</p>
               {linkedFacts.map((fact: Row) => <button className="text-button writing-link-fact" key={fact.id} onClick={() => notify(`${fact.label}：${fact.statement}`)}>{fact.label}</button>)}
@@ -1614,63 +1657,7 @@ function Writing() {
             </button>
           </div>
           {panel === "sources" ? (
-            <>
-              <p className="muted small">
-                检索与本节有关的原文。检索相关不等同于论断已核实。
-              </p>
-              <div className="mini-search">
-                <input
-                  value={sourceQuery}
-                  onChange={(e) => setSourceQuery(e.target.value)}
-                  placeholder="关键词或研究问题"
-                />
-                <button
-                  className="icon-button"
-                  onClick={async () => {
-                    try {
-                      setSourceResults(
-                        await send("/projects/" + pid + "/search", {
-                          query: sourceQuery || content?.section.title,
-                          kind: "research",
-                        }),
-                      );
-                    } catch (e) {
-                      notify((e as Error).message, true);
-                    }
-                  }}
-                >
-                  <Search size={16} />
-                </button>
-              </div>
-              {sourceResults.map((s) => (
-                <details className="evidence-card" key={s.id}>
-                  <summary>
-                    <FileText size={15} />
-                    {s.name}
-                    <small>{sourceLocation(s)}</small>
-                  </summary>
-                  <p>{s.text}</p>
-                  <Button
-                    onClick={() => {
-                      window.dispatchEvent(
-                        new CustomEvent("paper-attach-source", {
-                          detail: { sectionId: sid, sourceId: s.id },
-                        }),
-                      );
-                    }}
-                  >
-                    关联当前段落
-                  </Button>
-                  <small>来源 ID：{s.id}</small>
-                </details>
-              ))}
-              {!sourceResults.length && (
-                <div className="small-empty">
-                  <Search size={24} />
-                  <p>检索原文，为本节建立证据。</p>
-                </div>
-              )}
-            </>
+            <WritingSources key={pid + ":" + sid} pid={pid} sid={sid} tick={tick} onOpen={file => setSourceFile({ ...file, ...writingLink?.materials?.find((item: Row) => item.id === file.id) })} onMaterials={() => setPage("materials")} location={sourceLocation} />
           ) : (
             <>
               <h4>可用参考文献</h4>
@@ -1698,6 +1685,7 @@ function Writing() {
           )}
         </aside>
       </div>
+      {sourceFile && <SourceViewer file={sourceFile} onClose={() => setSourceFile(null)} />}
       {historyOpen && (
         <Modal
           title="章节版本与恢复"
@@ -1758,8 +1746,15 @@ function RichEditor({
   instruction,
   setInstruction,
 }: any) {
-  const { act, notify, pid } = useApp();
+  const { act, notify, pid, tick, refresh } = useApp();
   const isEnglishAbstract = content.section.kind === "abstract_en";
+  const [contextRevision, setContextRevision] = useState(0);
+  const writingContext = useLoad(isEnglishAbstract ? null : "/sections/" + content.section.id + "/writing-context", tick + contextRevision);
+  const manuscript = writingContext.data?.section_id === content.section.id ? writingContext.data : null;
+  activeFigureSection=content.section.id;
+  const figureIndex=useLoad("/projects/"+pid+"/figure-index",tick+contextRevision);
+  const [crossTarget,setCrossTarget]=useState("");
+  useEffect(()=>{const rows=figureIndex.data?.figures??[];figureLabels={};for(const row of rows){figureLabels[row.section_id+":"+row.node_id]=row.label;figureLabels[row.node_id]=row.label;}window.dispatchEvent(new Event("paper-figure-index"));},[figureIndex.data,artifacts]);
   const revision = useRef(content.section.current_revision_id),
     dirty = useRef(false),
     saving = useRef(false),
@@ -1775,11 +1770,11 @@ function RichEditor({
   const editorRef = useRef<any>(null);
   const lockIdsRef = useRef<string[]>(locks);
   lockIdsRef.current = locks;
-  artifactImages = Object.fromEntries(
+  artifactImages = { ...artifactImages, ...Object.fromEntries(
     artifacts
-      .filter((a: Row) => a.sha256)
+      .filter((a: Row) => a.sha256 && a.kind === "figure")
       .map((a: Row) => [a.id, "/api/v1/images/" + a.sha256]),
-  );
+  ) };
   const updateState = (s: string) => {
     setStatus(s);
     onSaveState(s);
@@ -1802,6 +1797,7 @@ function RichEditor({
         "PUT",
       );
       revision.current = d.id;
+      setContextRevision(value => value + 1);
       if (generation.current === version) {
         dirty.current = false;
         ed.commands.setContent(parse(d.document), { emitUpdate: false });
@@ -1831,10 +1827,11 @@ function RichEditor({
       LockedNodes.configure({ getLocks: () => lockIdsRef.current }),
       StableIds,
       Citation,
+      CrossReference,
       Figure,
       Formula,
       Footnote,
-      Table.configure({ resizable: true }),
+      ThesisTable.configure({ resizable: true, View: ThesisTableView }),
       TableRow,
       TableHeader,
       TableCell,
@@ -1977,12 +1974,112 @@ function RichEditor({
           {status}
         </span>
       </div>
-      {content.section.stale && (
+      {!!content.section.stale && (
         <div className="alert compact">
           <AlertTriangle size={15} />
           {content.section.stale_reason}
         </div>
       )}
+      <section className="ai-composer" aria-label="本节辅助写作">
+        <div>
+          <Sparkles size={17} />
+          <strong>{isEnglishAbstract ? "英文摘要翻译" : "辅助本节写作"}</strong>
+          <span>{isEnglishAbstract ? "直接翻译已保存的中文摘要" : "读取已保存全文后处理当前章"}</span>
+        </div>
+        {!isEnglishAbstract && <div className="writing-context" aria-label="全文上下文">
+          {manuscript?.can_load ? <details>
+            <summary>{manuscript.saved_sections ? `全文上下文：${manuscript.saved_sections}/${manuscript.total_sections} 章已有正文 · ${manuscript.characters.toLocaleString()} 字` : "全文上下文：尚无已保存正文，目前只有提纲与研究资料"}</summary>
+            <p className="muted">生成、修改、润写、扩写、压缩均读取以下章节的完整已保存正文。只输出当前章或选区的候选。</p>
+            <ul>{manuscript.sections.map((item: Row) => <li key={item.section_id}>{item.title} · {item.has_content ? `${item.characters.toLocaleString()} 字` : "尚无正文"}</li>)}</ul>
+          </details> : <p className="muted" role="status">{manuscript?.message || writingContext.error || "正在检查已保存全文…"}</p>}
+        </div>}
+        {!isEnglishAbstract && operation === "polish" && <p className="muted" role="note">润写按独立规范改善措辞、句式与衔接，保留事实、数值、限定条件和引用。可在论文规则中单独勾选“润写”并发布适用条款。{!editor?.getText().trim() && "请先保存需要润写的正文。"}</p>}
+        <textarea
+          value={instruction}
+          onChange={(e) => setInstruction(e.target.value)}
+          placeholder={isEnglishAbstract ? "可补充专业术语的英文译法或英文表达偏好。" : operation === "polish" ? "例如：改善句式与衔接，保持原有事实、数值和结论。" : "例如：结合已有资料补充方案比较，保留所有已确认事实。"}
+          rows={3}
+        />
+        {!isEnglishAbstract && <label className="checkbox">
+          <input
+            type="checkbox"
+            checked={selectionOnly}
+            onChange={(e) => setSelectionOnly(e.target.checked)}
+          />
+          仅改写当前/选中的连续段落，其余正文保持原样
+        </label>}
+        <div className="composer-bottom">
+          <select
+            aria-label="写作操作"
+            value={operation}
+            onChange={(e) => setOperation(e.target.value)}
+          >
+            {(isEnglishAbstract ? [["translate", "翻译中文摘要"]] : [
+              ["generate", "生成本节"],
+              ["revise", "定向修改"],
+              ["polish", "润写"],
+              ["expand", "扩写"],
+              ["compress", "压缩"],
+              ["translate", "翻译"],
+            ]).map(([k, v]) => (
+              <option key={k} value={k}>
+                {v}
+              </option>
+            ))}
+          </select>
+          <Button
+            variant="primary"
+            disabled={!isEnglishAbstract && ((!!manuscript && !manuscript.can_load) || (operation === "polish" && !editor?.getText().trim()))}
+            onClick={async () => {
+              if (saving.current) {
+                notify("请等待保存完成");
+                return;
+              }
+              const selected: string[] = [];
+              if (!isEnglishAbstract && selectionOnly && editor) {
+                const { from, to } = editor.state.selection;
+                editor.state.doc.forEach((node, pos) => {
+                  if (
+                    node.type.name === "paragraph" &&
+                    pos < Math.max(to, from + 1) &&
+                    pos + node.nodeSize > from
+                  )
+                    selected.push(node.attrs.nodeId);
+                });
+                if (!selected.length) {
+                  notify("请先选择要改写的连续正文段落", true);
+                  return;
+                }
+              }
+              if (await saveNow()) {
+                if (!isEnglishAbstract) {
+                  try {
+                    const latestContext = await api("/sections/" + content.section.id + "/writing-context");
+                    writingContext.set(latestContext);
+                    if (!latestContext.can_load) { notify(latestContext.message, true); return; }
+                  } catch (error) { notify((error as Error).message, true); return; }
+                }
+                if (!isEnglishAbstract && selectionOnly && editor) {
+                  selected.length = 0;
+                  const { from, to } = editor.state.selection;
+                  editor.state.doc.forEach((node, pos) => {
+                    if (
+                      node.type.name === "paragraph" &&
+                      pos < Math.max(to, from + 1) &&
+                      pos + node.nodeSize > from
+                    )
+                      selected.push(node.attrs.nodeId);
+                  });
+                }
+                await onGenerate(!isEnglishAbstract && selectionOnly ? selected : []);
+              }
+            }}
+          >
+            <Sparkles size={15} />
+            {isEnglishAbstract ? "翻译中文摘要" : operation === "polish" ? "生成润写候选" : "生成候选稿"}
+          </Button>
+        </div>
+      </section>
       <div className="editor-toolbar">
         <button
           title="加粗"
@@ -2093,6 +2190,40 @@ function RichEditor({
         <span>{locks.length} 个锁定段落</span>
       </div>
       <div className="inline-resource">
+        <PaperVisualsButton pid={pid} sectionId={content.section.id} onPrepare={saveNow} getAnchor={() => {
+          if (!editor) return undefined;
+          let anchor: string | undefined;
+          editor.state.doc.forEach((block, pos) => { if (pos <= editor.state.selection.from && pos + block.nodeSize > editor.state.selection.from) anchor = block.attrs.nodeId; });
+          return anchor;
+        }} onSaved={refresh} onInsert={async (node, asset) => {
+          if (!editor || editor.isDestroyed) return false;
+          if (parse(asset.metadata).render_engine === "gpt-image-2") {
+            if (!(await saveNow())) return false;
+            const result = await send(`/sections/${content.section.id}/paper-visuals/${asset.id}/insert`, {
+              base_revision_id: revision.current, review_id: asset.alignment_review_id,
+            });
+            revision.current = result.revision.id;
+            dirty.current = false;
+            artifactImages[asset.id] = "/api/v1/images/" + asset.sha256;
+            editor.commands.setContent(parse(result.revision.document), { emitUpdate: false });
+            localStorage.removeItem("paper_emergency_" + content.section.id);
+            updateState("已保存");
+            setContextRevision(value => value + 1);
+            return true;
+          }
+          let alreadyInserted = false;
+          editor.state.doc.descendants(current => { if (current.attrs.nodeId === node.attrs?.nodeId) alreadyInserted = true; });
+          if (alreadyInserted) return await saveNow();
+          if (asset.kind === "figure") artifactImages[asset.id] = "/api/v1/images/" + asset.sha256;
+          const insertNodes=asset.insert_nodes??[node];
+          const inserted = editor.isActive("table")
+            ? editor.chain().focus().insertContentAt(editor.state.selection.$from.after(1), insertNodes).run()
+            : editor.chain().focus().insertContent(insertNodes).run();
+          if (!inserted) return false;
+          return await saveNow();
+        }} />
+        <select aria-label="选择图表交叉引用" value={crossTarget} onChange={e=>setCrossTarget(e.target.value)}><option value="">选择图表交叉引用…</option>{(figureIndex.data?.figures??[]).map((row:Row)=><option key={row.section_id+":"+row.node_id} value={row.section_id+":"+row.node_id}>{row.label} {row.caption||"【题名待补】"}</option>)}</select>
+        <Button disabled={!crossTarget} onClick={()=>{const split=crossTarget.indexOf(":"),targetSectionId=crossTarget.slice(0,split),targetId=crossTarget.slice(split+1);if(!editor?.chain().focus().insertContent({type:"crossReference",attrs:{targetSectionId,targetId,nodeId:crypto.randomUUID()}}).run())notify("请将光标放入可编辑的正文段落后插入引用",true);}}>插入图表引用</Button>
         <select
           aria-label="选择关联事实"
           value={factId}
@@ -2172,89 +2303,7 @@ function RichEditor({
         </Button>
         <Button onClick={()=>{const text=prompt("输入当前文字位置的脚注内容");if(text)editor?.chain().focus().insertContent({type:"footnote",attrs:{noteText:text,nodeId:crypto.randomUUID()}}).run()}}>脚注</Button>
       </div>
-      <div className="ai-composer">
-        <div>
-          <Sparkles size={17} />
-          <strong>{isEnglishAbstract ? "英文摘要翻译" : "辅助本节写作"}</strong>
-          <span>{isEnglishAbstract ? "直接翻译已保存的中文摘要" : "先加载规则，再检索证据"}</span>
-        </div>
-        <textarea
-          value={instruction}
-          onChange={(e) => setInstruction(e.target.value)}
-          placeholder={isEnglishAbstract ? "可补充专业术语的英文译法或英文表达偏好。" : "例如：结合已有资料补充方案比较，保留所有已确认事实。"}
-          rows={3}
-        />
-        {!isEnglishAbstract && <label className="checkbox">
-          <input
-            type="checkbox"
-            checked={selectionOnly}
-            onChange={(e) => setSelectionOnly(e.target.checked)}
-          />
-          仅改写当前/选中的连续段落，其余正文保持原样
-        </label>}
-        <div className="composer-bottom">
-          <select
-            aria-label="写作操作"
-            value={operation}
-            onChange={(e) => setOperation(e.target.value)}
-          >
-            {(isEnglishAbstract ? [["translate", "翻译中文摘要"]] : [
-              ["generate", "生成本节"],
-              ["revise", "定向修改"],
-              ["expand", "扩写"],
-              ["compress", "压缩"],
-              ["translate", "翻译"],
-            ]).map(([k, v]) => (
-              <option key={k} value={k}>
-                {v}
-              </option>
-            ))}
-          </select>
-          <Button
-            variant="primary"
-            onClick={async () => {
-              if (saving.current) {
-                notify("请等待保存完成");
-                return;
-              }
-              const selected: string[] = [];
-              if (!isEnglishAbstract && selectionOnly && editor) {
-                const { from, to } = editor.state.selection;
-                editor.state.doc.forEach((node, pos) => {
-                  if (
-                    node.type.name === "paragraph" &&
-                    pos < Math.max(to, from + 1) &&
-                    pos + node.nodeSize > from
-                  )
-                    selected.push(node.attrs.nodeId);
-                });
-                if (!selected.length) {
-                  notify("请先选择要改写的连续正文段落", true);
-                  return;
-                }
-              }
-              if (await saveNow()) {
-                if (!isEnglishAbstract && selectionOnly && editor) {
-                  selected.length = 0;
-                  const { from, to } = editor.state.selection;
-                  editor.state.doc.forEach((node, pos) => {
-                    if (
-                      node.type.name === "paragraph" &&
-                      pos < Math.max(to, from + 1) &&
-                      pos + node.nodeSize > from
-                    )
-                      selected.push(node.attrs.nodeId);
-                  });
-                }
-                await onGenerate(!isEnglishAbstract && selectionOnly ? selected : []);
-              }
-            }}
-          >
-            <Sparkles size={15} />
-            {isEnglishAbstract ? "翻译中文摘要" : "生成候选稿"}
-          </Button>
-        </div>
-      </div>
+
     </>
   );
 }
@@ -2291,6 +2340,16 @@ function TaskDetail({ task, onClose }: { task: Row; onClose: () => void }) {
       onClose();
     }
   };
+  if (t.kind === "paper_image") {
+    const asset = result.asset;
+    return <Modal title="gpt-image-2 图片结果" wide onClose={onClose}>
+      <div className="inline"><Badge value={t.status} /><strong>{t.phase || "GPT 生图与修改"}</strong></div>
+      {t.error && <div className="alert">{t.error}</div>}
+      {asset && <><img alt={asset.name} src={"/api/v1/images/" + asset.sha256} style={{display:"block",maxWidth:"100%",maxHeight:540,objectFit:"contain",margin:"16px auto"}} /><p>{asset.name} · {parse(asset.metadata).width} × {parse(asset.metadata).height} px</p><p>图片保存在“论文图表”的本项目列表中，核对后可从写作工作台插入正文。</p><a className="btn" href={`/api/v1/projects/${pid}/paper-visuals/${asset.id}/download?format=png`} download>下载 PNG</a></>}
+      {["budget_blocked","failed","outcome_unknown","cancelled"].includes(t.status) && <div className="actions"><Button onClick={() => void act(() => send(`/tasks/${t.id}/retry`,{acknowledge_possible_duplicate_charge:true}),"已重新排队 gpt-image-2 图片任务")}>重新生图（可能再次计费）</Button><Button onClick={() => void act(async () => {const bill=await send(`/projects/${pid}/tasks/billing-reconcile`,{profile:"image-generation"});if(!bill.reconciled)throw new Error(bill.reason||"账单未能匹配，继续保留费用预留");return bill;},"独立生图接口账单已核对")}>核对生图接口账单</Button></div>}
+      <details><summary>查看生图记录</summary><pre className="source-content">{JSON.stringify(result,null,2)}</pre></details>
+    </Modal>;
+  }
   if (t.kind === "materials_rules_autopilot" || t.kind === "autopilot_exception_repair") {
     const materials = result.materials ?? {};
     const rules = result.rules ?? {};
@@ -2351,6 +2410,8 @@ function TaskDetail({ task, onClose }: { task: Row; onClose: () => void }) {
       </div>
       {t.error && <div className="alert">{t.error}</div>}
       {result.sections && <CandidateOutline task={t} />}
+      {result.polish_validation && <p className="muted">{result.polish_validation.passed ? `独立润写检查：已核对 ${result.polish_validation.paragraphs_checked} 个原段落及其数值、单位、限定标记和保留片段。采用前仍需核对原意。` : "独立润写检查未通过，以下结果需重新处理，不能直接采用。"}</p>}
+      {!!result.polish_issues?.length && <div className="alert">润写中发现的待核对问题：{result.polish_issues.join("；")}</div>}
       {result.document && (
         <CandidateMerge task={t} act={act} onClose={onClose} />
       )}
@@ -2465,7 +2526,7 @@ function TaskDetail({ task, onClose }: { task: Row; onClose: () => void }) {
   );
 }
 function Research() {
-  const { pid, tick, act, setPage } = useApp();
+  const { pid, tick, act, setPage, refresh } = useApp();
   const { data: facts } = useLoad("/projects/" + pid + "/facts", tick),
     { data: artifacts } = useLoad("/projects/" + pid + "/artifacts", tick),
     { data: files } = useLoad("/projects/" + pid + "/files", tick),
@@ -2481,6 +2542,7 @@ function Research() {
         actions={
           <>
             <ChartTools />
+            <PaperVisualsButton pid={pid} onSaved={refresh} />
             <Button onClick={() => setPage("agent-writing")}><BookOpen size={15} />进入有据写作</Button>
             <Button onClick={() => setAnalysis(true)}>
               <FlaskConical size={15} />
@@ -3426,6 +3488,7 @@ function SettingsPage() {
       />
       <MaterialSummarySettings onSaved={refresh} />
       <GptFallbackSettings pid={pid} />
+      <ImageGenerationSettings />
       <div className="settings-layout">
         <section className="panel">
           <div className="section-heading">

@@ -26,6 +26,20 @@ from .reference_library import router as reference_library_router
 app.include_router(reference_library_router,prefix='/api/v1')
 from .reference_knowledge import router as reference_knowledge_router
 app.include_router(reference_knowledge_router,prefix='/api/v1')
+from .knowledge_units import router as evidence_knowledge_router
+from .knowledge_imports import router as knowledge_imports_router
+app.include_router(evidence_knowledge_router,prefix='/api/v1')
+app.include_router(knowledge_imports_router,prefix='/api/v1')
+from .knowledge_evaluation import router as knowledge_evaluation_router
+app.include_router(knowledge_evaluation_router,prefix='/api/v1')
+from .document_reading import router as document_reading_router
+app.include_router(document_reading_router,prefix='/api/v1')
+from .paper_visuals import router as paper_visuals_router
+app.include_router(paper_visuals_router,prefix='/api/v1')
+from .image_generation import router as image_generation_router
+app.include_router(image_generation_router,prefix='/api/v1')
+from .figure_standards import router as figure_standards_router
+app.include_router(figure_standards_router,prefix='/api/v1')
 from pydantic import ValidationError
 @app.exception_handler(ValidationError)
 async def writing_contract_error(request,error):
@@ -41,6 +55,8 @@ async def boundary(request,call_next):
         if not secrets.compare_digest(request.cookies.get('paper_session',''),security.SESSION_TOKEN): return JSONResponse({'detail':'请通过启动器打开本机工作台'},401)
         if request.method not in ('GET','HEAD','OPTIONS') and not secrets.compare_digest(request.headers.get('x-csrf-token',''),security.SESSION_TOKEN): return JSONResponse({'detail':'会话校验失败'},403)
     response=await call_next(request)
+    if response.headers.get('content-type','').startswith('text/html'):
+        response.headers['Cache-Control']='no-store'
     response.headers['X-Content-Type-Options']='nosniff';response.headers['Referrer-Policy']='same-origin';response.headers['X-Frame-Options']='SAMEORIGIN'
     return response
 @app.exception_handler(ValueError)
@@ -108,12 +124,15 @@ def reconcile_task_billing(pid,body:dict):
     from .summary_billing import reconcile,budget
     body_project(pid);profile=body.get('profile')
     if profile is not None:
-        if profile not in ('material-summary','gpt-fallback','primary'):raise HTTPException(422,'账单核对接口类型无效')
+        if profile not in ('material-summary','gpt-fallback','primary','image-generation'):raise HTTPException(422,'账单核对接口类型无效')
         return reconcile(pid,profile=profile)
     # Query configured routes. A failed query must not
     # turn into a success toast or release any unresolved request reservation.
     results=[]
-    for route in ('primary','material-summary','gpt-fallback'):
+    for route in ('primary','material-summary','gpt-fallback','image-generation'):
+        if route=='image-generation':
+            from .image_generation import ready as image_ready
+            if not image_ready():continue
         if route=='gpt-fallback' and not model_routing.ready():continue
         if route=='material-summary' and not security.key_status(route)['configured']:continue
         if route=='primary' and not security.key_status()['configured']:continue
@@ -286,10 +305,10 @@ def add_rule(pid,body:dict):
     from .rule_workspace import validate_rule
     validate_rule(body)
     if body.get('state')=='machine_verified':raise HTTPException(422,'机器审核状态由自动校验生成')
-    validate_execution(body)
+    _,_,operations=validate_execution(body)
     if not body.get('rule_key'):body['rule_key']=execution_key(body.get('checker','manual'),body.get('value'))
     if body.get('source_id') and not db.one('SELECT s.id FROM sources s JOIN files f ON f.id=s.file_id WHERE s.id=? AND f.project_id=?',(body['source_id'],pid)):raise HTTPException(422,'规则原文不属于本项目')
-    rid=db.uid();db.execute('INSERT INTO rules(id,project_id,category,scope,statement,modality,state,checker,rule_key,value,decision_note,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',(rid,pid,body.get('category','content'),body.get('scope','global'),statement,body.get('modality','mandatory'),body.get('state','confirmed'),body.get('checker','manual'),body.get('rule_key',''),db.dumps(body.get('value')),body.get('decision_note','用户新增要求'),db.now()))
+    rid=db.uid();db.execute('INSERT INTO rules(id,project_id,category,scope,statement,modality,state,checker,rule_key,value,decision_note,operations,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',(rid,pid,body.get('category','content'),body.get('scope','global'),statement,body.get('modality','mandatory'),body.get('state','confirmed'),body.get('checker','manual'),body.get('rule_key',''),db.dumps(body.get('value')),body.get('decision_note','用户新增要求'),db.dumps(operations),db.now()))
     if body.get('source_id'):
         if not db.one('SELECT s.id FROM sources s JOIN files f ON f.id=s.file_id WHERE s.id=? AND f.project_id=?',(body['source_id'],pid)):raise HTTPException(422,'规则原文不属于本项目')
         db.execute('UPDATE rules SET source_id=? WHERE id=?',(body['source_id'],rid))
@@ -406,7 +425,16 @@ def set_locks(sid,body:dict):
     return {'node_ids':body.get('node_ids',[])}
 @app.post('/api/v1/sections/{sid}/writing-tasks')
 def create_writing(sid,body:dict,request:Request):
-    s=security.require_section(sid);body['section_id']=sid;p,_=tasks.writing_preflight(s['project_id'],body);body['rule_package_id']=p['rule_package_id'];return tasks.enqueue(s['project_id'],'write',body,request.headers.get('idempotency-key'))
+    s=security.require_section(sid);body['section_id']=sid;p,_=tasks.writing_preflight(s['project_id'],body);body['rule_package_id']=p['rule_package_id']
+    if s['kind']!='abstract_en':
+        from .writing_continuity import status
+        preview=status(s['project_id'],sid)
+        if not preview['can_load']:raise HTTPException(422,{'code':preview['code'],'message':preview['message']})
+    return tasks.enqueue(s['project_id'],'write',body,request.headers.get('idempotency-key'))
+@app.get('/api/v1/sections/{sid}/writing-context')
+def writing_context(sid):
+    from .writing_continuity import status
+    s=security.require_section(sid);return status(s['project_id'],sid)
 @app.post('/api/v1/sections/{sid}/accept')
 def accept(sid,body:dict,request:Request=None):
     from .writing_agent.adoption import adopt_legacy
@@ -578,7 +606,7 @@ def cancel(tid):
 def retry(tid,body:dict):
     t=task(tid)
     if t['status'] not in ('failed','budget_blocked','cancelled','outcome_unknown','incomplete'): raise HTTPException(409,'任务当前不可重试')
-    paid=db.one("SELECT id FROM generation_runs WHERE task_id=? AND status IN ('completed','sent','pending','outcome_unknown') LIMIT 1",(tid,))
+    paid=db.one("SELECT id FROM generation_runs WHERE task_id=? AND (status IN ('completed','sent','pending','outcome_unknown') OR (?='paper_image' AND status='completed_invalid')) LIMIT 1",(tid,t['kind']))
     if (t['status'] in ('outcome_unknown','incomplete') or paid) and not body.get('acknowledge_possible_duplicate_charge'): raise HTTPException(422,'远端可能已执行；重试须明确知悉可能再次计费')
     payload=dict(t['payload'])
     if t['kind']=='rules_ai':

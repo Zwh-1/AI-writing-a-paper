@@ -25,7 +25,11 @@ def reconcile(before,after,usage,request_count=1):
     inp=usage.get('input_tokens');out=usage.get('output_tokens');raw=usage.get('raw',{});cached=raw.get('prompt_cache_hit_tokens',0) or raw.get('prompt_tokens_details',{}).get('cached_tokens',0) or 0
     if type(inp) is not int or type(out) is not int or type(cached) is not int or not 0<=cached<=inp:return None
     remote_input=after['input_tokens']-before['input_tokens']
-    if after['output_tokens']-before['output_tokens']!=out or remote_input not in (inp-cached,inp,inp+cached):return None
+    remote_output=after['output_tokens']-before['output_tokens'];outputs={out:'reported_output'}
+    total=raw.get('total_tokens');raw_input=raw.get('prompt_tokens',raw.get('input_tokens'));raw_output=raw.get('completion_tokens',raw.get('output_tokens'))
+    if type(total) is int and type(raw_input) is int and type(raw_output) is int and raw_input==inp and raw_output==out and total>=inp+out:
+        outputs.setdefault(total-inp,'reported_total_minus_input')
+    if remote_output not in outputs or remote_input not in (inp-cached,inp,inp+cached):return None
     try:
         deltas=[Decimal(after['amounts'][k])-Decimal(v) for k,v in before['amounts'].items() if k in after['amounts']]
         if not deltas or any(not v.is_finite() or v<0 for v in deltas):return None
@@ -34,7 +38,7 @@ def reconcile(before,after,usage,request_count=1):
             if not balance.is_finite() or balance<0:return None
             deltas.append(balance)
         amount=max(deltas)
-        return {'amount':float(amount),'currency':after['unit'],'method':'exact_model_interval_matching_request_count_and_token_deltas','matched_requests':request_count,'before':before,'after':after,'usage_match':{'input_tokens':inp,'output_tokens':out,'cached_tokens_if_reported':cached,'provider_input_delta':remote_input,'input_counting':'cache_excluded' if remote_input==inp-cached and cached else 'cache_included' if remote_input==inp else 'cache_reported_separately'}}
+        return {'amount':float(amount),'currency':after['unit'],'method':'exact_model_interval_matching_request_count_and_token_deltas','matched_requests':request_count,'before':before,'after':after,'usage_match':{'input_tokens':inp,'output_tokens':out,'cached_tokens_if_reported':cached,'provider_input_delta':remote_input,'input_counting':'cache_excluded' if remote_input==inp-cached and cached else 'cache_included' if remote_input==inp else 'cache_reported_separately','provider_output_delta':remote_output,'output_counting':outputs[remote_output]}}
     except (InvalidOperation,ValueError,TypeError):return None
 
 def recover_adjacent(pid):

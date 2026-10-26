@@ -1,5 +1,5 @@
 from fastapi import APIRouter,Request
-from .. import db,security,tasks,documents
+from .. import db,security,tasks,documents,provider,summary_billing
 from .common import owned,state,update_state,candidate,unblob,fail
 from . import repository,evidence,claims,contracts,profiles,coordinator,sentences,verification,adoption,evaluations,paper_review,revision,check_registry
 
@@ -7,6 +7,11 @@ router=APIRouter(prefix='/projects/{pid}')
 
 @router.get('/writing-state')
 def project_state(pid):return state(pid)
+
+@router.get('/sections/{sid}/materials')
+def chapter_materials(pid, sid, q: str = ''):
+    from ..writing_materials import load
+    return load(pid, sid, q)
 
 @router.get('/writing-link')
 def writing_link(pid):
@@ -47,12 +52,18 @@ def writing_link(pid):
     package=db.one('SELECT * FROM rule_packages WHERE id=? AND project_id=?',(p['rule_package_id'],pid)) if p['rule_package_id'] else None
     rules=[{**r,'operations':db.loads(r['operations'],[])} for r in db.rows("SELECT * FROM rules WHERE project_id=? AND state IN ('confirmed','machine_verified') ORDER BY created_at",(pid,))]
     ready_snapshot=db.one("SELECT id,created_at,head_commit FROM repository_snapshots WHERE project_id=? AND state='ready' ORDER BY created_at DESC LIMIT 1",(pid,))
+    model_configuration=provider.config();model={'name':model_configuration.get('model',''),'configured':bool(security.key_status()['configured'] and model_configuration.get('model'))}
     blockers=[]
     if not p['title']: blockers.append('项目缺少有效题目')
     if not sections: blockers.append('项目尚未建立提纲')
     if not p['rule_package_id']: blockers.append('尚未发布论文规则包')
     if not head['target_snapshot_id'] and not ready_snapshot: blockers.append('尚未形成可用的项目代码快照')
-    return {'project':{'id':p['id'],'title':p['title'],'paper_type':p['paper_type'],'target_words':p['target_words'],'rule_package_id':p['rule_package_id'],'brief':db.loads(p['brief'],{})},'stats':project_stats,'readiness':{'core_ready':bool(head['core_version_id']),'contracts_ready':sum(bool(item['contract_id']) for item in sections),'snapshot':ready_snapshot,'blockers':blockers},'research_question':research_question,'core_version_id':head['core_version_id'],'core':core,'state':head,'materials':materials,'references':references,'rules':rules,'rule_package':{'id':package['id'],'version':package['version'],'rule_count':len(db.loads(package['rules'],[]))} if package else None,'facts':facts,'artifacts':artifacts,'sections':sections}
+    try:
+        reserve,_=summary_billing.request_reservation(model_configuration,'','')
+        budget=summary_billing.budget(pid,reserve)
+        if not budget['can_call']:blockers.append(f'项目可用预算 {budget["available"]:.4f} {model_configuration.get("currency","USD")}，不足单次请求预留 {reserve:.4f}；请核对费用预留或调整项目预算')
+    except summary_billing.BudgetExceeded as error:blockers.append(str(error))
+    return {'project':{'id':p['id'],'title':p['title'],'paper_type':p['paper_type'],'target_words':p['target_words'],'rule_package_id':p['rule_package_id'],'brief':db.loads(p['brief'],{})},'model':model,'stats':project_stats,'readiness':{'core_ready':bool(head['core_version_id']),'contracts_ready':sum(bool(item['contract_id']) for item in sections),'snapshot':ready_snapshot,'blockers':blockers},'research_question':research_question,'core_version_id':head['core_version_id'],'core':core,'state':head,'materials':materials,'references':references,'rules':rules,'rule_package':{'id':package['id'],'version':package['version'],'rule_count':len(db.loads(package['rules'],[]))} if package else None,'facts':facts,'artifacts':artifacts,'sections':sections}
 
 @router.patch('/writing-state')
 def patch_state(pid,body:dict):
@@ -116,8 +127,14 @@ def save_chapter(pid,sid,body:dict):return contracts.save_contract(pid,sid,body.
 def profile_list(pid):security.require_project(pid);return [profiles.get(pid,r['id']) for r in db.rows('SELECT id FROM writing_profiles WHERE project_id=? ORDER BY created_at DESC',(pid,))]
 @router.post('/writing-profiles')
 def new_profile(pid,body:dict):return profiles.create(pid,body)
+@router.post('/writing-start')
+def start_writing(pid,body:dict):return coordinator.start(pid,body)
+@router.get('/writing-preflight')
+def writing_preflight(pid,section_id:str,profile_id:str|None=None,budget_limit:float|None=None):
+    from .launch import preflight
+    return preflight(pid,section_id,profile_id,budget_limit)
 @router.get('/writing-sessions')
-def sessions(pid):security.require_project(pid);return db.rows('SELECT * FROM writing_sessions WHERE project_id=? ORDER BY created_at DESC LIMIT 100',(pid,))
+def sessions(pid):security.require_project(pid);return db.rows('SELECT s.*,(SELECT COUNT(*) FROM writing_candidates c WHERE c.session_id=s.id) candidate_count FROM writing_sessions s WHERE project_id=? ORDER BY created_at DESC LIMIT 100',(pid,))
 @router.post('/writing-sessions')
 def new_session(pid,body:dict):return coordinator.create(pid,body)
 @router.get('/writing-sessions/{sid}')

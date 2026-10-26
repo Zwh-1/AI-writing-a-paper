@@ -18,11 +18,16 @@ def test_agent_can_search_read_and_ground_literature_in_knowledge_base(env, monk
     assert result['data']['hits']
     source = result['data']['hits'][0]
     assert source['file_id'] == original_file['id']
+    assert source['preview_text'] and 'normalized' not in source and 'text' not in source
     read = tools.execute(env['pid'], step['id'], 'read_literature', {'source_id': source['id']}, 'read-paper', env['snapshot']['id'])
     observed = evidence.get(env['pid'], read['data']['evidence_id'])
     assert observed['kind'] == 'literature' and observed['origin_type'] == 'source'
     assert observed['version_current']
     assert read['data']['page_number'] == 1
+    assert read['data']['text']=='A credential identity study documents prior academic verification methods.'
+    assert 'normalized' not in read['data'] and isinstance(read['data']['locator'],dict)
+    get_observed=tools.execute(env['pid'],step['id'],'get_evidence',{'evidence_id':observed['id']},'get-paper',env['snapshot']['id'])
+    assert get_observed['data']['evidence_id']==observed['id']
     assert tools.execute(env['pid'], step['id'], 'read_literature', {'source_id': source['id']}, 'read-paper', env['snapshot']['id']) == read
     env['client'].patch('/api/v1/files/' + original_file['id'], json={'egress': 'local_only'})
     with pytest.raises(HTTPException):

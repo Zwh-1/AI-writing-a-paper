@@ -5,6 +5,8 @@ class CandidateParagraph(BaseModel):
     source_ids:list[str]=Field(default_factory=list,max_length=60)
     reference_ids:list[str]=Field(default_factory=list,max_length=60)
     fact_ids:list[str]=Field(default_factory=list,max_length=60)
+    knowledge_unit_ids:list[str]=Field(default_factory=list,max_length=60)
+    document_reading_ids:list[str]=Field(default_factory=list,max_length=30)
     preserve_node_id:str|None=None
 class SectionCandidate(BaseModel):
     model_config=ConfigDict(extra='ignore')

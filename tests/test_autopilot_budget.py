@@ -85,8 +85,10 @@ def test_budget_reconciliation_profiles_report_partial_failure_truthfully(client
     monkeypatch.setattr(summary_billing,'reconcile',reconcile)
     response=client.post(f'/api/v1/projects/{pid}/tasks/billing-reconcile',json={})
     assert response.status_code==200,response.text
-    assert len(response.json()['profiles'])==3 and len(calls)==3
-    assert response.json()['profiles'][-1]['reason']=='HTTP 403'
+    profiles={row['profile']:row for row in response.json()['profiles']}
+    assert set(profiles)=={'primary','material-summary','gpt-fallback','image-generation'}
+    assert {profile for identity,profile in calls}==set(profiles) and len(calls)==len(profiles)
+    assert profiles['gpt-fallback']['reason']=='HTTP 403'
     assert response.json()['budget']['limit']==20
 
 

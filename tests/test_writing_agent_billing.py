@@ -30,3 +30,17 @@ def test_exact_two_request_closed_interval_requires_count_and_token_totals():
     before,after,usage=pair();after['requests']=12
     assert reconcile(before,after,usage) is None
     proof=reconcile(before,after,usage,2);assert proof and proof['matched_requests']==2
+
+def test_explicit_total_can_match_generated_tokens_omitted_from_completion_field():
+    before,after,usage=pair();usage['raw']={'prompt_tokens':30,'completion_tokens':10,'total_tokens':45};after['output_tokens']=65
+    proof=reconcile(before,after,usage)
+    assert proof and proof['usage_match']['output_counting']=='reported_total_minus_input'
+    assert proof['usage_match']['provider_output_delta']==15
+
+def test_unreported_total_or_mismatched_raw_usage_cannot_release_reservation():
+    before,after,usage=pair();after['output_tokens']=65
+    assert reconcile(before,after,usage) is None
+    usage['raw']={'prompt_tokens':31,'completion_tokens':10,'total_tokens':45}
+    assert reconcile(before,after,usage) is None
+    usage['raw']={'prompt_tokens':30,'completion_tokens':9,'total_tokens':45}
+    assert reconcile(before,after,usage) is None

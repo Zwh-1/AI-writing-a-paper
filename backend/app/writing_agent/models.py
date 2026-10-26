@@ -50,3 +50,11 @@ class SessionInput(Strict):
     target_node_ids:list[str]=Field(default_factory=list,max_length=100)
     profile_id:str
     policy:dict=Field(default_factory=dict)
+
+class StartSessionInput(Strict):
+    section_id:str
+    base_revision_id:str|None=None
+    expected_project_state_revision:int=Field(ge=0)
+    profile_id:str|None=None
+    verification_profile_id:str|None=None
+    budget_limit:float|None=Field(default=None,gt=0,strict=True,allow_inf_nan=False)

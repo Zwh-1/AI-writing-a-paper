@@ -2,7 +2,7 @@ from .. import db,security
 from .common import owned,blob,unblob,digest,fail
 from . import repository
 
-KINDS={'code_observation','test_definition','test_run','deployment','literature','material_observation','author_statement','data_result'}
+KINDS={'code_observation','test_definition','test_run','deployment','literature','material_observation','author_statement','data_result','guidance_observation'}
 
 def create(pid,body):
     security.require_project(pid)
@@ -14,10 +14,26 @@ def create(pid,body):
         data=repository.read(pid,origin_id,locator.get('path',''),locator.get('line_start',1),locator.get('line_end',150))
         version=data['file_sha256'];payload={**data,'title':body.get('title',data['path'])}
     elif origin=='source':
-        s=db.one('SELECT s.*,f.project_id,f.sha256 AS file_hash FROM sources s JOIN files f ON f.id=s.file_id WHERE s.id=? AND f.project_id=?',(origin_id,pid))
+        s=db.one('SELECT s.*,f.project_id,f.sha256 AS file_hash,f.role,f.extension FROM sources s JOIN files f ON f.id=s.file_id WHERE s.id=? AND f.project_id=?',(origin_id,pid))
         if not s:fail('NOT_FOUND','资料来源不属于本项目',404)
         if kind not in ('literature','material_observation','author_statement','test_definition'):fail('EVIDENCE_LEVEL','普通资料不能自动声称为实际执行记录')
         version=digest([s['text'],s['file_hash']]);payload={'text':s['text'],'locator':db.loads(s['locator'],{}),'file_id':s['file_id'],'method':s['method']}
+        from ..material_policy import source_context,is_research
+        file_={'id':s['file_id'],'role':s['role'],'extension':s['extension']}
+        payload['material_use']=source_context(file_,'research' if is_research(file_) else 'guidance')
+    elif origin=='knowledge_unit':
+        if kind not in ('literature','material_observation','guidance_observation'):fail('EVIDENCE_LEVEL','文献知识单元不能自动升级为执行结果')
+        from ..knowledge_units import read
+        data=read(pid,origin_id,before=int(locator.get('before',1)),after=int(locator.get('after',1)),max_chars=int(locator.get('max_chars',16000)),start=locator.get('start'),end=locator.get('end'),intent=locator.get('intent','research'))
+        if kind=='literature' and not data['material_use']['allowed_for_intent']:fail('EVIDENCE_LEVEL','该原文尚未获准用于研究引用')
+        if not data['current'] or data['status']!='read':fail('CONTEXT_BUDGET_EXCEEDED','需先读取当前版本的完整原文或明确区间')
+        version=digest([data['parse_id'],data['unit_hash'],data['file_hash'],data['scope'],data['text']]);payload=data
+    elif origin=='document_reading':
+        from ..document_reading import context
+        data=context(pid,origin_id)
+        expected='literature' if data['intent']=='research' else 'guidance_observation'
+        if kind!=expected or not data['current'] or not data['passages']:fail('EVIDENCE_LEVEL','只能依据实际读取且当前有效的原文建立对应用途的观察')
+        version=data['version'];payload=data
     elif origin=='artifact':
         a=db.one('SELECT * FROM artifacts WHERE id=? AND project_id=?',(origin_id,pid))
         if not a:fail('NOT_FOUND','研究产物不属于本项目',404)
@@ -67,7 +83,17 @@ def allowed_remote(pid,eid,_ancestors=None):
         return b['egress_policy']=='selected_content'
     if e['origin_type']=='source':
         s=db.one('SELECT file_id FROM sources WHERE id=?',(e['origin_id'],))
-        return bool(s and security.file_allows_remote(s['file_id'],pid))
+        from ..knowledge_service import source_is_excluded
+        return bool(s and security.file_allows_remote(s['file_id'],pid) and not source_is_excluded(pid,e['origin_id']))
+    if e['origin_type']=='knowledge_unit':
+        from ..knowledge_units import get
+        try:item=get(pid,e['origin_id'],remote=True,intent=db.loads(e['locator_json'],{}).get('intent','research'))
+        except __import__('fastapi').HTTPException:return False
+        return item['current']
+    if e['origin_type']=='document_reading':
+        from ..document_reading import context
+        try:return context(pid,e['origin_id'],remote=True)['current']
+        except __import__('fastapi').HTTPException:return False
     if e['origin_type']=='artifact':
         a=db.one('SELECT * FROM artifacts WHERE id=? AND project_id=?',(e['origin_id'],pid))
         if not a:return False
@@ -112,6 +138,12 @@ def permission_stamp(pid,eid,_ancestors=None):
                 if fid in seen:continue
                 seen.add(fid);parent=db.one('SELECT id,sha256,active,egress FROM files WHERE id=?',(fid,));scope.append(parent)
                 queue.extend(x['parent_file_id'] for x in db.rows('SELECT parent_file_id FROM file_derivations WHERE child_file_id=?',(fid,)))
+    elif e['origin_type']=='knowledge_unit':
+        from ..knowledge_units import epoch,get
+        item=get(pid,e['origin_id']);scope.extend([epoch(pid),item['current'],item['review_state'],item['file_hash'],security.file_allows_remote(item['file_id'],pid)])
+    elif e['origin_type']=='document_reading':
+        from ..document_reading import context
+        reading=context(pid,e['origin_id']);scope.extend([reading['version'],reading['current'],security.file_allows_remote(reading['file_id'],pid)])
     elif e['origin_type']=='artifact':scope.append(db.one('SELECT sha256,metadata FROM artifacts WHERE id=?',(e['origin_id'],)))
     elif e['origin_type']=='fact':
         fact=db.one('SELECT * FROM facts WHERE id=? AND project_id=?',(e['origin_id'],pid))
@@ -127,7 +159,18 @@ def permission_stamp(pid,eid,_ancestors=None):
 def for_model(item):
     """Preserve observations and conditions without duplicating archive manifests."""
     result={k:item[k] for k in ('id','kind','conditions')};payload=item['payload']
-    if item['origin_type']=='artifact' and item['kind'] in ('test_run','deployment','data_result'):
+    if item['origin_type']=='knowledge_unit':
+        from ..knowledge_service import for_model as unit_for_model
+        result['payload']=unit_for_model(payload);result['original_payload_hash']=item['payload_hash']
+    elif item['origin_type']=='document_reading':
+        keys=('reading_id','question','intent','file_id','file_hash','material_use','semantic_context_status','missing_topics','required_topics','parsed_text_coverage_complete','claim_support','passages','findings','scope_note')
+        result['payload']={k:payload[k] for k in keys if k in payload};result['original_payload_hash']=item['payload_hash']
+    elif item['origin_type']=='source':
+        from ..source_payload import compact_locator
+        result['payload']={key:value for key,value in payload.items() if key!='file_id'}
+        result['payload']['locator']=compact_locator(payload.get('locator'));result['original_payload_hash']=item['payload_hash']
+        if item.get('origin_id'):result['payload']['source_id']=item['origin_id']
+    elif item['origin_type']=='artifact' and item['kind'] in ('test_run','deployment','data_result'):
         keys=('actual_execution','execution_outcome','exit_code','timed_out','timed_out_or_output_limited','environment','public_network_used','public_network_or_real_deployment','fixture','scope','command','network','timestamp','snapshot_id','started_from','image','compiler','stdout','stderr','verification_origin','seconds')
         meta=payload.get('metadata',{});observed={k:meta[k] for k in keys if k in meta}
         text=payload.get('text','')
@@ -140,6 +183,17 @@ def for_model(item):
     return result
 
 def current_version(e):
+    if e['origin_type']=='knowledge_unit':
+        from ..knowledge_units import read
+        locator=db.loads(e['locator_json'],{})
+        try:data=read(e['project_id'],e['origin_id'],before=int(locator.get('before',1)),after=int(locator.get('after',1)),max_chars=int(locator.get('max_chars',16000)),start=locator.get('start'),end=locator.get('end'),intent=locator.get('intent','research'))
+        except __import__('fastapi').HTTPException:return None
+        return digest([data['parse_id'],data['unit_hash'],data['file_hash'],data.get('scope'),data.get('text')]) if data['current'] and data['status']=='read' else None
+    if e['origin_type']=='document_reading':
+        from ..document_reading import context
+        try:data=context(e['project_id'],e['origin_id'])
+        except __import__('fastapi').HTTPException:return None
+        return data['version'] if data['current'] else None
     if e['origin_type']=='source':
         s=db.one('SELECT s.text,f.sha256 FROM sources s JOIN files f ON f.id=s.file_id WHERE s.id=?',(e['origin_id'],))
         return digest([s['text'],s['sha256']]) if s else None
@@ -187,7 +241,10 @@ def sync_source(pid,sid,kind='material_observation'):
     if not source:fail('NOT_FOUND','项目资料片段不属于本项目',404)
     if kind not in ('material_observation','literature'):fail('INVALID_EVIDENCE','资料证据类型无效')
     current=db.one("SELECT id FROM evidence_items WHERE project_id=? AND origin_type='source' AND origin_id=? AND kind=? AND validity='current' ORDER BY created_at DESC LIMIT 1",(pid,sid,kind))
-    if current:return get(pid,current['id'])
+    if current:
+        previous=get(pid,current['id'])
+        if previous['version_current']:return previous
+        db.execute("UPDATE evidence_items SET validity='stale' WHERE id=?",(current['id'],))
     return create(pid,{'kind':kind,'origin_type':'source','origin_id':sid,'locator':{},'title':source['file_id'],'conditions':['来源来自当前项目资料库；需结合原文范围、文献元数据和适用规则解释']})
 
 def set_validity(pid,eid,value):
@@ -197,3 +254,24 @@ def set_validity(pid,eid,value):
     from .impact import changed
     changed(pid,'evidence',eid,'证据状态发生变化')
     return get(pid,eid)
+
+
+@db.atomic
+def sync_unit(pid,uid,locator=None):
+    locator=locator or {}
+    old=db.one("SELECT id FROM evidence_items WHERE project_id=? AND origin_type='knowledge_unit' AND origin_id=? AND locator_json=? AND validity='current' ORDER BY created_at DESC LIMIT 1",(pid,uid,db.dumps(locator)))
+    if old:
+        item=get(pid,old['id'])
+        if item['version_current']:return item
+        db.execute("UPDATE evidence_items SET validity='stale' WHERE id=?",(old['id'],))
+    return create(pid,{'kind':'literature','origin_type':'knowledge_unit','origin_id':uid,'locator':locator,'conditions':['原文及分段核对状态不代表具体论断已获得支持；需保留限定条件和争议']})
+
+
+@db.atomic
+def sync_reading(pid,identity):
+    from ..document_reading import context
+    reading=context(pid,identity)
+    old=db.one("SELECT id FROM evidence_items WHERE project_id=? AND origin_type='document_reading' AND origin_id=? AND origin_version=? AND validity='current' ORDER BY created_at DESC LIMIT 1",(pid,identity,reading['version']))
+    if old:return get(pid,old['id'])
+    db.execute("UPDATE evidence_items SET validity='historical' WHERE project_id=? AND origin_type='document_reading' AND origin_id=? AND validity='current'",(pid,identity))
+    return create(pid,{'kind':'literature' if reading['intent']=='research' else 'guidance_observation','origin_type':'document_reading','origin_id':identity,'locator':{'reading_id':identity},'conditions':['原文按阅读问题和用途提供，覆盖不等于论断正确；仍需核对支持性及条件']})

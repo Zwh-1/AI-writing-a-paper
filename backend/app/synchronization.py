@@ -74,6 +74,8 @@ def resolve_conflict(pid,actor,cid,body):
     db.execute("UPDATE sync_conflicts SET state='resolved' WHERE id=?",(cid,));event(pid,actor,'conflict_resolved',{'conflict_id':cid,'choice':choice});return {'revision':revision,'resolved':True}
 
 def packet(pid):
+    if db.one('SELECT id FROM knowledge_parses WHERE project_id=? LIMIT 1',(pid,)):
+        raise HTTPException(409,'证据知识库需要完整原文及版本，不能通过仅含正文的旧版同步传输，请使用完整本地备份')
     sharing_gate(pid);p=security.require_project(pid);sections=db.rows("SELECT * FROM sections WHERE project_id=? AND state!='archived'",(pid,));revisions=[]
     for section in sections:
         if section['current_revision_id']:revisions.append(db.one('SELECT * FROM revisions WHERE id=?',(section['current_revision_id'],)))

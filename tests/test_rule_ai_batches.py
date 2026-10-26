@@ -85,9 +85,9 @@ def test_pdf_whitespace_alignment_returns_exact_source_and_keeps_negation():
 
 def test_batches_bound_chars_and_preserve_repeated_long_source_parts():
     sources=[{'id':str(i),'text':'甲'*1000,'locator':'{}'} for i in range(36)]
-    chunks=rule_ai.batches(sources)
+    chunks=rule_ai.batches(sources,cfg=dict(provider.DEFAULT))
     assert sum(map(len,chunks))==36 and all(len(c)<=4 and sum(len(s['text']) for s in c)<=3500 for c in chunks)
-    long=rule_ai.batches([{'id':'long','text':'甲'*6000,'locator':'{}'}])
+    long=rule_ai.batches([{'id':'long','text':'甲'*6000,'locator':'{}'}],cfg=dict(provider.DEFAULT))
     assert len({rule_ai.batch_key(c) for c in long})==len(long)==2
 
 

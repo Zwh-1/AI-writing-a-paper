@@ -1,16 +1,16 @@
 import {useState} from 'react';
 import {post,useResource,label,Row} from './writingShared';
 
-type Props={pid:string;epoch:number;onChange:()=>void;onError:(s:string)=>void;onOpenResearch?:()=>void;onSelectSection?:(sid:string)=>void};
+type Props={pid:string;epoch:number;onChange:()=>void;onError:(s:string)=>void;onOpenResearch?:()=>void;onSelectSection?:(sid:string)=>void;modelReady?:boolean;modelError?:string;onConfigureModel?:()=>void};
 
-export default function ThesisCore({pid,epoch,onChange,onError,onOpenResearch,onSelectSection}:Props){
+export default function ThesisCore({pid,epoch,onChange,onError,onOpenResearch,onSelectSection,modelReady,modelError,onConfigureModel}:Props){
   const link=useResource(pid,'/writing-link',epoch);const [busy,setBusy]=useState(false);
   const data=link.data;const readiness=data?.readiness??{};const stats=data?.stats??{};const sections=(data?.sections??[]) as Row[];const facts=(data?.facts??[]) as Row[];const artifacts=(data?.artifacts??[]) as Row[];
   async function bootstrap(){setBusy(true);try{await post(pid,'/writing-bootstrap');onChange();}catch(e){onError((e as Error).message);}finally{setBusy(false);}}
   const status=(ready:boolean,good:string,empty:string)=>ready?<span className="wa-status wa-status-ready">{good}</span>:<span className="wa-status">{empty}</span>;
   return <div className="wa-stack">
     <section className="wa-card wa-project-hero"><div><span className="wa-eyebrow">当前项目</span><h3>{data?.project?.title||'正在读取项目…'}</h3><p>{data?.research_question||'项目还没有明确研究问题，请先在项目概览中补充研究简报。'}</p><small>{data?.project?.paper_type||''} · {stats.sections??0} 个章节 · {stats.files??0} 份资料</small></div><div className="wa-actions"><button className="wa-button" disabled={busy||!sections.length} onClick={()=>void bootstrap()}>{busy?'正在读取项目…':readiness.core_ready?'同步当前项目写作基线':'从当前项目建立写作基线'}</button><button onClick={onOpenResearch}>补充研究成果</button></div></section>
-    <section className="wa-card"><div className="wa-row"><div><h3>项目写作准备度</h3><p>状态来自当前项目数据，不需要在这里重复填写论文信息。</p></div>{readiness.blockers?.length?<span className="wa-status">有待补充项</span>:<span className="wa-status wa-status-ready">可以开始组织写作</span>}</div>
+    <section className="wa-card"><div className="wa-row"><div><h3>项目写作准备度</h3><p>状态来自当前项目数据，不需要在这里重复填写论文信息。</p></div>{link.error||modelError?<span className="wa-status">准备状态读取失败</span>:!data||modelReady===undefined?<span className="wa-status">正在读取准备状态…</span>:readiness.blockers?.length||!modelReady?<span className="wa-status">有待补充项</span>:<span className="wa-status wa-status-ready">可以开始组织写作</span>}</div>
       <div className="wa-readiness-grid">
         <div><strong>研究简报</strong>{status(Boolean(data?.project?.brief?.question||data?.research_question),data?.project?.brief?.question?'已读取项目研究问题':'已根据项目提纲形成写作目标','项目缺少写作目标')}</div>
         <div><strong>论文提纲</strong>{status(Boolean(sections.length),'已读取章节结构','尚未建立提纲')}</div>
@@ -19,8 +19,11 @@ export default function ThesisCore({pid,epoch,onChange,onError,onOpenResearch,on
         <div><strong>研究产物</strong>{status(Boolean(artifacts.length),'已登记 '+artifacts.length+' 项产物','尚未登记研究产物')}</div>
         <div><strong>代码快照</strong>{status(Boolean(readiness.snapshot||data?.state?.target_snapshot_id),'已有可引用快照','尚未冻结代码快照')}</div>
         <div><strong>论文规则</strong>{status(Boolean(data?.project?.rule_package_id),'已加载论文规则','尚未发布论文规则')}</div>
+        <div><strong>写作模型配置</strong>{modelError?<span className="wa-status">配置读取失败</span>:modelReady===undefined?<span className="wa-status">正在读取配置…</span>:status(modelReady,'已读取当前接口配置','接口尚未配置完整')}{modelReady===false&&<button type="button" onClick={onConfigureModel}>查看写作设置</button>}</div>
       </div>
       {readiness.blockers?.length>0&&<ul className="wa-project-blockers">{readiness.blockers.map((item:string)=><li key={item}>{item}</li>)}</ul>}
+      {(link.error||modelError)&&<p role="alert">{link.error||modelError}</p>}
+      {modelReady===false&&!modelError&&<p className="wa-notice">请在“接口与设置”中保存写作模型及密钥。开始写作时会自动建立所需配置。</p>}
     </section>
     <section className="wa-card"><div className="wa-row"><div><h3>项目资料、规则与文献已接入</h3><p>这些内容会随章节任务进入写作上下文，写作不再使用独立于项目之外的空白证据。</p></div><span className="wa-status wa-status-ready">已连接项目数据</span></div><div className="wa-project-evidence"><div><strong>资料库</strong><p>{data?.materials?.length??0} 份项目资料 · {(data?.materials??[]).reduce((n:number,item:Row)=>n+(item.source_count??0),0)} 个原文片段</p><details><summary>查看资料清单</summary><ul>{(data?.materials??[]).slice(0,8).map((item:Row)=><li key={item.id}>{item.name}<small>{item.source_count??0} 个片段 · {item.status}</small></li>)}</ul></details></div><div><strong>论文规则</strong><p>{data?.rules?.length??0} 条规则 · {data?.rule_package?`已发布第 ${data.rule_package.version} 版规则包`:'尚未发布规则包'}</p><details><summary>查看当前规则</summary><ul>{(data?.rules??[]).slice(0,8).map((item:Row)=><li key={item.id}>{item.statement}<small>{label(item.modality)} · {item.scope}</small></li>)}</ul></details></div><div><strong>文献与术语</strong><p>{data?.references?.length??0} 条文献记录</p><details><summary>查看文献清单</summary><ul>{(data?.references??[]).slice(0,8).map((item:Row)=><li key={item.id}>{item.metadata?.title||'未命名文献'}<small>{item.source_count??0} 个原文片段</small></li>)}</ul></details></div></div></section>
     <section className="wa-card"><div className="wa-row"><div><h3>当前项目章节</h3><p>每个章节的目标、正文、事实和产物均从当前项目读取；选择章节后直接进入写作与核验。</p></div><span>{readiness.contracts_ready??0}/{sections.length} 个章节已有写作基线</span></div>

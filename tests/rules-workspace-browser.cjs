@@ -174,7 +174,7 @@ const pw = require("C:/Users/abcta/.cache/codex-runtimes/codex-primary-runtime/d
     await passed("search_and_unpublished_change_detection");
     await page.getByRole("tab", { name: "条款管理", exact: true }).click();
     await page.getByLabel("搜索规则", { exact: true }).fill("");
-    await page.getByRole("tab", { name: /已排除/ }).click();
+    await page.getByRole("tab", { name: /已归并/ }).click();
     await page.getByRole("button", { name: "恢复待确认", exact: true }).click();
     await page.getByRole("tab", { name: /待确认/ }).click();
     await page
@@ -194,7 +194,7 @@ const pw = require("C:/Users/abcta/.cache/codex-runtimes/codex-primary-runtime/d
     );
     await passed("batch_exclusion_with_explicit_selection");
     await page.getByLabel("搜索规则").fill("");
-    await page.getByRole("tab", { name: /全部规则/ }).click();
+    await page.getByRole("tab", { name: /全部记录/ }).click();
     // Import local text to test real parsing, rule extraction, direct source review and publication coverage.
     const upload = await context.request.post(
       origin + "/api/v1/projects/" + pid + "/files",

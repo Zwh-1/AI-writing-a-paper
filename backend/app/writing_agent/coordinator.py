@@ -2,10 +2,40 @@ import json
 from fastapi import HTTPException
 from .. import db,security,documents,provider
 from .common import owned,candidate,state,section,blob,unblob,digest,fail,dependency
-from .models import SessionInput
+from .models import SessionInput,StartSessionInput
 from . import profiles,context,prompts,provider_adapter,tools,judgment,drafting,sentences,verification,coherence
 
 STAGES=('investigate','judgment','judgment_check','draft','annotation','semantic','coherence','regression')
+
+@db.atomic
+def start(pid,body):
+    """Start from project data and current settings, with normal version guards."""
+    b=StartSessionInput.model_validate(body);p=security.require_project(pid);s=section(b.section_id,pid);head=state(pid)
+    if s['state']=='archived':fail('SECTION_ARCHIVED','已归档章节不能生成',409)
+    if s['kind']=='abstract_en':fail('ABSTRACT_TRANSLATION_REQUIRED','英文摘要直接翻译已保存的中文摘要，请打开当前章节正文进行翻译')
+    if head['revision']!=b.expected_project_state_revision or s['current_revision_id']!=b.base_revision_id:fail('INPUT_VERSION_CHANGED','项目或正文版本已变化，请重新读取后再开始写作',409)
+    if not p['rule_package_id']:fail('RULE_PACKAGE_REQUIRED','请先发布本项目论文规则包')
+    from .launch import preflight
+    readiness=preflight(pid,s['id'],b.profile_id,b.budget_limit)
+    if not readiness['can_start']:
+        first=readiness['blockers'][0]
+        fail(first['code'],first['message'],409 if first['code'] in ('PROFILE_STALE','SECTION_ARCHIVED','INPUT_VERSION_CHANGED') else 422,blockers=readiness['blockers'])
+    profile=profiles.for_session(pid,b.profile_id)[0] if b.profile_id else profiles.current_default(pid)
+    policy={'budget_limit':b.budget_limit if b.budget_limit is not None else readiness['default_budget']}
+    if b.verification_profile_id:
+        profiles.for_session(pid,b.verification_profile_id)
+        policy['stage_profiles']={stage:b.verification_profile_id for stage in ('judgment_check','annotation','semantic','coherence','regression')}
+    elif not b.profile_id:
+        verifier=profiles.current_verifier(pid,profile)
+        if verifier['id']!=profile['id']:policy['stage_profiles']={stage:verifier['id'] for stage in ('judgment_check','annotation','semantic','coherence','regression')}
+        discourse=profiles.current_verifier(pid,profile,3072)
+        if discourse['id']!=profile['id']:policy.setdefault('stage_profiles',{}).update({stage:discourse['id'] for stage in ('semantic','coherence')})
+    if not head['core_version_id'] or not head['target_snapshot_id'] or not head['contracts'].get(s['id']):
+        from .contracts import bootstrap_project
+        bootstrap_project(pid);head=state(pid)
+    contract_id=head['contracts'].get(s['id'])
+    if not contract_id:fail('CONTRACT_REQUIRED','当前章节尚未建立写作任务')
+    return create(pid,{'section_id':s['id'],'operation':'generate_unit','base_revision_id':b.base_revision_id,'expected_project_state_revision':head['revision'],'contract_version_id':contract_id,'profile_id':profile['id'],'policy':policy})
 
 @db.atomic
 def create(pid,body):
@@ -65,10 +95,34 @@ def assert_lease(step_id,epoch):
     if not task or task['attempt']!=epoch or task['status']!='running':fail('STEP_LEASE_EXPIRED','任务代次或执行状态已变化',409)
     if task and task['cancel_requested'] or s['status']=='cancelled':raise InterruptedError('写作会话已取消')
 
+def current_investigation_evidence(pid,identities):
+    """Use the final reading revision while retaining immutable tool observations."""
+    from . import evidence
+    from ..document_reading import context as reading_context
+    result=[];readings=set()
+    for identity in dict.fromkeys(identities):
+        item=evidence.get(pid,identity)
+        if item['origin_type']=='document_reading':
+            if item['origin_id'] in readings:continue
+            reading=reading_context(pid,item['origin_id'],remote=True)
+            readings.add(item['origin_id'])
+            if reading['intent']!='research':continue
+            item=evidence.sync_reading(pid,item['origin_id'])
+        if item['kind']!='guidance_observation':result.append(item['id'])
+    return result
+
+
 def investigate(task,step,session,profile,payload,manifest):
     config=profile['configuration'];native=config.get('tool_mode','json')=='native';catalog=tools.schemas();messages=[{'role':'user','content':db.dumps({'context':payload,'available_tools':catalog})}];items=None;ids=[];count=0
+    ids.extend(e['id'] for e in payload.get('evidence',[]) if e['id'] in manifest.get('source_evidence',{}))
     for turn in range(config.get('max_turns',6)):
         assert_lease(step['id'],manifest['lease_epoch'])
+        from ..source_payload import token_upper_bound
+        _,cfg,_=profiles.for_session(session['project_id'],profile['id'])
+        current_frame={'messages':messages,'tools':catalog if native else []}
+        if items is not None:current_frame['items']=items
+        if token_upper_bound(prompts.INVESTIGATE,db.dumps(current_frame))+int(cfg.get('max_output_tokens',8192))>int(cfg.get('context_limit',32000)):
+            return {'summary':'调查输入达到当前上限，保留已读取的完整依据；未读取目录不作为已核验依据。','evidence_ids':current_investigation_evidence(session['project_id'],ids),'limit_reached':True}
         response=provider_adapter.call(task,profile,prompts.INVESTIGATE,payload,manifest,catalog if native else None,messages,items)
         calls=response.get('tool_calls',[])
         if native and calls:
@@ -76,11 +130,11 @@ def investigate(task,step,session,profile,payload,manifest):
             if response.get('items'):items=(items if items is not None else messages[:1])+response['items']
         elif not native:
             data=provider.parse_json(response['text'])
-            if data.get('action')=='done':return {'summary':str(data.get('summary',''))[:6000],'evidence_ids':list(dict.fromkeys(ids))}
+            if data.get('action')=='done':return {'summary':str(data.get('summary',''))[:6000],'evidence_ids':current_investigation_evidence(session['project_id'],ids)}
             if data.get('action')!='tool':fail('INVALID_ACTION','调查必须返回工具动作或完成说明')
             action_hash=digest([data.get('name'),data.get('arguments',{})])[:24]
             calls=[{'id':f'{turn}-json-{action_hash}','name':data.get('name'),'arguments':data.get('arguments',{})}];messages.append({'role':'assistant','content':response['text']})
-        else:return {'summary':response.get('text','')[:6000],'evidence_ids':list(dict.fromkeys(ids))}
+        else:return {'summary':response.get('text','')[:6000],'evidence_ids':current_investigation_evidence(session['project_id'],ids)}
         for call in calls:
             assert_lease(step['id'],manifest['lease_epoch'])
             count+=1
@@ -91,7 +145,7 @@ def investigate(task,step,session,profile,payload,manifest):
                 messages.append({'role':'tool','tool_call_id':call['id'],'content':db.dumps(result)})
                 if items is not None:items.append({'type':'function_call_output','call_id':call['id'],'output':db.dumps(result)})
             else:messages.append({'role':'user','content':db.dumps({'tool_result':result})})
-    return {'summary':'调查轮数到限，保留已读取依据；未完成范围需人工核对','evidence_ids':list(dict.fromkeys(ids)),'limit_reached':True}
+    return {'summary':'调查轮数到限，保留已读取依据；未完成范围需人工核对','evidence_ids':current_investigation_evidence(session['project_id'],ids),'limit_reached':True}
 
 def process_step(task,payload):
     st=db.one('SELECT * FROM writing_steps WHERE id=?',(payload['step_id'],))
@@ -110,7 +164,7 @@ def process_step(task,payload):
         previous=outputs(session['id']);policy=db.loads(session['policy_json'],{});profile=profiles.get(pid,policy.get('stage_profiles',{}).get(st['stage'],session['profile_id']));_,cfg,_=profiles.for_session(pid,profile['id'])
         base=db.loads(session['base_versions_json'],{});extra=previous.get('investigate',{}).get('evidence_ids',[]);data,manifest=context.assemble(pid,session['section_id'],base['contract_version_id'],profile,True,extra,'revise' if session['operation']=='revise_unit' else 'generate')
         manifest.update(writing_session_id=session['id'],writing_step_id=st['id'],stage=st['stage'],lease_epoch=epoch)
-        system={'investigate':prompts.INVESTIGATE,'judgment':prompts.JUDGMENT+' 另返回blocking_gaps列表。只有缺少当前任务必需命题的依据才列入blocking_gaps；任务本来不评价的性能、部署和未运行测试应作为限制保留，不要求补齐后才能写静态实现。','judgment_check':judgment.CHECK_PROMPT,'draft':prompts.EDIT if session['operation']=='revise_unit' else prompts.DRAFT,'annotation':prompts.ANNOTATE,'semantic':prompts.VERIFY,'coherence':prompts.COHERENCE,'regression':prompts.VERIFY}[st['stage']]
+        system={'investigate':prompts.INVESTIGATE,'judgment':prompts.JUDGMENT+' 另返回blocking_gaps列表。只有缺少当前任务必需命题的依据才列入blocking_gaps；任务本来不评价的性能、部署和未运行测试应作为限制保留，不要求补齐后才能写静态实现。section.title已给定，不得声称章标题尚未确定；没有逐小节清单、固定引用数量或年份范围不单独构成事实依据缺口，允许按已有章标题与研究主题组织论证。','judgment_check':judgment.CHECK_PROMPT,'draft':prompts.EDIT if session['operation']=='revise_unit' else prompts.DRAFT,'annotation':prompts.ANNOTATE,'semantic':prompts.VERIFY,'coherence':prompts.COHERENCE,'regression':prompts.VERIFY}[st['stage']]
         if st['stage']=='draft':system+=' 需要引用文献时在该段加reference_ids列表，只能使用references中有具体原文依据的给定ID，不手写猜测编号。references为空就不生成文献引用。'
         if 'judgment' in previous:data['judgment']=previous['judgment']['judgment']
         if policy.get('revision_instructions'):data['revision_instructions']=policy['revision_instructions']
@@ -122,11 +176,13 @@ def process_step(task,payload):
                 data['revision_scope']={'requested_problem':policy.get('revision_instructions',''),'other_prior_findings_are_not_assumed_resolved':True}
         if st['stage'] in ('investigate','judgment','judgment_check'):
             data.pop('existing_document',None)
+            data.pop('current_section_context',None);data.pop('paper_context',None)
             data['related_sections']=[r for r in data.get('related_sections',[]) if r.get('scope')=='full_required_dependency']
             required={r['section_id'] for r in data['related_sections']};manifest['related_revisions']={sid:rid for sid,rid in manifest.get('related_revisions',{}).items() if sid in required}
             if policy.get('revision_baseline_blob'):
                 baseline=unblob(policy['revision_baseline_blob']);data['previous_claims_to_check']=[{key:c[key] for key in ('local_id','statement','conditions','not_established') if key in c} for c in baseline['claims']]
-            data['phase_scope']='本阶段只调查和判定代码命题及其必要前提；保留明确的章节依赖。完整正文表达与可选邻接内容在后续生成、语义、衔接阶段检查，不能在本阶段声称已通读它们。'
+            from .launch import PHASE_SCOPE
+            data['phase_scope']=PHASE_SCOPE
         candidate_id=previous.get('draft',{}).get('candidate_id');analysis_id=previous.get('annotation',{}).get('analysis_id')
         if analysis_id and db.one('SELECT candidate_id FROM document_analyses WHERE id=?',(analysis_id,))['candidate_id']!=candidate_id:analysis_id=None
         if candidate_id:
@@ -141,12 +197,20 @@ def process_step(task,payload):
             data['sentences']=[{k:r[k] for k in ('id','node_id','text','start_cp','end_cp')} for r in sentences.get(pid,analysis_id)['sentences']]
             # Independent sentence extraction needs the original sentences once,
             # not the same prose in both a document tree and a second list.
-            for redundant in ('candidate_document','judgment','existing_document','related_sections','revision_source_document','revision_findings'):data.pop(redundant,None)
+            for redundant in ('candidate_document','judgment','existing_document','related_sections','current_section_context','paper_context','revision_source_document','revision_findings'):data.pop(redundant,None)
             data['analysis_scope']='按原文顺序逐句抽取和核对依据；跨章关系另由语义及篇章阶段检查'
         if st['stage']=='semantic':
             for redundant in ('sentences','existing_document','revision_source_document','revision_findings'):data.pop(redundant,None)
             data['locator_scope']='本阶段用candidate_document中的真实nodeId定位；句子ID未提供时应为空，具体原句写入message。完整正文、判定和证据均保留。'
-        if st['stage']=='draft':data['length_guidance']={'target_words_for_section':section(session['section_id'],pid)['target_words'],'unit_goal':'本次只完成任务规定的完整论证单元，不靠重复或虚构凑字数','do_not_repeat_project_metadata':True,'do_not_expand_scope_to_all_missing_experiments':True}
+        if st['stage']=='draft':
+            data['length_guidance']={'target_words_for_section':section(session['section_id'],pid)['target_words'],'unit_goal':'本次只完成任务规定的完整论证单元，不靠重复或虚构凑字数','do_not_repeat_project_metadata':True,'do_not_expand_scope_to_all_missing_experiments':True}
+            if policy.get('target_node_ids'):
+                from ..writing_continuity import selection_context
+                existing=data.get('existing_document') or {'type':'doc','content':[]};targets=set(policy['target_node_ids'])
+                data['selection_context']=selection_context(existing,targets)
+                data['existing_document']={'type':'doc','content':[node for node in existing.get('content',[]) if node.get('attrs',{}).get('nodeId') in targets]}
+                data['target_node_ids']=policy['target_node_ids'];data['scope']='selected_paragraphs'
+                system+=' 本次只输出existing_document中选中段落的替换稿，结合selection_context的只读前后文完成承接，不输出选区外的正文。'
         if st['stage'] in ('annotation','semantic'):
             relevant={e['id'] for e in data['evidence']}
             if st['stage']=='semantic' and candidate_id:
@@ -159,22 +223,28 @@ def process_step(task,payload):
             for redundant in ('evidence','existing_document','sentences','revision_source_document','revision_findings'):data.pop(redundant,None)
             data['review_scope']='检查当前连续正文和有关边界的指代、组织与推理关系；证据支持性由前序阶段核对，本阶段不重新认证事实'
         if st['stage'] in ('semantic','coherence') and candidate_id:
-            document=data.get('candidate_document',{});plain=all(n.get('type')=='paragraph' and all(child.get('type')=='text' for child in n.get('content',[])) for n in document.get('content',[]))
+            document=data.get('candidate_document',{});plain=all(n.get('type')=='paragraph' and all(child.get('type') in ('text','citation') for child in n.get('content',[])) for n in document.get('content',[]))
             if plain:
-                data['candidate_paragraphs']=[{'node_id':n['attrs']['nodeId'],'ordinal':i+1,'text':sentences.paragraph_text(n)} for i,n in enumerate(document['content'])]
+                data['candidate_paragraphs']=[sentences.paragraph_for_context(n,i+1) for i,n in enumerate(document['content'])]
                 data.pop('candidate_document',None)
-                data['locator_scope']='完整候选正文逐段列于candidate_paragraphs；node_id只用给定段落编号，句子ID未提供时必须为空。全篇疑点可使用空node_id；不要填章节号、命题号或猜测编号。'
+                data['locator_scope']='完整候选正文逐段列于candidate_paragraphs；文本中的引用占位符按顺序对应reference_ids和citation_positions_cp。node_id只用给定段落编号，句子ID未提供时必须为空。全篇疑点可使用空node_id；不要填章节号、命题号或猜测编号。'
+        from .packing import fit
+        fit(data,manifest,system,cfg)
         context_id=context.save_context(st['id'],data,manifest,system,cfg) if st['stage'] not in ('annotation','coherence','regression') else None
         if st['stage']=='investigate':out=investigate(task,st,session,profile,data,manifest)
         else:
             if st['stage']=='annotation':
+                annotation_field_corrections=[]
                 batch_size=2 if int(cfg['max_output_tokens'])<=4096 else 6
                 batches=[data['sentences'][i:i+batch_size] for i in range(0,len(data['sentences']),batch_size)];merged={'sentences':[],'findings':[],'coverage_complete':True,'summary':''};summaries=[]
                 if not batches:fail('EMPTY_DOCUMENT','候选没有可分析的句子')
                 for batch_index,batch in enumerate(batches):
                     scoped={**data,'sentences':batch,'batch_scope':{'index':batch_index,'total':len(batches),'scope_note':'只标注本批全部句子，不补写未给句子；整份覆盖由程序合并'}}
                     scoped_manifest={**manifest,'annotation_batch':batch_index,'annotation_sentence_ids':[x['id'] for x in batch]};context.save_context(st['id'],scoped,scoped_manifest,system,cfg)
-                    response=provider_adapter.call(task,profile,system,scoped,scoped_manifest);part=verification.Annotation.model_validate(provider.parse_json(response['text'])).model_dump()
+                    response=provider_adapter.call(task,profile,system,scoped,scoped_manifest)
+                    normalized,field_corrections=verification.normalize_empty_sentence_metadata(provider.parse_json(response['text']));annotation_field_corrections.extend(field_corrections)
+                    normalized,book_corrections=verification.normalize_annotation_sources(normalized,scoped_manifest,scoped.get('references',[]));annotation_field_corrections.extend(book_corrections)
+                    part=verification.Annotation.model_validate(normalized).model_dump()
                     permitted={x['id'] for x in batch}
                     if {x['sentence_id'] for x in part['sentences']}-permitted:fail('INVALID_MAPPING','标注超出本批句子范围')
                     merged['sentences'].extend(part['sentences']);merged['findings'].extend(part['findings']);merged['coverage_complete']=merged['coverage_complete'] and part['coverage_complete'];summaries.append(part['summary']);assert_lease(st['id'],epoch)
@@ -187,15 +257,17 @@ def process_step(task,payload):
             else:
                 raw=provider_adapter.call(task,profile,system,data,manifest);parsed=provider.parse_json(raw['text'])
             assert_lease(st['id'],epoch)
-            if st['stage']=='judgment':out={'judgment':judgment.validate(parsed,manifest)}
+            if st['stage']=='judgment':
+                normalized,corrections=judgment.normalize_redundant_books(parsed,manifest,data.get('references',[]))
+                out={'judgment':judgment.validate(normalized,manifest),'field_corrections':corrections}
             elif st['stage']=='judgment_check':
                 from .models import Verification
                 result=Verification.model_validate(parsed).model_dump();rid=verification.save_run(pid,None,'judgment_check',manifest,result);out={'verification_run_id':rid,'result':result}
             elif st['stage']=='draft':
-                s=section(session['section_id'],pid);current=documents.current(s);locks=[r['node_id'] for r in db.rows('SELECT node_id FROM locks WHERE section_id=?',(s['id'],))];doc,validated=drafting.document(parsed,db.loads(current['document'],{}) if current else None,policy.get('target_node_ids'),locks,data.get('references',[]),manifest['evidence_versions']);identity=db.uid()
+                s=section(session['section_id'],pid);current=documents.current(s);locks=[r['node_id'] for r in db.rows('SELECT node_id FROM locks WHERE section_id=?',(s['id'],))];doc,validated=drafting.document(parsed,db.loads(current['document'],{}) if current else None,policy.get('target_node_ids'),locks,data.get('references',[]),manifest.get('provided_evidence_ids',manifest['evidence_versions']));identity=db.uid()
                 db.execute('INSERT INTO writing_candidates VALUES(?,?,?,?,?,?,?,?)',(identity,session['id'],policy.get('revision_candidate_id'),blob(doc),digest(doc),blob({'judgment':data['judgment'],'manifest':manifest,'draft_field_corrections':validated['field_corrections']}),context_id,db.now()));out={'candidate_id':identity,'missing_materials':validated['missing_materials'],'field_corrections':validated['field_corrections']}
             elif st['stage']=='annotation':
-                rid,result=verification.apply_annotation(pid,analysis_id,parsed,manifest);out={'analysis_id':analysis_id,'verification_run_id':rid,'result':result}
+                rid,result=verification.apply_annotation(pid,analysis_id,parsed,manifest);out={'analysis_id':analysis_id,'verification_run_id':rid,'result':result,'field_corrections':annotation_field_corrections}
             else:
                 refs=sentences.get(pid,analysis_id)['sentences'];known={x['id'] for x in refs};nodes={x['node_id'] for x in refs}
                 nodes.update(n['node_id'] for scope in parsed.get('expanded_original_passages',[]) for n in scope['paragraphs'])
@@ -255,7 +327,9 @@ def reparse_saved_draft(pid,identity):
     if db.one("SELECT id FROM generation_runs WHERE task_id=? AND status IN ('pending','sent','outcome_unknown')",(step['task_id'],)):fail('REMOTE_OUTCOME_UNKNOWN','仍有远端未知请求，不能重解析或重发',409)
     run=db.one("SELECT * FROM generation_runs WHERE task_id=? AND status='completed' ORDER BY rowid DESC LIMIT 1",(step['task_id'],))
     if not run:fail('REPARSE_NOT_ALLOWED','没有已保存的完整正文响应',409)
-    meta=db.loads(run['manifest'],{});wire=unblob(meta['output_blob']);parsed=provider.parse_json(wire['text'])
+    meta=db.loads(run['manifest'],{});wire=unblob(meta['output_blob'])
+    from .identifiers import decode
+    parsed=decode(provider.parse_json(wire['text']),meta.get('identifier_aliases',{}))
     from .impact import check_manifest
     if check_manifest(pid,meta):fail('INPUT_VERSION_CHANGED','保存响应所依据的来源已变化',409)
     frozen=None
@@ -266,7 +340,7 @@ def reparse_saved_draft(pid,identity):
     context_row,data=frozen;manifest=unblob(context_row['manifest_blob']);s=section(session['section_id'],pid);policy=db.loads(session['policy_json'],{})
     if s['current_revision_id']!=manifest.get('base_revision_id'):fail('INPUT_VERSION_CHANGED','当前正文已改变',409)
     current=documents.current(s);locks=[r['node_id'] for r in db.rows('SELECT node_id FROM locks WHERE section_id=?',(s['id'],))]
-    doc,validated=drafting.document(parsed,db.loads(current['document'],{}) if current else None,policy.get('target_node_ids'),locks,data.get('references',[]),manifest.get('evidence_versions',{}));cid=db.uid()
+    doc,validated=drafting.document(parsed,db.loads(current['document'],{}) if current else None,policy.get('target_node_ids'),locks,data.get('references',[]),manifest.get('provided_evidence_ids',manifest.get('evidence_versions',{})));cid=db.uid()
     decision={'judgment':data['judgment'],'manifest':manifest,'draft_field_corrections':validated['field_corrections'],'reparsed_generation_run_id':run['id'],'reparse_method':'local_schema_reparse_no_new_model_call'}
     db.execute('INSERT INTO writing_candidates VALUES(?,?,?,?,?,?,?,?)',(cid,identity,policy.get('revision_candidate_id'),blob(doc),digest(doc),blob(decision),context_row['id'],db.now()))
     out={'candidate_id':cid,'missing_materials':validated['missing_materials'],'field_corrections':validated['field_corrections'],'reparsed_generation_run_id':run['id'],'new_model_calls':0}

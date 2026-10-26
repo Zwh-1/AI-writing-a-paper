@@ -101,11 +101,7 @@ function Workspace(p: Props) {
       <RulesOverview
         data={c.data}
         navigate={c.setView}
-        onCandidates={c.showCandidates}
-        onAll={() => {
-          c.setFilter("all");
-          c.setView("catalog");
-        }}
+        onRecords={c.showRecords}
         onSnapshot={() => c.setSource({ package: c.data?.package })}
       />
       <WorkspaceTabs<RulesView>
@@ -134,7 +130,7 @@ function Workspace(p: Props) {
         hidden={c.view !== "catalog"}
       >
         <RuleCatalog
-          key={p.pid}
+          key={`${p.pid}:${c.catalogKey}`}
           rules={all}
           loaded={!!c.data}
           filter={c.filter}
@@ -227,6 +223,7 @@ function Workspace(p: Props) {
               }
               onSnapshot={() => c.setSource({ package: c.data?.package })}
               onBlocker={blocker}
+              onRecords={c.showRecords}
               onPage={(page) =>
                 c.setOriginal({
                   id: page.file_id,

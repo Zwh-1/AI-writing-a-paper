@@ -10,6 +10,10 @@ def compact_locator(value):
     if not isinstance(value,dict):return {}
     return {key:item for key in LOCATOR_FIELDS if isinstance((item:=value.get(key)),(int,float,str)) and not isinstance(item,bool) and (not isinstance(item,str) or len(item)<=120)}
 
+def compact_reference_metadata(metadata):
+    """Keep every bibliographic value, including conflicting raw/structured values."""
+    return {key:value for key,value in metadata.items() if key not in ('archive_member','archive_sha256','catalog_number')}
+
 
 def source_hash(source):
     return hashlib.sha256(db.dumps([source['id'],source['text'],source.get('method'),source.get('file_sha256')]).encode()).hexdigest()

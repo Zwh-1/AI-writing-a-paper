@@ -20,7 +20,7 @@ def test_migration_rollback_keeps_old_version_and_no_partial_tables(env,monkeypa
         assert c.execute('PRAGMA user_version').fetchone()[0]==3
         assert not c.execute("SELECT name FROM sqlite_master WHERE name='writing_project_state'").fetchone()
     monkeypatch.setattr(migrations,'statements',original);db.init()
-    assert db.one('PRAGMA user_version')['user_version']==7
+    assert db.one('PRAGMA user_version')['user_version']==9
 
 def test_syntax_index_uses_real_typescript_and_literal_routes(env):
     units=db.rows('SELECT * FROM code_units WHERE snapshot_id=? AND symbol=?',(env['snapshot']['id'],'allowed'))

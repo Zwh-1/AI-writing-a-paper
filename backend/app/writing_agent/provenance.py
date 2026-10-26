@@ -2,7 +2,10 @@
 from .. import db,security,documents
 from .common import digest,fail
 
-def revision_permissions(pid,rid):
+def revision_permissions(pid,rid,_visited=None):
+    visited=set() if _visited is None else _visited
+    if rid in visited:return digest({'previously_checked_revision':rid})
+    visited.add(rid)
     from .evidence import allowed_remote,permission_stamp
     r=db.one('SELECT r.* FROM revisions r JOIN sections s ON s.id=r.section_id WHERE r.id=? AND s.project_id=?',(rid,pid))
     if not r:fail('SOURCE_ACCESS_REVOKED','派生正文版本不存在',403)
@@ -20,8 +23,16 @@ def revision_permissions(pid,rid):
             if not security.file_allows_remote(meta['source_file_id'],pid):fail('SOURCE_ACCESS_REVOKED','研究产物原件禁止外发',403)
             files.add(meta['source_file_id'])
         for sid in meta.get('source_ids',[]):source(sid)
+        for source_revision in meta.get('source_revision_ids',[]):
+            stamps.append(revision_permissions(pid,source_revision,visited))
     for dep in db.rows('SELECT * FROM dependencies WHERE revision_id=?',(rid,)):
+        if dep['upstream_type']=='document_reading':
+            from ..document_reading import context as reading_context
+            reading=reading_context(pid,dep['upstream_id'],remote=True);files.add(reading['file_id']);stamps.append(reading['version'])
         if dep['upstream_type']=='source':source(dep['upstream_id'])
+        if dep['upstream_type']=='knowledge_unit':
+            from ..knowledge_units import get as get_unit
+            unit=get_unit(pid,dep['upstream_id'],remote=True);files.add(unit['file_id']);stamps.append(digest([unit['parse_id'],unit['content_hash'],unit['current']]))
         if dep['upstream_type']=='fact':
             f=db.one('SELECT * FROM facts WHERE id=? AND project_id=?',(dep['upstream_id'],pid));version=str(dep['upstream_version'])
             if not f:fail('SOURCE_ACCESS_REVOKED','正文依据事实不存在',403)
@@ -35,7 +46,7 @@ def revision_permissions(pid,rid):
     for cite in db.rows('SELECT source_ids FROM citations WHERE revision_id=?',(rid,)):
         for sid in db.loads(cite['source_ids'],[]):source(sid)
     for n in documents.nodes(db.loads(r['document'],{})):
-        if n.get('type')=='figure':artifact(n.get('attrs',{}).get('artifactId'))
+        if n.get('type')=='figure' or n.get('type')=='table' and n.get('attrs',{}).get('artifactId'):artifact(n.get('attrs',{}).get('artifactId'))
     for d in db.rows("SELECT upstream_id FROM object_dependencies WHERE project_id=? AND downstream_type='revision' AND downstream_id=? AND upstream_type='evidence'",(pid,rid)):
         if not allowed_remote(pid,d['upstream_id']):fail('SOURCE_ACCESS_REVOKED','正文的代码/证据派生来源禁止外发',403)
         stamps.append(permission_stamp(pid,d['upstream_id']))

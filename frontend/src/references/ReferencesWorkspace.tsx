@@ -24,6 +24,8 @@ import {
 } from "./ReferenceDialogs";
 import "./referencesWorkspace.css";
 import { KnowledgeBasePanel, KnowledgeDocumentDialog } from "./KnowledgeBase";
+import EvidenceKnowledgePanel from "./EvidenceKnowledge";
+import DocumentReadingPanel from "./DocumentReading";
 
 const languageLabel = (language: string) =>
   ({ zh: "中文", en: "英文", other: "其他外文" })[language] ?? "语种待确认";
@@ -223,6 +225,20 @@ export default function ReferencesWorkspace({
           </span>
         </div>
       )}
+      <DocumentReadingPanel
+        pid={pid}
+        tick={tick}
+        onSource={(file, page) => setSource({ ...file, initialPage: page })}
+        onChanged={() => {
+          void knowledge.load();
+        }}
+      />
+      <EvidenceKnowledgePanel
+        pid={pid}
+        tick={tick}
+        onSource={(file, page) => setSource({ ...file, initialPage: page })}
+        onImported={() => void act(async () => ({}), "研究文献已导入")}
+      />
       <KnowledgeBasePanel
         pid={pid}
         knowledge={knowledge}

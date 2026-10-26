@@ -3,7 +3,8 @@ import re,hashlib,math
 from datetime import datetime
 from fastapi import HTTPException
 from . import db,documents
-OPERATIONS={'generate','revise','expand','compress','translate'}
+DEFAULT_OPERATIONS=('generate','revise','polish','expand','compress','translate')
+OPERATIONS=set(DEFAULT_OPERATIONS)
 FIELDS={'paper_type','section_kind','operation','language'}
 CHECKERS={'manual','word_min','word_max','word_range','reference_min','reference_recent','reference_foreign_ratio','required_sections','required_terms','forbidden_terms','heading_min','figure_min','table_min','format_value','rendered_page_min'}
 FORMAT_KEYS={'font','latin_font','font_size','line_spacing','first_line_chars','margin_top','margin_bottom','margin_left','margin_right','heading_font','reference_superscript'}
@@ -33,7 +34,7 @@ def condition_matches(expr,context):
 def validate_execution(body):
     checker=body.get('checker','manual');value=body.get('value')
     if checker not in CHECKERS:raise HTTPException(422,'不支持的检查器')
-    operations=body.get('operations',list(OPERATIONS))
+    operations=body.get('operations',list(DEFAULT_OPERATIONS))
     if not isinstance(operations,list) or not operations or any(x not in OPERATIONS for x in operations):raise HTTPException(422,'写作操作范围无效')
     validate_condition(body.get('conditions',{}))
     if checker in ('word_min','word_max','reference_min','heading_min','figure_min','table_min','rendered_page_min'):

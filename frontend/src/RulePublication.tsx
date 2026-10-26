@@ -4,6 +4,7 @@ import {
   CheckCircle2,
   ShieldCheck,
 } from "lucide-react";
+import { summarizeRuleRecords } from "./rules/ruleRecordSummary";
 type Row = Record<string, any>;
 export default function RulePublication({
   data,
@@ -12,6 +13,7 @@ export default function RulePublication({
   onSnapshot,
   onBlocker,
   onPage,
+  onRecords,
 }: {
   data: Row;
   busy: boolean;
@@ -19,8 +21,10 @@ export default function RulePublication({
   onSnapshot: () => void;
   onBlocker: (blocker: Row) => void;
   onPage: (page: Row) => void;
+  onRecords: (filter: string) => void;
 }) {
   const ready = data.readiness;
+  const summary = summarizeRuleRecords(data.rules);
   return (
     <section
       className="panel mb rule-publication"
@@ -62,14 +66,38 @@ export default function RulePublication({
       </div>
       <div className="rules-publication-counts">
         <span>
-          本次可发布 <strong>{ready.publishable_count}</strong> 条
+          本次纳入 <strong>{summary.publishable}</strong> 条 （强制{" "}
+          {summary.mandatory} · 建议 {summary.recommended}）
         </span>
         <span>
           待核对资料 <strong>{ready.pending_pages.length}</strong> 页
         </span>
         <span>
-          候选条款 <strong>{ready.counts.candidate}</strong> 条
+          待确认 / 分类 <strong>{summary.candidate}</strong> 条
         </span>
+      </div>
+      <div className="rules-publication-scope">
+        <p>
+          全部 {summary.total} 条记录中，其余{" "}
+          {summary.total - summary.publishable} 条
+          保留供查阅，不纳入本次规则包。
+        </p>
+        <div>
+          {[
+            ["reference_only", "仅供参考", summary.reference_only],
+            ["rejected", "已归并 / 排除", summary.rejected],
+            ["candidate", "待确认 / 分类", summary.candidate],
+          ].map(([filter, label, count]) => (
+            <button
+              key={filter}
+              className="text-button"
+              onClick={() => onRecords(String(filter))}
+            >
+              {label} <strong>{count}</strong> 条
+              <ArrowUpRight size={12} />
+            </button>
+          ))}
+        </div>
       </div>
       {ready.blockers.map((blocker: Row) => (
         <div className="rule-blocker" key={blocker.code}>

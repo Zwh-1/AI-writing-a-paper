@@ -21,7 +21,7 @@ def resolve_config(configuration):
     if effort is not None:
         if effort not in ('low','medium','high','max'):fail('INVALID_PROFILE','推理强度无效')
         cfg['reasoning_effort']=effort
-    cfg.update(max_attempts=1,streaming=False,json_mode=True)
+    cfg.update(max_attempts=1,streaming=False,json_mode=True,tool_mode=configuration.get('tool_mode','json'))
     if 'reconcile_billing' in configuration:
         if type(configuration['reconcile_billing']) is not bool:fail('INVALID_PROFILE','账单核对开关无效')
         cfg['reconcile_billing']=configuration['reconcile_billing']
@@ -33,7 +33,7 @@ def fingerprint(cfg,key=None):
     from .verification import Annotation
     from .tools import schemas
     from .coherence import ExpandedReview
-    return digest({'configuration':{k:cfg.get(k) for k in ('base_url','model','protocol','max_output_tokens','context_limit','thinking_enabled','reasoning_effort','json_mode','currency','input_price','output_price')},'credential_scope':digest(key) if key else None,'controller_version':'agent.0.4.1.completion2','context_policy':'phase_scoped.v4.expansion.regression','identifier_codec':'typed_aliases.v1','structured_json_policy':'known_complete_retry1','tool_policy':'snapshot_tools.v2.compact_run_records','schema_fingerprint':digest([m.model_json_schema() for m in (Judgment,Draft,Verification,Annotation,ExpandedReview)]),'tool_fingerprint':digest(schemas()),'prompt_fingerprint':digest({k:v for k,v in vars(prompts).items() if k.isupper() and isinstance(v,str)})})
+    return digest({'configuration':{k:cfg.get(k) for k in ('base_url','model','protocol','max_output_tokens','context_limit','thinking_enabled','reasoning_effort','json_mode','currency','input_price','output_price')},'credential_scope':digest(key) if key else None,'controller_version':'agent.0.4.1.completion2','context_policy':'phase_scoped.v5.whole_source_retrieval','identifier_codec':'typed_aliases.v2.source_file_rule','structured_json_policy':'known_complete_retry1','tool_policy':'snapshot_tools.v2.compact_run_records','schema_fingerprint':digest([m.model_json_schema() for m in (Judgment,Draft,Verification,Annotation,ExpandedReview)]),'tool_fingerprint':digest(schemas()),'prompt_fingerprint':digest({k:v for k,v in vars(prompts).items() if k.isupper() and isinstance(v,str)})})
 
 def create(pid,body):
     security.require_project(pid);role=body.get('role','draft');configuration=body.get('configuration',{})
@@ -68,3 +68,29 @@ def for_session(pid,identity):
     cfg,key=resolve_config(p['configuration'])
     if not key:fail('PROVIDER_KEY_MISSING','接口尚未配置密钥')
     return p,cfg,key
+
+def current_default(pid):
+    """Resolve a draft profile from current settings without changing old profiles."""
+    security.require_project(pid)
+    configuration={'route':'primary'}
+    cfg,key=resolve_config(configuration)
+    from ..summary_billing import finite
+    if not all(finite(cfg.get(name)) for name in ('input_price','output_price')):
+        configuration['reconcile_billing']=True;cfg,key=resolve_config(configuration)
+    if int(cfg.get('max_output_tokens',8192))>6144:
+        configuration['max_output_tokens']=6144;cfg,key=resolve_config(configuration)
+    if not key:fail('PROVIDER_KEY_MISSING','请先在“接口与设置”中保存模型接口密钥')
+    if not str(cfg.get('model') or '').strip():fail('PROVIDER_MODEL_MISSING','请先在“接口与设置”中选择写作模型')
+    stamp=fingerprint(cfg,key)
+    for row in db.rows("SELECT * FROM writing_profiles WHERE project_id=? AND role='draft' AND route_fingerprint=? ORDER BY created_at DESC",(pid,stamp)):
+        if {**{'route':'primary'},**db.loads(row['configuration_json'],{})}==configuration:return get(pid,row['id'])
+    return create(pid,{'role':'draft','configuration':configuration})
+
+def current_verifier(pid,generation,output_limit=4096):
+    cfg,key=resolve_config(generation['configuration'])
+    if int(cfg.get('max_output_tokens',8192))<=output_limit:return generation
+    configuration={**generation['configuration'],'max_output_tokens':output_limit}
+    actual,key=resolve_config(configuration);stamp=fingerprint(actual,key)
+    for row in db.rows("SELECT * FROM writing_profiles WHERE project_id=? AND role='verify' AND route_fingerprint=? ORDER BY created_at DESC",(pid,stamp)):
+        if db.loads(row['configuration_json'],{})==configuration:return get(pid,row['id'])
+    return create(pid,{'role':'verify','configuration':configuration})

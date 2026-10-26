@@ -52,6 +52,9 @@ def reconcile(pid,profile='material-summary'):
     if profile=='gpt-fallback':
         from . import model_routing
         c,key=model_routing.snapshot();scope=provider.request_scope(c,key)
+    elif profile=='image-generation':
+        from . import image_generation
+        c,key=image_generation.snapshot();scope=provider.request_scope(c,key)
     elif profile=='material-summary':scope=summary.scope()
     elif profile=='primary':scope=provider.request_scope(provider.config(),provider.get_key())
     else:raise ValueError('账单接口类型无效')
@@ -66,14 +69,14 @@ def reconcile(pid,profile='material-summary'):
             payload=raw.get('data',raw) if normalized['response_scope']=='data' else raw
         except (provider.httpx.RequestError,ValueError,provider.ProviderError) as error:
             return {'reconciled':False,'reason':'账单查询暂不可用：'+security.redact(error),'budget':budget(pid,cfg['max_request_cost'])}
-        account={**normalized,'fetched_at':db.now()};db.set_setting('gpt_fallback_account_usage' if profile=='gpt-fallback' else 'material_summary_account_usage',account)
+        account={**normalized,'fetched_at':db.now()};db.set_setting('gpt_fallback_account_usage' if profile=='gpt-fallback' else 'image_generation_account_usage' if profile=='image-generation' else 'material_summary_account_usage',account)
         if normalized['unit_source']!='response' or normalized['unit'].upper()!=str(cfg['currency']).upper():return {'reconciled':False,'reason':'服务商未明确返回相同币种，保留未知费用预留','account':account,'budget':budget(pid,cfg['max_request_cost'])}
         stat=next((x for x in payload.get('model_stats',[]) if isinstance(x,dict) and x.get('model')==model),None)
         if not stat or type(stat.get('requests')) is not int:return {'reconciled':False,'reason':'服务商缺少可核对的模型请求汇总','account':account,'budget':budget(pid,cfg['max_request_cost'])}
         amounts=[stat[k] for k in ('cost','actual_cost','account_cost') if k in stat]
         if not amounts or not all(finite(x) for x in amounts):return {'reconciled':False,'reason':'服务商费用字段无效，保留预留','account':account,'budget':budget(pid,cfg['max_request_cost'])}
         # Older runs can be attributed only if this DPAPI key predates every run.
-        credential=security.DATA/(profile+'.dpapi');key_env='PAPER_GPT_API_KEY' if profile=='gpt-fallback' else 'PAPER_SUMMARY_API_KEY';legacy_after=credential.stat().st_mtime if credential.exists() and not os.environ.get(key_env) else None
+        credential=security.DATA/(profile+'.dpapi');key_env='PAPER_GPT_API_KEY' if profile=='gpt-fallback' else 'PAPER_IMAGE_API_KEY' if profile=='image-generation' else 'PAPER_SUMMARY_API_KEY';legacy_after=credential.stat().st_mtime if credential.exists() and not os.environ.get(key_env) else None
         candidates=[]
         for run in db.rows('SELECT g.*,t.kind FROM generation_runs g JOIN tasks t ON t.id=g.task_id WHERE g.model=? ORDER BY g.created_at',(model,)):
             manifest=db.loads(run['manifest'],{});snap=manifest.get('provider',{})

@@ -27,7 +27,7 @@ def protect(data, decrypt=False):
     finally: ctypes.windll.kernel32.LocalFree(out.pbData)
 
 def save_key(value,profile=""):
-    if profile not in ("","material-summary","gpt-fallback"):raise ValueError("未知凭据类型")
+    if profile not in ("","material-summary","gpt-fallback","image-generation"):raise ValueError("未知凭据类型")
     import tempfile
     path=DATA/(('credential' if not profile else profile)+'.dpapi')
     if not isinstance(value,str) or len(value)>4096 or '\n' in value or '\r' in value:raise HTTPException(422,'密钥格式无效，请粘贴完整的单行密钥')
@@ -50,9 +50,10 @@ def save_key(value,profile=""):
         if temporary is not None:temporary.unlink(missing_ok=True)
 
 def get_key(profile=""):
-    if profile not in ("","material-summary","gpt-fallback"):raise ValueError("未知凭据类型")
+    if profile not in ("","material-summary","gpt-fallback","image-generation"):raise ValueError("未知凭据类型")
     if profile:
-        value=os.environ.get("PAPER_GPT_API_KEY" if profile=='gpt-fallback' else "PAPER_SUMMARY_API_KEY", "")
+        variable={'gpt-fallback':'PAPER_GPT_API_KEY','material-summary':'PAPER_SUMMARY_API_KEY','image-generation':'PAPER_IMAGE_API_KEY'}[profile]
+        value=os.environ.get(variable, "")
         if value:return value
         path=DATA/(profile+".dpapi")
         return protect(path.read_bytes(),True).decode() if path.exists() else ""
@@ -97,7 +98,10 @@ def redact(message):
     result=result.replace(summary_key,'[已隐藏密钥]') if summary_key else result
     try:gpt_key=get_key('gpt-fallback')
     except Exception:gpt_key=''
-    return (result.replace(gpt_key,'[已隐藏密钥]') if gpt_key else result)[:1500]
+    result=result.replace(gpt_key,'[已隐藏密钥]') if gpt_key else result
+    try:image_key=get_key('image-generation')
+    except Exception:image_key=''
+    return (result.replace(image_key,'[已隐藏密钥]') if image_key else result)[:1500]
 
 
 def file_allows_remote(fid,pid=None,seen=None):

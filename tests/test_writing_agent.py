@@ -64,9 +64,9 @@ def reviewed_candidate(e,monkeypatch):
 def test_migrations_atomic_and_repeatable(env):
     db.init();db.init()
     with db.connect() as c:
-        assert c.execute('PRAGMA user_version').fetchone()[0]==7
+        assert c.execute('PRAGMA user_version').fetchone()[0]==9
         assert not c.execute('PRAGMA foreign_key_check').fetchall()
-        assert c.execute('SELECT count(*) FROM schema_migrations').fetchone()[0]==4
+        assert c.execute('SELECT count(*) FROM schema_migrations').fetchone()[0]==6
 
 def test_migration_refuses_future_database(env):
     with db.connect() as c:c.execute('PRAGMA user_version=99')

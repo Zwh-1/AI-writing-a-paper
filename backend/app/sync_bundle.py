@@ -26,6 +26,8 @@ def record_key(table,row):
     return table+':'+db.dumps([row[k] for k in keys])
 
 def make(pid,base_heads=None):
+    if db.one('SELECT id FROM knowledge_parses WHERE project_id=? LIMIT 1',(pid,)):
+        raise HTTPException(409,'该项目含版本化证据知识库，旧版云同步无法完整承载，请使用完整本地备份与隔离恢复')
     if db.one('SELECT id FROM thesis_core_versions WHERE project_id=? LIMIT 1',(pid,)) or db.one('SELECT id FROM repository_snapshots WHERE project_id=? LIMIT 1',(pid,)):
         raise HTTPException(409,'该项目含新版代码证据与写作分析，旧版云同步无法完整承载。请使用包含全部资源的本地备份与隔离恢复；不会静默丢弃新数据')
     from .synchronization import sharing_gate

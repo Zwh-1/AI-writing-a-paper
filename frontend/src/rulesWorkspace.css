@@ -125,7 +125,7 @@
 }
 .rules-metrics {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
 }
 .rules-metrics > button {
   text-align: left;
@@ -138,6 +138,12 @@
 }
 .rules-metrics > button:hover {
   background: #f7faf8;
+}
+.rules-metrics > button.is-publishable {
+  background: #f5faf6;
+}
+.rules-metrics > button.is-publishable strong {
+  color: var(--rules-accent);
 }
 .rules-metrics > button:focus-visible {
   outline: 2px solid var(--rules-accent);
@@ -169,6 +175,42 @@
   align-items: center;
   color: #8b9891;
   font-size: 10px;
+}
+.rules-metrics small svg {
+  flex-shrink: 0;
+}
+.rules-count-explanation {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+  padding: 11px 22px;
+  border-top: 1px solid #e9eeea;
+  background: #fafcfb;
+  color: #7b8b81;
+  font-size: 11px;
+  line-height: 1.8;
+}
+.rules-count-explanation .text-button {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+  color: var(--rules-accent);
+  font-size: 11px;
+}
+.rules-count-explanation small {
+  color: #87938c;
+  font-size: 10px;
+}
+.rules-filter-description {
+  padding: 10px 22px;
+  background: #f7faf8;
+  border-bottom: 1px solid #e8ede9;
+  color: #708077;
+  font-size: 11px;
+  line-height: 1.8;
 }
 .rules-workspace-tabs {
   position: sticky;
@@ -551,6 +593,29 @@
   color: #3d6b50;
   margin: 0 4px;
 }
+.rules-publication-scope {
+  margin: -4px 0 20px;
+  padding: 12px 16px;
+  border: 1px solid #e5ece7;
+  border-radius: 7px;
+  background: #f8faf8;
+  color: #73837a;
+  font-size: 11px;
+  line-height: 1.8;
+}
+.rules-publication-scope > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 22px;
+  margin-top: 6px;
+}
+.rules-publication-scope .text-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--rules-accent);
+  font-size: 11px;
+}
 .rules-publish-action {
   display: flex;
   align-items: center;
@@ -621,11 +686,18 @@
   .rules-metrics > button {
     padding: 14px 16px;
   }
-  .rules-metrics > button:nth-child(3) {
+  .rules-metrics > button:first-child {
+    grid-column: 1 / -1;
+  }
+  .rules-metrics > button:nth-child(even) {
     border-left: 0;
   }
-  .rules-metrics > button:nth-child(n + 3) {
+  .rules-metrics > button:nth-child(n + 2) {
     border-top: 1px solid #e9eeea;
+  }
+  .rules-count-explanation,
+  .rules-filter-description {
+    padding: 10px 16px;
   }
   .rules-metrics strong {
     font-size: 25px;

@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import type { RuleConfirmationResult } from "./ruleBatchConfirmation";
 import { checkerLabels } from "./RuleEditor";
+import { matchesRuleFilter } from "./rules/ruleRecordSummary";
 
 type Row = Record<string, any>;
 type Props = {
@@ -26,13 +27,27 @@ type Props = {
   run: (key: string, fn: () => Promise<any>, message: string) => Promise<any>;
 };
 const states = [
-  ["all", "全部规则"],
-  ["candidate", "待确认"],
+  ["all", "全部记录"],
+  ["publishable", "可纳入规则包"],
+  ["candidate", "待确认 / 分类"],
   ["confirmed", "已确认"],
   ["machine_verified", "机器审核通过"],
-  ["reference_only", "参考与条件规范"],
-  ["rejected", "已排除"],
+  ["reference_only", "仅供参考"],
+  ["rejected", "已归并 / 排除"],
 ];
+const filterDescriptions: Record<string, string> = {
+  all: "包含可纳入的要求、参考内容、归并或排除记录及待核验条目。",
+  publishable:
+    "仅含人工确认或机器审核通过的强制要求与建议；发布前仍需通过来源与冲突检查。",
+  candidate: "尚待核验，或已确认但用途仍待判断的记录；暂不纳入规则包。",
+  confirmed:
+    "人工确认是审核状态；只有性质为强制要求或建议的记录才会进入规则包。",
+  machine_verified:
+    "机器审核通过是审核状态；是否纳入规则包还取决于要求性质与发布检查。",
+  reference_only:
+    "示例、反例、知识说明及带适用条件的参考内容，保留供查阅，不作为当前写作要求。",
+  rejected: "已归并的重复条款及已排除记录保留在此，原文与出处仍可追溯。",
+};
 
 export default function RuleCatalog({
   rules,
@@ -62,7 +77,7 @@ export default function RuleCatalog({
     () =>
       rules.filter(
         (rule) =>
-          (filter === "all" || rule.state === filter) &&
+          matchesRuleFilter(rule, filter) &&
           (!file ||
             (file === "manual"
               ? !rule.source_id
@@ -147,7 +162,7 @@ export default function RuleCatalog({
       <div className="rules-catalog-toolbar">
         <div>
           <h2>
-            规则条款 <span>{rules.length}</span>
+            提取记录 <span>{rules.length}</span>
           </h2>
           <p>按状态或出处筛选，点击条款查看原文与执行方式。</p>
         </div>
@@ -206,11 +221,12 @@ export default function RuleCatalog({
             <small>
               {key === "all"
                 ? rules.length
-                : rules.filter((rule) => rule.state === key).length}
+                : rules.filter((rule) => matchesRuleFilter(rule, key)).length}
             </small>
           </button>
         ))}
       </div>
+      <p className="rules-filter-description">{filterDescriptions[filter]}</p>
       <div className="rule-batch-bar">
         <label className="checkbox">
           <input

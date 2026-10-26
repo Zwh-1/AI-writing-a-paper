@@ -1,21 +1,53 @@
 import { ArrowUpRight, ShieldCheck } from "lucide-react";
 import type { Row } from "../workspace/types";
 import type { RulesView } from "./useRulesWorkspace";
+import { summarizeRuleRecords } from "./ruleRecordSummary";
 
 export default function RulesOverview({
   data,
   navigate,
-  onCandidates,
-  onAll,
+  onRecords,
   onSnapshot,
 }: {
   data: Row | null;
   navigate: (view: RulesView) => void;
-  onCandidates: () => void;
-  onAll: () => void;
+  onRecords: (filter: string) => void;
   onSnapshot: () => void;
 }) {
   const ready = data?.readiness;
+  const summary = summarizeRuleRecords(data?.rules ?? []);
+  const metrics = [
+    {
+      key: "all",
+      label: "全部提取记录",
+      count: summary.total,
+      hint: "包含参考与归并记录",
+    },
+    {
+      key: "publishable",
+      label: "可纳入规则包",
+      count: summary.publishable,
+      hint: `${summary.mandatory} 条强制 · ${summary.recommended} 条建议`,
+    },
+    {
+      key: "reference_only",
+      label: "仅供参考",
+      count: summary.reference_only,
+      hint: "示例、反例与条件参考",
+    },
+    {
+      key: "rejected",
+      label: "已归并 / 排除",
+      count: summary.rejected,
+      hint: "保留记录与出处",
+    },
+    {
+      key: "candidate",
+      label: "待确认 / 分类",
+      count: summary.candidate,
+      hint: "查看仍需核验的记录",
+    },
+  ];
   return (
     <section className="rules-overview" aria-label="规则概况与发布状态">
       <div className="rules-version-summary">
@@ -60,40 +92,35 @@ export default function RulesOverview({
         </div>
       </div>
       <div className="rules-metrics" aria-label="规则概况">
-        <button disabled={!data} onClick={onAll}>
-          <span>全部条款</span>
-          <strong>{data?.rules.length ?? "—"}</strong>
-          <small>
-            查找与管理
-            <ArrowUpRight size={12} />
-          </small>
-        </button>
-        <button disabled={!data} onClick={onCandidates}>
-          <span>待确认</span>
-          <strong>{ready?.counts.candidate ?? "—"}</strong>
-          <small>
-            查看仍需核验的候选
-            <ArrowUpRight size={12} />
-          </small>
-        </button>
-        <button disabled={!data} onClick={() => navigate("issues")}>
-          <span>重复与冲突</span>
-          <strong>
-            {data ? data.duplicates.length + data.conflicts.length : "—"}
-            <em>组</em>
-          </strong>
-          <small>
-            保留差异与来源
-            <ArrowUpRight size={12} />
-          </small>
-        </button>
-        <button disabled={!data} onClick={() => navigate("publication")}>
-          <span>本次可发布</span>
-          <strong>{ready?.publishable_count ?? "—"}</strong>
-          <small>
-            检查写作使用范围
-            <ArrowUpRight size={12} />
-          </small>
+        {metrics.map((metric) => (
+          <button
+            key={metric.key}
+            className={
+              metric.key === "publishable" ? "is-publishable" : undefined
+            }
+            disabled={!data}
+            onClick={() => onRecords(metric.key)}
+          >
+            <span>{metric.label}</span>
+            <strong>{data ? metric.count : "—"}</strong>
+            <small>
+              {data ? metric.hint : "正在读取…"}
+              <ArrowUpRight size={12} />
+            </small>
+          </button>
+        ))}
+      </div>
+      <div className="rules-count-explanation">
+        <p>全部记录由以上四类组成。仅适用的强制要求与建议进入规则包。</p>
+        <button
+          className="text-button"
+          disabled={!data}
+          onClick={() => navigate("issues")}
+        >
+          重复与冲突{" "}
+          {data ? data.duplicates.length + data.conflicts.length : "—"} 组
+          <small>按组统计</small>
+          <ArrowUpRight size={12} />
         </button>
       </div>
     </section>

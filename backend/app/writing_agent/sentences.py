@@ -12,6 +12,17 @@ def paragraph_text(node):
 
 def paragraphs(doc):return [n for n in documents.nodes(doc) if n.get('type') in ('paragraph','heading')]
 
+def paragraph_for_context(node,ordinal):
+    result={'node_id':node['attrs']['nodeId'],'ordinal':ordinal,'text':paragraph_text(node)}
+    references=[];positions=[];offset=0
+    for child in node.get('content',[]):
+        if child['type']=='citation':references.append(child['attrs']['citationId']);positions.append(offset)
+        offset+=len(paragraph_text(child))
+    if references:result.update(reference_ids=references,citation_positions_cp=positions)
+    for source,target in (('sourceIds','source_ids'),('factIds','fact_ids')):
+        if node['attrs'].get(source):result[target]=node['attrs'][source]
+    return result
+
 def ranges(text):
     start=0;i=0
     while i<len(text):

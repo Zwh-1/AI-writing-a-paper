@@ -8,6 +8,7 @@ export function useWorkspaceResource<T>(path: string, tick: number) {
   const request = useRef<AbortController | null>(null);
   const load = useCallback(async () => {
     request.current?.abort();
+    if (!path) { setData(null); setError(""); setLoading(false); return; }
     const controller = new AbortController();
     request.current = controller;
     setLoading(true);

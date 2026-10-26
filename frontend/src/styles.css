@@ -1682,6 +1682,10 @@ main {
   padding: 6px;
   box-shadow: none;
 }
+.writing-context { margin-bottom: 10px; font-size: 11px; line-height: 1.65; }
+.writing-context summary { cursor: pointer; color: #277865; }
+.writing-context p { margin: 6px 0; }
+.writing-context ul { margin: 6px 0; padding-left: 18px; max-height: 180px; overflow-y: auto; }
 .composer-bottom {
   display: flex;
   justify-content: space-between;
@@ -1723,6 +1727,12 @@ main {
   border-radius: 6px;
   margin: 10px 0;
   padding: 9px;
+}
+.writing-source-results {
+  max-height: 55vh;
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+  overscroll-behavior: contain;
 }
 .evidence-card summary {
   font-size: 10px;

@@ -12,6 +12,7 @@ export function useRulesWorkspace(
   const resource = useWorkspaceResource<Row>(`/projects/${pid}/rules`, tick);
   const [view, setView] = useState<RulesView>("catalog"),
     [filter, setFilter] = useState("all");
+  const [catalogKey, setCatalogKey] = useState(0);
   const [editing, setEditing] = useState<Row | null>(null),
     [source, setSource] = useState<Row | null>(null),
     [original, setOriginal] = useState<Row | null>(null);
@@ -57,10 +58,12 @@ export function useRulesWorkspace(
       if (version === sourceVersion.current) setSourceBusy("");
     }
   };
-  const showCandidates = () => {
-    setFilter("candidate");
+  const showRecords = (nextFilter: string) => {
+    setFilter(nextFilter);
     setView("catalog");
+    setCatalogKey((key) => key + 1);
   };
+  const showCandidates = () => showRecords("candidate");
   const onBlocker = (blocker: Row) => {
     if (
       ["RULE_CONFLICT", "RULE_AUTOMATIC_CONFLICTS", "RULE_DUPLICATES"].includes(
@@ -84,6 +87,8 @@ export function useRulesWorkspace(
     setView,
     filter,
     setFilter,
+    catalogKey,
+    showRecords,
     editing,
     setEditing,
     source,

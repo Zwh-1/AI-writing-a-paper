@@ -1,4 +1,4 @@
-import RuleEditor from "./RuleEditor";
+import RuleEditor, { operationLabels } from "./RuleEditor";
 import RuleTaskReview from "./RuleTaskReview";
 import { useEffect, useRef, useState } from "react";
 import { api, send } from "./client";
@@ -71,7 +71,7 @@ export function RuleExecutionPanel({ pid, tick, act }: Props) {
                 <p>{r.statement}</p>
                 <small>
                   {labels[r.checker] ?? r.checker} · {r.scope} ·{" "}
-                  {r.operations.join(" / ")}
+                  {r.operations.map((operation: string) => operationLabels[operation] ?? operation).join(" / ")}
                 </small>
               </div>
               <button className="btn" onClick={() => setEditing(r)}>

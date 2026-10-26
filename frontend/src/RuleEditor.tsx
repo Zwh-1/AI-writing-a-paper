@@ -44,9 +44,10 @@ export const stateLabels: Record<string, string> = {
   reference_only: "知识、示例与条件规范",
   rejected: "已排除",
 };
-const operationLabels: Record<string, string> = {
+export const operationLabels: Record<string, string> = {
   generate: "生成",
   revise: "改写",
+  polish: "润写",
   expand: "扩写",
   compress: "压缩",
   translate: "翻译",

@@ -5,6 +5,7 @@ VERSION=json.loads((ROOT/'frontend/package.json').read_text(encoding='utf-8'))['
 OUTPUT=ROOT.parent/f'砚台论文工作台_{VERSION}_便携版.zip'
 EXCLUDED={'__pycache__','.pytest_cache','node_modules','tests','test','browser-data'}
 def selected_files():
+    if (ROOT/'docs/生图提示词与段落语义对齐_2026-10-26.md').is_file():yield ROOT/'docs/生图提示词与段落语义对齐_2026-10-26.md'
     folders=['backend','frontend/src','frontend/dist','prompts','scripts','.runtime/python','.runtime/python-deps','.runtime/advanced-deps','.runtime/browser','.runtime/browsers','.runtime/models/local','.runtime/writing-agent']
     individual=['runner.py','requirements.lock.txt','README.md','启动论文工作台.ps1','停止论文工作台.ps1','frontend/package.json','frontend/package-lock.json','frontend/tsconfig.json','frontend/vite.config.ts','frontend/index.html','docs/实现与验收说明.md','docs/V2.0目标缺口审计与补齐记录.md','docs/0.2.1设置修复说明.md','docs/0.2.2余额与验收测试说明.md','docs/0.2.3API迁移说明.md','docs/0.3.0六项扩展实现与使用说明.md','docs/0.3.1资料解析修复说明.md','requirements-advanced.lock.txt','准备截图浏览器.ps1','准备隔离执行环境.ps1','部署协作服务.ps1','.dockerignore','deployment/Dockerfile','deployment/compose.yaml','deployment/Caddyfile','deployment/.env.example','deployment/requirements.server.lock.txt','deployment/README.md']
     for name in individual:
@@ -12,7 +13,7 @@ def selected_files():
         if p.is_file():yield p
     if (ROOT/'docs/0.4.0有据写作实现与验收.md').is_file():yield ROOT/'docs/0.4.0有据写作实现与验收.md'
     if (ROOT/'docs/0.4.1剩余功能与验收说明.md').is_file():yield ROOT/'docs/0.4.1剩余功能与验收说明.md'
-    for name in (f'docs/{VERSION}更新与升级说明.md','docs/文献库导入与使用说明.md','docs/文献知识库存储与检索.md','docs/英文摘要翻译说明.md','docs/资料与规则页面组件结构.md','docs/资料与规则AI托管说明.md','docs/从源码运行.md'):
+    for name in (f'docs/{VERSION}更新与升级说明.md','docs/0.5.0更新与升级说明.md','docs/0.5.1更新与升级说明.md','docs/0.6.0证据知识库实现与验收.md','docs/0.6.1文献阅读与用途修复.md','docs/有据写作入口与启动检查修复.md','docs/文献库导入与使用说明.md','docs/文献知识库存储与检索.md','docs/英文摘要翻译说明.md','docs/资料与规则页面组件结构.md','docs/资料与规则AI托管说明.md','docs/从源码运行.md','docs/论文图表与三线表.md','docs/GPT生图独立接口配置.md','docs/论文图表功能修复_2026-10-26.md','docs/论文配图规范与章节关联_2026-10-26.md'):
         if (ROOT/name).is_file():yield ROOT/name
     if (ROOT/'打开真实验收审阅.ps1').is_file():yield ROOT/'打开真实验收审阅.ps1'
     for name in folders:

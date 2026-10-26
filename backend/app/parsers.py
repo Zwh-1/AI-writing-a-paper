@@ -239,7 +239,7 @@ def keyword_search(pid,query,kind='research',limit=12,remote=False,knowledge=Fal
     terms=list(dict.fromkeys(tokens(query).split()))[:35]
     if not terms: return []
     match=' OR '.join('"'+t.replace('"','')+'"' for t in terms);limit=min(max(int(limit),1),100)
-    role="s.kind='evidence'" if kind=='research' else ("s.kind IN ('example','counterexample')" if kind=='example' else '1=1')
+    role="s.kind='evidence'" if kind=='research' and not knowledge else ("s.kind IN ('example','counterexample')" if kind=='example' else '1=1')
     permission="AND f.egress!='local_only' AND NOT EXISTS (WITH RECURSIVE origin(id) AS (SELECT parent_file_id FROM file_derivations WHERE child_file_id=f.id UNION SELECT d.parent_file_id FROM file_derivations d JOIN origin o ON d.child_file_id=o.id) SELECT 1 FROM origin o JOIN files p ON p.id=o.id WHERE p.egress='local_only' OR p.active=0 OR p.project_id!=f.project_id)" if remote else ''
     scope=__import__('app.reference_knowledge',fromlist=['scope_sql']).scope_sql() if knowledge else ''
     sql=f"SELECT s.*,f.name,f.role,f.egress,f.extension,p.page_number,p.title AS page_title,p.review_state,bm25(source_fts) AS rank FROM source_fts JOIN sources s ON s.id=source_fts.source_id JOIN files f ON f.id=s.file_id LEFT JOIN pages p ON p.id=s.page_id WHERE source_fts MATCH ? AND f.project_id=? AND f.active=1 AND {role} {permission} {scope} ORDER BY rank,s.id LIMIT ?"
@@ -248,8 +248,8 @@ def keyword_search(pid,query,kind='research',limit=12,remote=False,knowledge=Fal
 
 def search(pid,query,kind='research',limit=12,remote=False):
     if kind=='research':
-        from .reference_knowledge import search as knowledge_search
-        return knowledge_search(pid,query,limit,remote)['items']
+        from .knowledge_service import search as knowledge_search
+        return knowledge_search(pid,query,limit,remote,include_units=False)['items']
     from . import retrieval
     if retrieval.config(pid)['enabled']:
         return retrieval.hybrid(pid,query,kind,limit,remote)['items']

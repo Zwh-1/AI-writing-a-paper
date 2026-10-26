@@ -37,13 +37,13 @@ def test_version_six_upgrades_without_resetting_rows(env,monkeypatch):
     from app.writing_agent import migrations
     original_files,original_current=migrations.FILES,migrations.CURRENT
     directory=env['path']/'v6-upgrade';directory.mkdir();monkeypatch.setattr(db,'DB_PATH',directory/'workbench.sqlite3')
-    monkeypatch.setattr(migrations,'FILES',original_files[:-1]);monkeypatch.setattr(migrations,'CURRENT',6);db.init()
+    monkeypatch.setattr(migrations,'FILES',tuple(f for f in original_files if f[0]<=6));monkeypatch.setattr(migrations,'CURRENT',6);db.init()
     db.set_setting('kept-user-value',{'text':'旧资料不能丢失'})
     assert db.one('PRAGMA user_version')['user_version']==6
     monkeypatch.setattr(migrations,'FILES',original_files);monkeypatch.setattr(migrations,'CURRENT',original_current);db.init();db.init()
-    assert db.one('PRAGMA user_version')['user_version']==7
+    assert db.one('PRAGMA user_version')['user_version']==9
     assert db.setting('kept-user-value')=={'text':'旧资料不能丢失'}
-    assert (directory/'migration-before-writing-v7.sqlite3').is_file()
+    assert (directory/'migration-before-writing-v9.sqlite3').is_file()
     assert not db.rows('PRAGMA foreign_key_check')
 
 def test_commit_snapshot_is_distinct_from_dirty_working_tree(env):
@@ -194,12 +194,25 @@ def test_legacy_explicit_key_conflict_and_atomic_rollback(env,monkeypatch):
     with pytest.raises(HTTPException) as error:adoption.adopt_legacy(env['sid'],{**body,'mode':'append'},'legacy-explicit-key')
     assert error.value.detail['code']=='IDEMPOTENCY_CONFLICT'
 
-def test_source_change_only_invalidates_tracked_consumers(env,monkeypatch):
+def test_source_change_invalidates_chapters_that_read_it_through_full_manuscript(env,monkeypatch):
     sessions,sid2,_=pair(env,monkeypatch)
-    for s in sessions:adoption.adopt(env['pid'],s['candidates'][-1]['id'],{'base_revision_id':None,'accept_policy':'strict'},'precise-'+s['id'])
+    first,second=sessions
+    adoption.adopt(env['pid'],first['candidates'][-1]['id'],{'base_revision_id':None,'accept_policy':'strict'},'precise-'+first['id'])
+    # The first chapter was empty in the second candidate's original input.
+    # Its new body must be read before the second candidate can be adopted.
+    with pytest.raises(HTTPException) as error:
+        adoption.adopt(env['pid'],second['candidates'][-1]['id'],{'base_revision_id':None,'accept_policy':'strict'},'old-whole-paper-'+second['id'])
+    assert error.value.detail['code']=='INPUT_VERSION_CHANGED'
+    head=state(env['pid'])
+    fresh=finish(env,coordinator.create(env['pid'],{'section_id':sid2,'operation':'generate_unit','base_revision_id':None,'expected_project_state_revision':head['revision'],'contract_version_id':head['contracts'][sid2],'profile_id':env['profile']['id']}))
+    assert fresh['status']=='needs_review',fresh
+    cid=fresh['candidates'][-1]['id'];analysis=db.one('SELECT id FROM document_analyses WHERE candidate_id=? ORDER BY rowid DESC LIMIT 1',(cid,))
+    verification.human_review(env['pid'],analysis['id'],{'decision':'approved','note':'本测试模拟核对已保存全文及原始来源，只验证版本与依赖传播。'})
+    adoption.adopt(env['pid'],cid,{'base_revision_id':None,'accept_policy':'strict'},'fresh-whole-paper-'+fresh['id'])
+    assert db.one('SELECT stale FROM sections WHERE id=?',(sid2,))['stale']==0
     evidence.set_validity(env['pid'],env['eid'],'revoked')
     assert db.one('SELECT stale FROM sections WHERE id=?',(env['sid'],))['stale']==1
-    assert db.one('SELECT stale FROM sections WHERE id=?',(sid2,))['stale']==0
+    assert db.one('SELECT stale FROM sections WHERE id=?',(sid2,))['stale']==1
 
 def test_historical_session_does_not_invalidate_replaced_current_dependencies(env,monkeypatch):
     cid,_=reviewed_candidate(env,monkeypatch);first=adoption.adopt(env['pid'],cid,{'base_revision_id':None,'accept_policy':'strict'},'historical-first-key')

@@ -14,8 +14,12 @@ def bibliography_text(meta):
     authors=meta.get('authors','')
     if isinstance(authors,list): authors='，'.join(authors)
     return f"{authors or '【作者待补】'}. {meta.get('title') or '【题名待补】'}{(' ['+meta['type']+']') if meta.get('type') else ''}. {meta.get('journal') or meta.get('publisher') or ''}, {meta.get('year') or '【年份待补】'}{(', '+str(meta['volume'])) if meta.get('volume') else ''}{(':'+str(meta['pages'])) if meta.get('pages') else ''}.{(' DOI:'+meta['doi']) if meta.get('doi') else ''}"
-def field(paragraph,code):
-    r=paragraph.add_run();begin=OxmlElement('w:fldChar');begin.set(qn('w:fldCharType'),'begin');instruction=OxmlElement('w:instrText');instruction.set(qn('xml:space'),'preserve');instruction.text=code;sep=OxmlElement('w:fldChar');sep.set(qn('w:fldCharType'),'separate');end=OxmlElement('w:fldChar');end.set(qn('w:fldCharType'),'end');r._r.extend([begin,instruction,sep,end])
+def field(paragraph,code,result=None):
+    begin=OxmlElement('w:fldChar');begin.set(qn('w:fldCharType'),'begin');paragraph.add_run()._r.append(begin)
+    instruction=OxmlElement('w:instrText');instruction.set(qn('xml:space'),'preserve');instruction.text=code;paragraph.add_run()._r.append(instruction)
+    sep=OxmlElement('w:fldChar');sep.set(qn('w:fldCharType'),'separate');paragraph.add_run()._r.append(sep)
+    if result is not None:paragraph.add_run(str(result))
+    end=OxmlElement('w:fldChar');end.set(qn('w:fldCharType'),'end');paragraph.add_run()._r.append(end)
 def set_font(style,east,latin,size):
     style.font.name=latin;style.font.size=Pt(size);style.element.get_or_add_rPr().get_or_add_rFonts().set(qn('w:eastAsia'),east)
 def renderer():
@@ -49,7 +53,25 @@ def export_project(pid,options,tid=None):
                         snapshot=next((c for c in frozen['citations'] if c['revision_id']==rev['id'] and c['node_id']==n.get('attrs',{}).get('nodeId')),None)
                         if snapshot: bib['metadata']=snapshot['reference_snapshot']
                         refs[rid]=bib;numbering[rid]=len(numbering)+1
+    from .figure_standards import DEFAULT as FIGURE_DEFAULT,inventory,resolve_reference,evaluate as evaluate_figures
+    figure_policy={**FIGURE_DEFAULT,**(frozen['settings'].get('figure_policy:'+pid) or {})}
+    figure_policy['_format_hash']=hashlib.sha256(db.dumps({'format':frozen['settings'].get('format:'+pid) or {},'template':frozen['settings'].get('template:'+pid)}).encode()).hexdigest()
+    figure_rows=inventory(pid,figure_policy,snapshots,artifacts)
+    figure_lookup={(r['section_id'],r['node_id']):r for r in figure_rows}
+    figure_report=evaluate_figures(pid,snapshots,artifacts,figure_policy)
+    if options.get('mode')=='strict' and any(x['result'] in ('fail','unknown') for x in figure_report['items']):
+        raise ValueError('正式导出前需完成图文说明、配图政策、真实来源和交叉引用核对；请查看论文图表规范检查')
     export_id=db.uid();folder=DATA/'exports'/export_id;folder.mkdir(parents=True)
+    linked={row['unit_id'] for row in frozen.get('knowledge_links',[])}
+    for revision in frozen['revisions'].values():
+        for node in documents.nodes(db.loads(revision['document'],{})):linked.update(node.get('attrs',{}).get('knowledgeUnitIds',[]))
+    if linked:
+        (folder/'原文单元与引用核对记录.json').write_text(db.dumps({'units':{uid:frozen['knowledge_units'][uid] for uid in linked if uid in frozen['knowledge_units']},'citation_links':frozen['knowledge_links'],'claim_checks':[x for x in frozen['knowledge_claim_checks'] if x['unit_id'] in linked],'note':'原文、读取范围及人工记录的冻结快照，不自动证明论断支持性'}),encoding='utf-8')
+    reading_ids={row['reading_id'] for row in frozen['citation_reading_links']}
+    for revision in frozen['revisions'].values():
+        for node in documents.nodes(db.loads(revision['document'],{})):reading_ids.update(node.get('attrs',{}).get('documentReadingIds',[]))
+    if reading_ids:
+        (folder/'文献阅读范围与用途记录.json').write_text(db.dumps({'readings':{identity:frozen['document_readings'][identity] for identity in reading_ids if identity in frozen['document_readings']},'citation_links':frozen['citation_reading_links'],'human_citation_reviews':frozen['reading_citation_reviews'],'material_usages':frozen['material_usages'],'material_profiles':frozen['material_profiles'],'note':'引用链接保存采用时的原文阅读快照及版本；当前阅读记录单列。阅读覆盖不等于论断支持，资料中的指令仅为原文内容。'}),encoding='utf-8')
     if writing_report:
         (folder/'句子—论断—证据映射.json').write_text(db.dumps(writing_report['sentence_mapping']),encoding='utf-8')
         (folder/'论证覆盖与未决项.json').write_text(db.dumps(writing_report),encoding='utf-8')
@@ -80,11 +102,34 @@ def export_project(pid,options,tid=None):
         doc.add_paragraph('稿件用途：'+options.get('mode','draft')+'；未决事项请查看随附报告。');doc.add_page_break();doc.add_paragraph('目录',style='TOC Heading');field(doc.add_paragraph(),' TOC \\o "1-3" \\h \\z \\u ');doc.add_page_break()
     elif options.get('include_toc',True):
         doc.add_paragraph('目录',style='TOC Heading');field(doc.add_paragraph(),' TOC \\o "1-3" \\h \\z \\u ');doc.add_page_break()
+    if figure_policy['include_directory']:
+        for node_kind,title_text,sequence_name in (('figure','插图目录','Figure'),('table','表格目录','Table')):
+            entries=[r for r in figure_rows if r['kind']==node_kind]
+            if not entries:continue
+            doc.add_paragraph(title_text,style='TOC Heading')
+            field(doc.add_paragraph(),' TOC \\h \\z \\c "'+sequence_name+'" ', '\n'.join(r['label']+' '+(r['caption'] or '【题名待补】')+'　页码待更新' for r in entries))
+            doc.add_page_break()
     from .ooxml_preserve import author_year_labels,add_footnotes,omml
     citation_style=options.get("citation_style","numeric")
     if citation_style not in ("numeric","author_year"):raise ValueError("引用样式无效")
     year_labels=author_year_labels(refs);footnotes={}
-    fig_count=0
+    fig_count=0;table_count=0;active_sid=None;sequences=set();bookmark_count=500000000
+    def figure_caption(node,default=''):
+        nonlocal bookmark_count
+        from .paper_tables import add_caption
+        attrs=node.get('attrs',{});row=figure_lookup.get((active_sid,attrs.get('nodeId')))
+        if not row:return add_caption(doc,attrs.get('caption') or default)
+        paragraph=add_caption(doc,'');name='Figure' if node['type']=='figure' else 'Table'
+        bookmark_count+=1;start=OxmlElement('w:bookmarkStart');start.set(qn('w:id'),str(bookmark_count));start.set(qn('w:name'),row['bookmark']);paragraph._p.append(start)
+        prefix=('图' if node['type']=='figure' else '表')+(' ' if figure_policy['caption_space'] else '')
+        if figure_policy['numbering']=='chapter' and row['chapter']:prefix+=str(row['chapter'])+'-'
+        paragraph.add_run(prefix)
+        key=(name,row['chapter'] if figure_policy['numbering']=='chapter' else None)
+        reset=' \\r 1' if key not in sequences and figure_policy['numbering']=='chapter' else ''
+        field(paragraph,' SEQ '+name+reset+' \\* ARABIC ',row['index']);sequences.add(key)
+        end=OxmlElement('w:bookmarkEnd');end.set(qn('w:id'),str(bookmark_count));paragraph._p.append(end)
+        paragraph.add_run(' '+(attrs.get('caption') or default or '【题名待补】'))
+        return paragraph
     def inline(par,n):
         typ=n.get('type');attrs=n.get('attrs',{})
         if typ=='text':
@@ -94,25 +139,45 @@ def export_project(pid,options,tid=None):
         elif typ=='footnote':
             identifier=100000+len(footnotes);footnotes[identifier]=attrs.get('noteText','');run=par.add_run();run.font.superscript=True;reference=OxmlElement('w:footnoteReference');reference.set(qn('w:id'),str(identifier));run._r.append(reference)
         elif typ=='hardBreak': par.add_run().add_break()
+        elif typ=='crossReference':
+            target=resolve_reference(figure_rows,attrs,active_sid)
+            if target:field(par,' REF '+target['bookmark']+' \\h ',target['label'])
+            else:par.add_run('【图表引用失效】')
         else:
             for ch in n.get('content',[]): inline(par,ch)
     def block(node):
-        nonlocal fig_count
+        nonlocal fig_count,table_count
         typ=node['type'];attrs=node.get('attrs',{})
         if typ in ('paragraph','heading','blockquote','listItem'):
             para=doc.add_paragraph(style=f"Heading {min(max(int(attrs.get('level',2)),1),3)}" if typ=='heading' else None)
             inline(para,node)
         elif typ=='table':
+            from .paper_tables import style_three_line,add_caption,unindent
+            table_count+=1
+            figure_caption(node,'【表题待补】')
             rows=node.get('content',[]);cols=max((len(r.get('content',[])) for r in rows),default=1);table=doc.add_table(rows=len(rows),cols=cols);table.style='Table Grid'
             for i,row in enumerate(rows):
                 for j,cell in enumerate(row.get('content',[])):
                     table.cell(i,j).text=documents.plain(cell)
+            if attrs.get('tableStyle')=='three-line':style_three_line(table)
+            if attrs.get('note'):
+                from .paper_tables import keep_note_with_table
+                keep_note_with_table(table)
+                note=doc.add_paragraph('注：'+attrs['note']);unindent(note)
         elif typ=='figure':
             aid=attrs.get('artifactId');artifact=artifacts.get(aid)
             if not artifact or not artifact['sha256']: raise ValueError('图片资源缺失')
-            try: doc.add_picture(str(safe_object(artifact['sha256'])),width=Mm(min(145,210-float(fmt['margin_left'])-float(fmt['margin_right']))))
+            try:
+                from PIL import Image
+                with Image.open(safe_object(artifact['sha256'])) as image:iw,ih=image.size
+                width=min(145,210-float(fmt['margin_left'])-float(fmt['margin_right']),180*iw/ih)
+                doc.add_picture(str(safe_object(artifact['sha256'])),width=Mm(width))
+                from .paper_tables import unindent
+                picture=doc.paragraphs[-1];picture.alignment=1;unindent(picture);picture.paragraph_format.keep_with_next=True
             except Exception as e: raise ValueError('图片格式不能导出，请使用PNG/JPEG') from e
-            fig_count+=1;doc.add_paragraph(f'图 {fig_count} '+attrs.get('caption',artifact['name']))
+            fig_count+=1
+            from .paper_tables import add_caption
+            caption=figure_caption(node,artifact['name']);caption.paragraph_format.keep_with_next=False
         elif typ=='formula':
             para=doc.add_paragraph()
             if attrs.get('omml'):para._p.append(omml(attrs['omml']))
@@ -121,9 +186,10 @@ def export_project(pid,options,tid=None):
         else:
             for ch in node.get('content',[]): block(ch)
     for item in snapshots:
+        active_sid=item['section']['id']
         s=item['section'];parents={x['id']:x.get('parent_id') for x in sections};level=1;parent=parents.get(s['id']);seen=set()
         while parent and parent not in seen:seen.add(parent);level+=1;parent=parents.get(parent)
-        doc.add_heading(s['title'],min(level,3));md.extend(['#'*min(level+1,6)+' '+s['title'],'',markdown_document(item['document']),''])
+        doc.add_heading(s['title'],min(level,3));md.extend(['#'*min(level+1,6)+' '+s['title'],'',markdown_document(item['document'],figure_rows,s['id']),''])
         for node in item['document'].get('content',[]): block(node)
     doc.add_heading('参考文献',1);md.extend(['## 参考文献',''])
     for rid,bib in sorted(refs.items(),key=lambda item:year_labels[item[0]]) if citation_style=='author_year' else refs.items():
@@ -139,7 +205,7 @@ def export_project(pid,options,tid=None):
     markdown='\n'.join(md)
     for rid,num in numbering.items(): markdown=markdown.replace('[cite:'+rid+']','（'+year_labels[rid]+'）' if citation_style=='author_year' else f'[{num}]')
     (folder/'论文.md').write_text(markdown,encoding='utf-8')
-    report={'project_title':p['title'],'created_at':db.now(),'findings':findings,'visual_check':'not_run','template_preservation':preservation,'citation_style':citation_style,'footnotes':len(footnotes),'field_update':'请在目标Word软件更新目录和页码','format_profile':fmt}
+    report={'project_title':p['title'],'created_at':db.now(),'findings':findings,'visual_check':'not_run','template_preservation':preservation,'citation_style':citation_style,'footnotes':len(footnotes),'field_update':'请在目标Word软件更新目录、图表目录、交叉引用和页码','format_profile':fmt,'figure_checks':figure_report,'figure_numbering':figure_policy['numbering']}
     pdf=False;tool=renderer()
     if options.get('pdf') and (preserve or citation_style=='author_year' or footnotes or any(n.get('attrs',{}).get('omml') for item in snapshots for n in documents.nodes(item['document']))) and not tool:
         report['pdf_status']='requires_office_renderer_for_advanced_content'
@@ -156,7 +222,7 @@ def export_project(pid,options,tid=None):
     elif options.get('pdf'):
         try:
             from .pdf_render import render_pdf
-            render_pdf(folder/'论文.pdf',p,snapshots,refs,numbering,fmt,artifacts)
+            render_pdf(folder/'论文.pdf',p,snapshots,refs,numbering,fmt,artifacts,figure_rows)
             pdf=True;report['pdf_status']='generated_independent_layout';report['pdf_renderer']='ReportLab；PDF独立排版，不代表Word分页已验收'
         except Exception as exc: report['pdf_status']='renderer_unavailable';report['pdf_error']=str(exc)[:300]
     report['docx_property_checks']=check_docx(folder/filename,fmt,preservation.get('body_section_index') if preservation else None)

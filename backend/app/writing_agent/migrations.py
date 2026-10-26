@@ -2,8 +2,8 @@
 import hashlib,sqlite3
 from pathlib import Path
 
-CURRENT=7
-FILES=((4,'007_writing_foundation.sql'),(5,'008_writing_execution.sql'),(6,'009_writing_evaluation.sql'),(7,'010_writing_completion.sql'))
+CURRENT=9
+FILES=((4,'007_writing_foundation.sql'),(5,'008_writing_execution.sql'),(6,'009_writing_evaluation.sql'),(7,'010_writing_completion.sql'),(8,'012_evidence_knowledge.sql'),(9,'013_document_reading.sql'))
 
 def statements(script):
     pending=''

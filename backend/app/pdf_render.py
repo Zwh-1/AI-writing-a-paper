@@ -9,7 +9,10 @@ from reportlab.lib import colors
 from . import documents,db
 from .security import safe_object
 
-def render_pdf(path,project,snapshots,refs,numbering,fmt,artifacts):
+def render_pdf(path,project,snapshots,refs,numbering,fmt,artifacts,figure_rows=None):
+    from .figure_standards import inventory,resolve_reference
+    figure_rows=figure_rows if figure_rows is not None else inventory(project['id'],snapshots=snapshots,artifacts=artifacts)
+    active_sid=None
     font_path=next((p for p in [Path('C:/Windows/Fonts/simsun.ttc'),Path('C:/Windows/Fonts/msyh.ttc')] if p.exists()),None)
     if not font_path: raise ValueError('未找到可嵌入中文字体，请配置渲染组件')
     name='PaperChinese'
@@ -24,25 +27,36 @@ def render_pdf(path,project,snapshots,refs,numbering,fmt,artifacts):
         if n['type']=='text':return escape(n.get('text',''))
         if n['type']=='citation':return '<super>['+str(numbering.get(n.get('attrs',{}).get('citationId'),'?'))+']</super>'
         if n['type']=='hardBreak':return '<br/>'
+        if n['type']=='crossReference':
+            target=resolve_reference(figure_rows,n.get('attrs',{}),active_sid)
+            return escape(target['label'] if target else '【图表引用失效】')
         return ''.join(text(c) for c in n.get('content',[]))
-    fig=0
+    fig=0;table_count=0
     def block(n):
-        nonlocal fig
+        nonlocal fig,table_count
         typ=n['type'];attrs=n.get('attrs',{})
         if typ in ('paragraph','heading','blockquote','listItem'):
             story.append(Paragraph(text(n) or ' ',heading if typ=='heading' else body))
         elif typ=='table':
+            table_count+=1
+            row=next((r for r in figure_rows if r['section_id']==active_sid and r['node_id']==attrs.get('nodeId')),None)
+            story.append(Paragraph(escape((row['label'] if row else f'表 {table_count}')+' '+(attrs.get('caption') or '【表题待补】')),caption))
             values=[[Paragraph(escape(documents.plain(c)),table_style) for c in row.get('content',[])] for row in n.get('content',[])]
             if values:
-                table=Table(values,repeatRows=1,hAlign='LEFT');table.setStyle(TableStyle([('GRID',(0,0),(-1,-1),.5,colors.HexColor('#b5c5bc')),('BACKGROUND',(0,0),(-1,0),colors.HexColor('#edf3ee')),('VALIGN',(0,0),(-1,-1),'TOP')]));story.extend([table,Spacer(1,8)])
+                table=Table(values,repeatRows=1,hAlign='LEFT')
+                style=[('LINEABOVE',(0,0),(-1,0),1.5,colors.black),('LINEBELOW',(0,0),(-1,0),.75,colors.black),('LINEBELOW',(0,-1),(-1,-1),1.5,colors.black)] if attrs.get('tableStyle')=='three-line' else [('GRID',(0,0),(-1,-1),.5,colors.HexColor('#b5c5bc')),('BACKGROUND',(0,0),(-1,0),colors.HexColor('#edf3ee'))]
+                table.setStyle(TableStyle(style+[('VALIGN',(0,0),(-1,-1),'TOP')]));story.extend([table,Spacer(1,8)])
+                if attrs.get('note'):story.append(Paragraph(escape('注：'+attrs['note']),table_style))
         elif typ=='figure':
             a=artifacts.get(attrs.get('artifactId'))
             if a:
-                image=Image(str(safe_object(a['sha256'])));image._restrictSize(145*mm,180*mm);story.append(image);fig+=1;story.append(Paragraph(escape(f'图 {fig} '+attrs.get('caption',a['name'])),caption))
+                row=next((r for r in figure_rows if r['section_id']==active_sid and r['node_id']==attrs.get('nodeId')),None)
+                image=Image(str(safe_object(a['sha256'])));image._restrictSize(145*mm,180*mm);story.append(image);fig+=1;story.append(Paragraph(escape((row['label'] if row else f'图 {fig}')+' '+attrs.get('caption',a['name'])),caption))
         elif typ=='formula':story.append(Paragraph(escape(attrs.get('expression','')),caption))
         else:
             for c in n.get('content',[]):block(c)
     for x in snapshots:
+        active_sid=x['section']['id']
         story.append(Paragraph(escape(x['section']['title']),heading))
         for n in x['document'].get('content',[]):block(n)
     if refs:
