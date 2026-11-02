@@ -1,5 +1,5 @@
 import { useEffect, useId, useState } from "react";
-import { api } from "./client";
+import { apiUrl, api } from "./client";
 import { ruleReviewDetails } from "./ruleReviewDetails";
 
 type Row = Record<string, any>;
@@ -36,7 +36,7 @@ export default function RuleTaskReview({ projectId, taskId, review, tick, onSour
         if (!alive) return;
         const events: Row[] = [];
         const update = () => setData(ruleReviewDetails(projectId, value.rules ?? [], events));
-        stream = new EventSource(`/api/v1/tasks/${taskId}/events`);
+        stream = new EventSource(apiUrl(`/tasks/${taskId}/events`));
         stream.addEventListener("progress", event => {
           if (!alive) return;
           try {

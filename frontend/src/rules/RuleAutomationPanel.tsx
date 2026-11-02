@@ -28,6 +28,14 @@ export default function RuleAutomationPanel(p: Props) {
         onUpdated={p.refresh}
         scope="rules"
         onRule={p.data ? p.onRule : undefined}
+        onRuleSource={
+          p.data
+            ? (id) => {
+                const rule = p.data?.rules.find((item: Row) => item.id === id);
+                if (rule) void p.onSource(rule);
+              }
+            : undefined
+        }
         onOtherDomain={p.onMaterials}
       />
       <details
@@ -35,7 +43,8 @@ export default function RuleAutomationPanel(p: Props) {
         onToggle={(event) => setAdvanced(event.currentTarget.open)}
       >
         <summary>
-          <strong>高级整理与独立审核工具</strong><span>保留原有独立流程</span>
+          <strong>高级整理与独立审核工具</strong>
+          <span>保留原有独立流程</span>
         </summary>
         {advanced && (
           <>

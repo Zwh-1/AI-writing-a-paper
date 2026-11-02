@@ -7,6 +7,11 @@ from . import db,security,tasks,parsers,retrieval,controlled_execution as contro
 from .config import ROOT
 router=APIRouter()
 
+@router.get('/advanced/portable-resources')
+def portable_resource_status():
+    from .portable_resources import status
+    return status()
+
 def project(pid):return security.require_project(pid)
 def record(pid,kind,parameters,result):
     rid=db.uid();db.execute('INSERT INTO advanced_runs VALUES(?,?,?,?,?,?)',(rid,pid,kind,db.dumps(parameters),db.dumps(result),db.now()));return {'run_id':rid,**result}

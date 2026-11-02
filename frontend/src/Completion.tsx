@@ -2,6 +2,7 @@ import RuleEditor, { operationLabels } from "./RuleEditor";
 import RuleTaskReview from "./RuleTaskReview";
 import { useEffect, useRef, useState } from "react";
 import { api, send } from "./client";
+import { useSourceBillingGate } from './workspace/SourceWorkspace';
 type Row = Record<string, any>;
 type Props = {
   pid: string;
@@ -667,6 +668,7 @@ export function MaterialAutomation({ pid, tick, act }: Props) {
   );
 }
 export function AIRuleExtraction({ pid, tick, act, refresh, onRuleSource }: Props) {
+  const sourceBillingGate=useSourceBillingGate();
   const [files] = useData("/projects/" + pid + "/files", tick);
   const [fileId, setFileId] = useState("__all__");
   const [limit, setLimit] = useState(40);
@@ -890,7 +892,7 @@ export function AIRuleExtraction({ pid, tick, act, refresh, onRuleSource }: Prop
         </button>
       </div>
       {automatic && <div className="actions mb"><label className="check"><input type="checkbox" checked={allowGpt} onChange={e => setAllowGpt(e.target.checked)}/>允许在子预算内使用 GPT 复核疑难片段</label>{allowGpt && <label>GPT 子预算（USD）<input aria-label="GPT疑难复核子预算" type="number" min={0} max={budgetLimit} step={0.1} value={gptBudget} onChange={e=>setGptBudget(Number(e.target.value))}/></label>}</div>}
-      {plan?.budget && <p className="muted mb">项目预算 {plan.budget.limit.toFixed(2)} USD · 已核对 {plan.budget.reconciled_amount.toFixed(2)} · 用量估算 {plan.budget.estimated_cost.toFixed(2)} · 已完成待对账占用 {plan.budget.pending_bill_reserved.toFixed(2)} · 执行中或结果未知占用 {plan.budget.unresolved_reserved.toFixed(2)} · 当前可用 {plan.budget.available.toFixed(2)}</p>}
+      {plan?.budget && <p className="muted mb">项目预算 {plan.budget.limit.toFixed(2)} {plan.budget.currency || "（见费用账本币种）"} · 汇总账单上界 {plan.budget.reconciled_amount.toFixed(2)} · 其余已记录金额（估算或区间上界） {plan.budget.estimated_cost.toFixed(2)} · 已完成待对账占用 {plan.budget.pending_bill_reserved.toFixed(2)} · 执行中或结果未知占用 {plan.budget.unresolved_reserved.toFixed(2)} · 当前可用 {plan.budget.available.toFixed(2)}</p>}
       {plan && (
         <p className="muted mb">
           共 {plan.total} 个可整理来源片段；{automatic ? "系统将自动推进完整范围，无需选择下一批。" : <>本批为第{" "}
@@ -917,7 +919,7 @@ export function AIRuleExtraction({ pid, tick, act, refresh, onRuleSource }: Prop
           {result.next_offset != null && result.next_offset < plan?.total ? (
             <button
               className="btn"
-              disabled={busy || running}
+              disabled={busy || running || sourceBillingGate.blocked}
               onClick={() => setOffset(result.next_offset)}
             >
               选择下一批（第 {result.next_offset + 1} 个起）
@@ -983,7 +985,7 @@ export function AIRuleExtraction({ pid, tick, act, refresh, onRuleSource }: Prop
                   </button>
                 )}
                 {t.kind === "rules_ai" && ["failed","cancelled","budget_blocked","incomplete","outcome_unknown"].includes(t.status) && (
-                  <div className="actions"><button className="btn" disabled={busy || running} onClick={() => retryJob(t)}>{(result.review?.unreviewed_count??0)>0 ? "补齐未完成审核（计费）" : safe(t.payload).automatic ? "继续自动整理" : "继续未完成批次（计费）"}</button>{!safe(t.payload).automatic && <button className="btn" disabled={busy || running} onClick={() => retryJob(t,"gpt")}>改用 GPT 继续（计费）</button>}</div>
+                  <div className="actions"><button className="btn" disabled={busy || running || sourceBillingGate.blocked} onClick={() => retryJob(t)}>{(result.review?.unreviewed_count??0)>0 ? "补齐未完成审核（计费）" : safe(t.payload).automatic ? "继续自动整理" : "继续未完成批次（计费）"}</button>{!safe(t.payload).automatic && <button className="btn" disabled={busy || running || sourceBillingGate.blocked} onClick={() => retryJob(t,"gpt")}>改用 GPT 继续（计费）</button>}</div>
                 )}
               </div>
             );

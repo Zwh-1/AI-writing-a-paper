@@ -6,6 +6,10 @@ from . import db,documents
 DEFAULT_OPERATIONS=('generate','revise','polish','expand','compress','translate')
 OPERATIONS=set(DEFAULT_OPERATIONS)
 FIELDS={'paper_type','section_kind','operation','language'}
+SECTION_ALIASES={'literature':'literature_review','methods':'methodology','results':'testing'}
+
+def section_kind(value):
+    return SECTION_ALIASES.get(value,value) if isinstance(value,str) else value
 CHECKERS={'manual','word_min','word_max','word_range','reference_min','reference_recent','reference_foreign_ratio','required_sections','required_terms','forbidden_terms','heading_min','figure_min','table_min','format_value','rendered_page_min'}
 FORMAT_KEYS={'font','latin_font','font_size','line_spacing','first_line_chars','margin_top','margin_bottom','margin_left','margin_right','heading_font','reference_superscript'}
 def execution_key(checker,value):
@@ -29,6 +33,9 @@ def condition_matches(expr,context):
     if 'all' in expr:return all(condition_matches(x,context) for x in expr['all'])
     if 'any' in expr:return any(condition_matches(x,context) for x in expr['any'])
     actual=context.get(expr['field']);target=expr.get('value');op=expr['op']
+    if expr['field']=='section_kind':
+        actual=section_kind(actual)
+        target=[section_kind(v) for v in target] if isinstance(target,list) else section_kind(target)
     return actual==target if op=='eq' else actual!=target if op=='ne' else actual in target if op=='in' else actual not in target
 
 def validate_execution(body):
@@ -65,7 +72,7 @@ def infer(statement,scope='global'):
         if '十' in raw:
             a,b=raw.split('十',1);return vals.get(a,1)*10+vals.get(b,0)
         return None
-    if '摘要' in text:result['scope']='abstract_en' if '英文摘要' in text else 'abstract'
+    if scope=='global' and '摘要' in text:result['scope']='abstract_en' if '英文摘要' in text else 'abstract'
     m=re.search(r'(?:不少于|至少)([\d一二三四五六七八九十]+)篇',text)
     if '参考文献' in text and m:
         n=number(m[1])
@@ -97,12 +104,23 @@ def project_input_fingerprint(pid,section_ids=None):
     p=db.one('SELECT rule_package_id,brief,target_words FROM projects WHERE id=?',(pid,));value={'review_scope':section_ids,'project':p,'sections':sections,'facts':facts,'references':refs,'format':db.setting('format:'+pid,{}),'files':db.rows('SELECT id,sha256,active,egress,role FROM files WHERE project_id=? ORDER BY id',(pid,)),'sources':db.rows('SELECT s.id,s.kind,s.verified FROM sources s JOIN files f ON f.id=s.file_id WHERE f.project_id=? ORDER BY s.id',(pid,))}
     return hashlib.sha256(db.dumps(value).encode()).hexdigest()
 
-def evaluate(rule,pid,sections,refs):
+def evaluate(rule,pid,sections,refs,operation='generate'):
     from .exports import format_config
-    value=db.loads(rule.get('value'));checker=rule.get('checker','manual');scope=rule.get('scope','global');target=[s for s in sections if scope in ('global',s['kind'],s['id'])]
+    value=db.loads(rule.get('value'));checker=rule.get('checker','manual');scope=rule.get('scope','global')
+    condition=rule.get('conditions')
+    if condition is None:
+        stored=db.one('SELECT expression FROM rule_conditions WHERE rule_id=?',(rule['id'],))
+        condition=db.loads(stored['expression'],{}) if stored else {}
+    if isinstance(condition,str):condition=db.loads(condition,{})
+    project=db.one('SELECT paper_type FROM projects WHERE id=?',(pid,))
+    target=[s for s in sections if (scope=='global' or scope==s['id'] or section_kind(scope)==section_kind(s['kind']))
+        and condition_matches(condition,{'paper_type':project['paper_type'],'section_kind':section_kind(s['kind']),
+            'operation':operation,'language':'en' if s['kind']=='abstract_en' else 'zh'})]
     result=[]
     def add(message,state='pass',sid=None,rid=None,evidence=''):
         result.append({'rule_id':rule['id'],'section_id':sid,'revision_id':rid,'result':state,'message':message,'method':'human' if checker in ('manual','rendered_page_min') else 'deterministic','severity':'blocker' if rule['modality']=='mandatory' and state=='fail' else 'warning' if state!='pass' else 'info','evidence':evidence})
+    if condition and not target and not condition_matches(condition,{'paper_type':project['paper_type'],'section_kind':None,'operation':operation,'language':'zh'}):
+        add('当前没有满足适用条件的章节','not_applicable');return result
     if checker=='required_sections':
         missing=[v for v in value if not any(s['kind']==v or v in s['title'] for s in sections)];add('必需章节：'+('缺少 '+', '.join(missing) if missing else '结构齐备'),'fail' if missing else 'pass');return result
     if checker=='format_value':

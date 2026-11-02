@@ -14,7 +14,8 @@ def text_hash(text):
 
 
 def scope_sql():
-    return 'AND '+research_sql()+"""
+    from .document_observations import current_source_sql
+    return 'AND '+current_source_sql()+' AND '+research_sql()+"""
         AND (s.kind='evidence' OR (s.kind='example' AND f.role='example'))
         AND (p.review_state IS NULL OR p.review_state!='not_applicable')
         AND EXISTS (SELECT 1 FROM knowledge_chunks kc JOIN knowledge_documents kd ON kd.id=kc.document_id
@@ -112,9 +113,10 @@ def decorate(pid, items):
     return result
 
 
-def search(pid, query, limit=10, remote=False, rerank_override=None):
+def search(pid, query, limit=10, remote=False, rerank_override=None,file_ids=None):
     from . import parsers, retrieval, model_install
     security.require_project(pid)
+    source_options={'file_ids':file_ids} if file_ids else {}
     query = str(query).strip()
     if not query or len(query) > 5000:
         raise HTTPException(422, '请输入1至5000字的文献检索问题')
@@ -127,12 +129,12 @@ def search(pid, query, limit=10, remote=False, rerank_override=None):
     vectors = db.one('SELECT v.source_id FROM neural_vectors v JOIN knowledge_chunks kc ON kc.source_id=v.source_id JOIN knowledge_documents kd ON kd.id=kc.document_id WHERE kd.project_id=? AND v.model=? LIMIT 1', (pid, retrieval.model_key(cfg['model']))) if ready else None
     if enabled and ready and vectors:
         try:
-            result = retrieval.hybrid(pid, query, 'research', limit, remote=remote, force=True, knowledge=True,**({'rerank_override':rerank_override} if rerank_override is not None else {}))
+            result = retrieval.hybrid(pid, query, 'research', limit, remote=remote, force=True, knowledge=True,**source_options,**({'rerank_override':rerank_override} if rerank_override is not None else {}))
         except ValueError as error:
             warning.append(str(error))
-            result = {'items': parsers.keyword_search(pid, query, 'research', limit, remote, knowledge=True), 'mode': 'keyword'}
+            result = {'items': parsers.keyword_search(pid, query, 'research', limit, remote, knowledge=True,**source_options), 'mode': 'keyword'}
     else:
-        result = {'items': parsers.keyword_search(pid, query, 'research', limit, remote, knowledge=True), 'mode': 'keyword'}
+        result = {'items': parsers.keyword_search(pid, query, 'research', limit, remote, knowledge=True,**source_options), 'mode': 'keyword'}
         if enabled and not ready:
             warning.append('本地向量模型尚未就绪，当前使用知识库全文检索')
         elif enabled and not vectors:
@@ -224,7 +226,7 @@ def knowledge_index(pid: str):
 @router.post('/search')
 def knowledge_search(pid: str, body: dict):
     from .knowledge_service import search as unified_search
-    return unified_search(pid, body.get('query', ''), body.get('limit', 10),collection=body.get('collection','originals'))
+    return unified_search(pid, body.get('query', ''), body.get('limit', 10),collection=body.get('collection','originals'),file_ids=body.get('file_ids'))
 
 
 @router.get('/chunks/{source_id}')

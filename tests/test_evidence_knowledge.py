@@ -27,7 +27,8 @@ def approval(item, **extra):
 def test_migration_is_versioned_and_original_source_ids_remain(library):
     c, pid, original, parsed = library
     before = db.rows('SELECT id,text FROM sources ORDER BY id')
-    assert db.one('PRAGMA user_version')['user_version'] == 9
+    from app.writing_agent.migrations import CURRENT
+    assert db.one('PRAGMA user_version')['user_version'] == CURRENT
     assert units.build(pid, original['id'])['id'] == parsed['id']
     db.init()
     assert db.rows('SELECT id,text FROM sources ORDER BY id') == before

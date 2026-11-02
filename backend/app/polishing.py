@@ -82,7 +82,12 @@ def validate(raw,original,editable):
         replacements[item.source_node_id]=node
     doc=deepcopy(original)
     doc['content']=[replacements.get(node.get('attrs',{}).get('nodeId'),node) for node in doc.get('content',[])]
-    return doc,{'passed':True,'paragraphs_checked':len(editable),'protected_spans_preserved':sum(len(row['protected_spans']) for row in editable),'checks':['paragraph_identity_and_order','protected_spans','numbers','qualifier_markers','unchanged_outside_scope'],'semantic_review':'requires_human_review'},value
+    from .paper_review_checks import word_count
+    before_words=sum(word_count(documents.plain(row['original'])) for row in editable)
+    after_words=sum(word_count(documents.plain(replacements[row['source_node_id']])) for row in editable)
+    ratio=round(after_words/before_words,3) if before_words else None
+    within=ratio is None or .75<=ratio<=1.3
+    return doc,{'passed':True,'paragraphs_checked':len(editable),'protected_spans_preserved':sum(len(row['protected_spans']) for row in editable),'checks':['paragraph_identity_and_order','protected_spans','numbers','qualifier_markers','unchanged_outside_scope'],'length_change':{'before':before_words,'after':after_words,'ratio':ratio,'within_band':within,'note':'润写不以增删篇幅为目标；超出 0.75–1.3 倍会提示复核，但不阻止采用'},'semantic_review':'requires_human_review'},value
 
 
 def run(task,project,section,payload,package):
@@ -102,13 +107,31 @@ def run(task,project,section,payload,package):
         if not source or not security.file_allows_remote(source['file_id'],project['id']):raise HTTPException(403,'润写规则的原始资料禁止外发')
         file_ids.add(source['file_id'])
     tasks.event(task['id'],'加载全文与独立润写规范',15)
+    from . import writing_brief,writing_ops
+    params=writing_ops.params_for(project['id'],'polish')
     context,continuity_manifest,origins=collect(project['id'],section['id']);file_ids.update(origins)
     terms=db.rows('SELECT zh,en FROM terms WHERE project_id=?',(project['id'],))
-    context.update(project={'title':project['title'],'brief':db.loads(project['brief'],{})},section=section,operation='polish',instruction=payload.get('instruction',''),scope='selected_paragraphs' if payload.get('target_node_ids') else 'section',polish_policy=policy(),rules=[{'id':row['id'],'statement':row['statement']} for row in applicable],terminology=terms,polish_blocks=[{key:value for key,value in row.items() if key!='original' and key!='protected_spans'}|{'protected_spans':[{key:value for key,value in span.items() if key!='node'} for span in row['protected_spans']]} for row in editable])
+    mode=params.get('manuscript_mode','full')
+    if mode=='outline':
+        # Only used when the full manuscript does not fit: keep a first-sentence
+        # digest and say so, instead of failing outright or pretending to have read it.
+        context['related_sections']=[{**row,'text':row['text'][:240]+('…' if len(row['text'])>240 else ''),'scope':'outline_digest','partial':True}
+                                     for row in context.get('related_sections',[])]
+        context['paper_context']={**context.get('paper_context',{}),'complete':False,'mode':'outline_digest'}
+        continuity_manifest['manuscript_mode']='outline_digest'
+    brief=writing_brief.language_brief(section,terms,'selected_paragraphs' if payload.get('target_node_ids') else 'section',
+                                        [row['source_node_id'] for row in editable],sum(len(row['protected_spans']) for row in editable),params)
+    context.update(project={'title':project['title'],'brief':db.loads(project['brief'],{})},section=section,operation='polish',instruction=payload.get('instruction',''),scope='selected_paragraphs' if payload.get('target_node_ids') else 'section',polish_policy=policy(),polish_brief=writing_brief.for_prompt(brief),rules=[{'id':row['id'],'statement':row['statement']} for row in applicable],terminology=terms,polish_blocks=[{key:value for key,value in row.items() if key!='original' and key!='protected_spans'}|{'protected_spans':[{key:value for key,value in span.items() if key!='node'} for span in row['protected_spans']]} for row in editable])
     if payload.get('target_node_ids'):context['selection_context']=selection_context(document,payload['target_node_ids'])
-    system=(ROOT/'prompts'/'polish.system.txt').read_text(encoding='utf-8').strip();user=db.dumps(context)
+    system=(ROOT/'prompts'/'polish.system.txt').read_text(encoding='utf-8').strip()
+    system+=' polish_brief是本次语言任务书：targets是必须达到的语言目标，terminology是中英文术语对照，length_band是篇幅参考，forbidden列出不得改变的内容。'
+    user=db.dumps(context)
     cfg=provider.config()
-    if token_upper_bound(system,user)+int(cfg.get('max_output_tokens',8192))>int(cfg.get('context_limit',100000)):raise ValueError('完整论文、独立润写规范与原段落超过上下文预算；未截断全文')
+    if token_upper_bound(system,user)+int(cfg.get('max_output_tokens',8192))>int(cfg.get('context_limit',100000)):
+        sizes={key:len(db.dumps(value).encode('utf-8')) for key,value in context.items()}
+        largest='、'.join(f'{key} {sizes[key]:,} 字节' for key in sorted(sizes,key=sizes.get,reverse=True)[:3])
+        raise ValueError(f'完整论文、独立润写规范与原段落超过上下文预算（主要占用：{largest}）。'
+                         '可只选需要润写的段落，或在写作参数中把“润写全文参照”改为 outline 后重试；本次未截断全文。')
     head=state(project['id']);ids=[row['id'] for row in applicable]
     fact_ids={identity for node in documents.nodes(document) for identity in node.get('attrs',{}).get('factIds',[])}
     fact_versions={}
@@ -116,7 +139,7 @@ def run(task,project,section,payload,package):
         fact=db.one('SELECT revision FROM facts WHERE id=? AND project_id=?',(identity,project['id']))
         if not fact:raise HTTPException(403,'润写原文的研究事实不存在或不属于当前项目')
         fact_versions[identity]=fact['revision']
-    manifest={**continuity_manifest,'operation':'polish','polish_policy':policy(),'rule_package_id':package['id'],'required_rule_ids':ids,'loaded_rule_ids':ids,'base_revision_id':section['current_revision_id'],'section_id':section['id'],'file_ids':sorted(file_ids),'source_ids':[],'fact_revisions':{},'polish_target_node_ids':[row['source_node_id'] for row in editable],'polish_input_hash':digest(document)}
+    manifest={**continuity_manifest,'operation':'polish','polish_policy':policy(),'polish_brief_hash':hashlib.sha256(db.dumps(brief).encode()).hexdigest(),'manuscript_mode':mode,'rule_package_id':package['id'],'required_rule_ids':ids,'loaded_rule_ids':ids,'base_revision_id':section['current_revision_id'],'section_id':section['id'],'file_ids':sorted(file_ids),'source_ids':[],'fact_revisions':{},'polish_target_node_ids':[row['source_node_id'] for row in editable],'polish_input_hash':digest(document)}
     manifest['fact_revisions']=fact_versions
     manifest['writing_state']={**continuity_manifest,'project_id':project['id'],'section_id':section['id'],'core_version_id':head['core_version_id'],'target_snapshot_id':head['target_snapshot_id'],'contract_version_id':head['contracts'].get(section['id']),'rule_package_id':package['id'],'project_brief_hash':digest(db.loads(project['brief'],{})),'terminology_hash':digest(terms),'evidence_versions':{},'fact_versions':fact_versions,'remote':True}
     result=tasks.model_call(task,system,user,manifest)

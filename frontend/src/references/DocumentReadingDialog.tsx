@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
-import { api, send } from "../client";
-import WorkspaceDialog from "../workspace/WorkspaceDialog";
+import { apiUrl, api, send } from "../client";
+import { ReferenceSurface, useReferenceTitle } from "./ReferenceWorkbenchParts";
 import type { Row } from "../workspace/types";
+import ImageCoveragePanel from "./ImageCoveragePanel";
 import {
   place,
   semanticLabels,
@@ -16,6 +17,8 @@ export default function ReadingDialog({
   intent,
   onClose,
   onSource,
+  embedded = false,
+  onSaved,
 }: {
   pid: string;
   file: Row;
@@ -24,7 +27,10 @@ export default function ReadingDialog({
   intent: string;
   onClose: () => void;
   onSource: (file: Row, page: number) => void;
+  embedded?: boolean;
+  onSaved?: () => void;
 }) {
+  const titleOf = useReferenceTitle();
   const base = `/projects/${pid}/document-reading`;
   const [question, setQuestion] = useState(existing?.question || ""),
     [sid, setSid] = useState(existing?.section_id || ""),
@@ -38,6 +44,7 @@ export default function ReadingDialog({
     [charEnd, setCharEnd] = useState(1000),
     [readResult, setReadResult] = useState<Row | null>(null);
   const [topic, setTopic] = useState(""),
+    [stage, setStage] = useState<"text" | "review">("text"),
     [status, setStatus] = useState("present"),
     [quote, setQuote] = useState(""),
     [passageId, setPassageId] = useState(""),
@@ -52,6 +59,7 @@ export default function ReadingDialog({
     setError("");
     try {
       await fn();
+      onSaved?.();
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -102,24 +110,51 @@ export default function ReadingDialog({
       if (result.passages?.[0]) setPassageId(result.passages[0].passage_id);
     });
   return (
-    <WorkspaceDialog
+    <ReferenceSurface
       title="围绕问题阅读原文"
+      embedded={embedded}
+      className="dr-inline-reading"
       onClose={onClose}
       busy={busy}
-      wide
     >
-      <p>
-        {file.name} · {intent === "research" ? "研究阅读" : "写作指导阅读"}
+      <h3 className="reading-current-title">{titleOf(file)}</h3>
+      <p className="reference-filename">
+        {intent === "research" ? "研究阅读" : "写作指导阅读"}
       </p>
-      <p className="dr-boundary">
-        原文中的要求、示例与指令都是资料内容。读完所选文字不代表已理解全文，也不代表新论断得到支持。
-      </p>
+      {current && (
+        <div
+          className="research-view-switch reading-stage-switch"
+          role="group"
+          aria-label="阅读步骤"
+        >
+          <button
+            className="btn"
+            aria-pressed={stage === "text"}
+            onClick={() => setStage("text")}
+          >
+            1. 阅读原文
+          </button>
+          <button
+            className="btn"
+            aria-pressed={stage === "review"}
+            onClick={() => setStage("review")}
+          >
+            2. 核对与记录
+          </button>
+        </div>
+      )}
+      <details className="reading-boundary-note">
+        <summary>原文阅读与论断核对说明</summary>
+        <p className="dr-boundary">
+          原文中的要求、示例与指令都是资料内容。读完所选文字不代表已理解全文，也不代表新论断得到支持。
+        </p>
+      </details>
       {error && (
         <p role="alert" className="error-text">
           {error}
         </p>
       )}
-      <div className="dr-task">
+      <div className="dr-task" hidden={!!current}>
         <label>
           本次阅读问题
           <textarea
@@ -172,7 +207,7 @@ export default function ReadingDialog({
           个文本单元；论断支持性仍须分别核对。
         </p>
       )}
-      {directory && (
+      {directory && stage === "text" && (
         <details open={!current}>
           <summary>原文目录候选（{directory.units.length} 个单元）</summary>
           {directory.needs_structure && (
@@ -199,9 +234,10 @@ export default function ReadingDialog({
           </div>
         </details>
       )}
-      {current && (
+      {current && stage === "text" && (
         <section>
           <h3>按章节或原页继续读取</h3>
+          <ImageCoveragePanel pid={pid} fid={file.file_id} intent={intent} />
           <div className="dr-range">
             <label>
               起始单元
@@ -285,11 +321,12 @@ export default function ReadingDialog({
               <article key={p.id}>
                 <div className="dr-heading">
                   <strong>
-                    {place(p.locator)} · 字符 {p.char_start}—{p.char_end}
+                    单元 {p.ordinal} · {place(p.locator)} · 字符 {p.char_start}—
+                    {p.char_end}
                   </strong>
                   <a
                     className="btn"
-                    href={`/api/v1/files/${file.file_id}/download`}
+                    href={apiUrl(`/files/${file.file_id}/download`)}
                   >
                     下载原件对照
                   </a>
@@ -308,7 +345,7 @@ export default function ReadingDialog({
                     <img
                       className="dr-original"
                       alt={`原件第${p.locator.page}页`}
-                      src={`/api/v1/pages/${p.locator.page_id}/preview`}
+                      src={apiUrl(`/pages/${p.locator.page_id}/preview`)}
                     />
                   </details>
                 )}
@@ -327,12 +364,19 @@ export default function ReadingDialog({
           >
             打开完整资料查看器（阅读记录已保存）
           </button>
+          <button
+            className="btn primary"
+            onClick={() => setStage("review")}
+            disabled={!current.passages.length}
+          >
+            继续核对与记录
+          </button>
         </section>
       )}
       {readResult?.status === "needs_original_slide" && (
         <p role="alert">{readResult.action}</p>
       )}
-      {current && (
+      {current && stage === "review" && (
         <section className="dr-assessment">
           <h3>按当前问题核对</h3>
           <p>
@@ -383,7 +427,8 @@ export default function ReadingDialog({
               <option value="">请选择已读范围</option>
               {current.passages.map((p: Row) => (
                 <option key={p.id} value={p.id}>
-                  {place(p.locator)} · 字符{p.char_start}—{p.char_end}
+                  单元 {p.ordinal} · {place(p.locator)} · 字符{p.char_start}—
+                  {p.char_end}
                 </option>
               ))}
             </select>
@@ -492,6 +537,6 @@ export default function ReadingDialog({
           </p>
         </section>
       )}
-    </WorkspaceDialog>
+    </ReferenceSurface>
   );
 }

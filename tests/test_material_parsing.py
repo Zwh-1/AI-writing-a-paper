@@ -117,14 +117,16 @@ def test_utf16_bom_is_decoded_before_gb18030(client):
     page=list(parsers.parse_pages('论文格式要求：参考文献不少于二十篇。'.encode('utf-16'),'.txt'))[0]
     assert page['text']=='论文格式要求：参考文献不少于二十篇。'
 
-def test_rule_excerpt_from_split_ocr_keeps_ocr_provenance(client,monkeypatch):
+def test_rule_from_complete_ocr_keeps_asset_provenance(client,monkeypatch):
     from app import rules
     fake_ocr(monkeypatch,'参考文献必须核对：'+'甲'*1050)
     pid=project(client);f,_=parsers.register_file(pid,'长规则.pptx',deck(picture()),'rules');parsers.parse_file(f['id'])
     rules.extract(pid)
     row=db.one("SELECT s.* FROM rules r JOIN sources s ON s.id=r.source_id WHERE length(r.statement)>1000")
     assert row and row['method']=='windows_ocr' and row['verified']==0
-    assert db.loads(row['locator'])['parent_source_ids']
+    locator=db.loads(row['locator'])
+    assert locator['asset_sha256'] and locator['storage_scope']=='complete_image_observation'
+    assert len(row['text'])>1000
 
 
 def test_explicit_human_transcript_resolves_machine_gap_without_faking_ocr(client,monkeypatch):

@@ -74,6 +74,41 @@ def test_proxy_changes_are_read_for_each_client(proxy_settings):
     assert network.proxy_for('https://relay.example') == 'http://changed.example:8080'
 
 
+def test_connection_wait_can_be_extended_without_changing_model_or_proxy(proxy_settings):
+    cfg={**provider.DEFAULT,'base_url':'https://relay.example','connect_timeout_seconds':45,'timeout_seconds':180}
+    with provider.client(cfg) as connection:
+        assert connection.timeout.connect==45 and connection.timeout.read==180
+    for invalid in (0,121,float('nan'),float('inf')):
+        with pytest.raises(provider.ProviderError):provider.client({**cfg,'connect_timeout_seconds':invalid})
+
+
+def test_scoped_pool_reuses_transport_across_inherited_threads_and_closes(monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from contextvars import copy_context
+    import httpx
+    actual=httpx.Client;created=[]
+    def create(**kwargs):
+        kwargs['proxy']=None
+        connection=actual(**kwargs,transport=httpx.MockTransport(lambda request:httpx.Response(200,json={'ok':True})))
+        created.append(connection);return connection
+    monkeypatch.setattr(provider.httpx,'Client',create)
+    cfg={**provider.DEFAULT,'base_url':'https://relay.example'}
+    def request():
+        with provider.client(cfg) as connection:
+            assert connection.get('https://relay.example/check').json()=={'ok':True}
+            return id(connection)
+    with provider.connection_pool(),provider.request_scope(cfg,'same-account'):
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            identities=[executor.submit(copy_context().run,request) for _ in range(3)]
+            assert len({f.result() for f in identities})==1
+        assert len(created)==1 and not created[0].is_closed
+        with provider.request_scope(cfg,'another-account'):request()
+        assert len(created)==2
+    assert all(connection.is_closed for connection in created)
+    with provider.connection_pool(),provider.request_scope(cfg,'same-account'):request()
+    assert len(created)==3 and created[-1].is_closed
+
+
 @pytest.fixture
 def local_proxy(proxy_settings):
     requests = []

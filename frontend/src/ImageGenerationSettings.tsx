@@ -171,9 +171,9 @@ export default function ImageGenerationSettings({
                   </select>
                 </label>
                 <label className="field">
-                  未知费用单次预留
+                  单次费用上限
                   <input
-                    aria-label="生图未知费用单次预留"
+                    aria-label="生图单次费用上限"
                     type="number"
                     min="0.000001"
                     step="any"
@@ -221,7 +221,7 @@ export default function ImageGenerationSettings({
                 </label>
               </div>
               <p className="muted">
-                仅当中转站按张固定收费时填写单张金额；未知费用保留预算预留。当前项目预算币种：
+                仅当中转站按张固定收费时填写单张金额，并在费用依据账本导入报价；缺少依据时阻止收费。当前项目预算币种：
                 {saved?.budget_currency ?? "USD"}。
               </p>
             </details>

@@ -1,0 +1,17 @@
+"""Router ownership and mount order for the legacy handlers behind API v2."""
+from importlib import import_module
+
+DOMAIN_ROUTERS = (
+    "deepseek_profiles", "source_workspace", "expense_evidence", "writing_agent.api",
+    "paper_writing", "paper_study", "writing_ops", "writing_live", "ai_autopilot_api",
+    "reference_library", "reference_knowledge", "knowledge_units", "knowledge_imports",
+    "knowledge_evaluation", "knowledge_api", "document_reading", "rule_rebuild",
+    "literature_refresh", "paper_visuals", "image_generation", "figure_standards",
+)
+SUPPLEMENT_ROUTERS = ("completion", "extras", "advanced")
+
+
+def mount(app, *, supplements=False):
+    for name in SUPPLEMENT_ROUTERS if supplements else DOMAIN_ROUTERS:
+        module = import_module("app." + name)
+        app.include_router(module.router, prefix="/api/v1")

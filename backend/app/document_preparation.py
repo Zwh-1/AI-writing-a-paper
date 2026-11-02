@@ -3,9 +3,9 @@ from fastapi import HTTPException
 from . import db,security,knowledge_units as units,document_reading as reading
 
 
-def prepare(pid,query,sid,limit=8,max_chars=60000):
+def prepare(pid,query,sid,limit=8,max_chars=60000,findings=None,max_bytes=None):
     from .knowledge_service import search
-    findings=search(pid,query,limit,remote=True)
+    findings=findings if findings is not None else search(pid,query,limit,remote=True)
     selected=[r['unit_id'] for r in db.rows('SELECT unit_id FROM knowledge_selections WHERE section_id=?',(sid,))]
     document_candidates=[];seen=set()
     for hit in findings['items']:
@@ -43,7 +43,9 @@ def prepare(pid,query,sid,limit=8,max_chars=60000):
         for uid in selected:
             item=units.get(pid,uid,remote=True)
             if item['file_id'] not in chosen:chosen.append(item['file_id'])
-        if not chosen and document_candidates:chosen=[document_candidates[0]['file_id']]
+        automatic=not chosen
+        if not chosen and document_candidates:chosen=[item['file_id'] for item in document_candidates]
+        byte_remaining=max_bytes
         for fid in chosen:
             directory=reading.outline(pid,fid,'research',ensure=False)
             if directory.get('needs_structure') or not directory.get('current'):
@@ -51,18 +53,26 @@ def prepare(pid,query,sid,limit=8,max_chars=60000):
                 original=db.one('SELECT * FROM files WHERE id=? AND project_id=?',(fid,pid))
                 rows=db.rows("SELECT s.*,p.page_number FROM sources s LEFT JOIN pages p ON p.id=s.page_id WHERE s.file_id=? AND (p.review_state IS NULL OR p.review_state!='not_applicable') ORDER BY p.page_number,json_extract(s.locator,'$.char_start'),s.id",(fid,))
                 size=sum(len(r['text']) for r in rows)
+                byte_size=sum(len(r['text'].encode('utf-8')) for r in rows)
+                if automatic and byte_remaining is not None and byte_size>byte_remaining:
+                    gaps.append({'file_id':fid,'reason':'完整候选文献超过本次字节预算，继续查找其他完整文献；未裁剪片段'});continue
                 if size>remaining:
                     gaps.append({'file_id':fid,'reason':'整篇原文超过本次读取预算，请先构建结构版本并按问题阅读相关章节'});continue
                 remaining-=size
+                if byte_remaining is not None:byte_remaining-=byte_size
                 records.extend(rows)
                 gaps.append({'file_id':fid,'reason':'已读取旧版文档来源文本；解析完整性与语义条件尚未核对'})
                 continue
             rows=[units.get(pid,r['unit_id'],remote=True) for r in directory['units'] if r['review_state']!='excluded']
             total=sum(len(r['text']) for r in rows)
+            byte_size=sum(len(r['text'].encode('utf-8')) for r in rows)
+            if automatic and byte_remaining is not None and byte_size>byte_remaining:
+                gaps.append({'file_id':fid,'reason':'完整候选文献超过本次字节预算，继续查找其他完整文献；未裁剪片段'});continue
             if total>remaining:
                 gaps.append({'file_id':fid,'reason':f'整篇候选文献为{total}字，超过本次读取预算；未将检索片段冒充全文，请在文献阅读中选择章节并核对方法、条件、结果及局限'})
                 continue
             remaining-=total
+            if byte_remaining is not None:byte_remaining-=byte_size
             for row in rows:
                 passages.append({'id':row['id'],'unit_id':row['id'],'unit_hash':row['content_hash'],'parse_id':row['parse_id'],
                     'file_id':fid,'file_hash':row['file_hash'],'locator':row['locator'],'text':row['text'],'char_start':0,'char_end':len(row['text']),

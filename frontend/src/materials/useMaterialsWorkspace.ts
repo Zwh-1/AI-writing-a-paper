@@ -2,16 +2,28 @@ import { useMemo, useRef, useState } from "react";
 import { send } from "../client";
 import { useWorkspaceResource } from "../workspace/useWorkspaceResource";
 import type { Row, WorkspaceAction } from "../workspace/types";
+import { useSourceLocation } from "../workspace/sourceNavigation";
 
-export type MaterialsView = "library" | "automation" | "originals" | "advanced";
+export type MaterialsView =
+  "library" | "flow" | "automation" | "originals" | "advanced";
 export function useMaterialsWorkspace(
   pid: string,
   tick: number,
   act: WorkspaceAction,
 ) {
   const resource = useWorkspaceResource<Row[]>(`/projects/${pid}/files`, tick);
-  const [view, setView] = useState<MaterialsView>("library"),
-    [upload, setUpload] = useState(false),
+  const route = useSourceLocation(pid, "materials", "library");
+  const view: MaterialsView = [
+    "library",
+    "flow",
+    "automation",
+    "originals",
+    "advanced",
+  ].includes(route.location.view || "")
+    ? (route.location.view as MaterialsView)
+    : "library";
+  const setView = (view: MaterialsView) => route.update({ view });
+  const [upload, setUpload] = useState(false),
     [selected, setSelected] = useState<Row | null>(null);
   const [busy, setBusy] = useState("");
   const actionLock = useRef(false);
@@ -68,6 +80,7 @@ export function useMaterialsWorkspace(
   return {
     ...resource,
     files,
+    route,
     summary,
     activeFiles,
     view,

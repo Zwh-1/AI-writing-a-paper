@@ -162,6 +162,7 @@ def test_evaluation_compares_bm25_dense_rrf_and_actual_final_reranking(client, m
 
 
 def test_rerank_ties_preserve_rrf_order(monkeypatch):
+    monkeypatch.setattr(retrieval,'model_key',lambda model:'synthetic-tie-model:v1')
     class Scorer:
         def rerank(self, *args, **kwargs): return [2.0, 2.0]
     monkeypatch.setattr(retrieval, 'model_instance', lambda *args, **kwargs: Scorer())

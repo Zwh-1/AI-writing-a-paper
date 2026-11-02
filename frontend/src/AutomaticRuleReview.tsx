@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import { api, send } from "./client";
+import { useSourceBillingGate } from './workspace/SourceWorkspace';
 type Row = Record<string, any>;
 export default function AutomaticRuleReview({pid,data,busy,run}:{pid:string;data:Row|null;busy:boolean;run:(key:string,fn:()=>Promise<any>,message:string)=>Promise<any>}) {
+  const gate=useSourceBillingGate();
   const [policy,setPolicy]=useState<Record<string,string>>({});
   const [result,setResult]=useState<Row|null>(null);
   const [reviewModel,setReviewModel]=useState("primary");
@@ -26,7 +28,7 @@ export default function AutomaticRuleReview({pid,data,busy,run}:{pid:string;data
     {conditional>0&&<p className="muted">另有 {conditional} 条有条件规范，保留其等级或适用条件，未判为无效要求。</p>}
     <div className="actions"><button className="btn primary" disabled={busy} onClick={()=>run("auto-review",async()=>{const value=await send(`/projects/${pid}/rules/auto-review`,{publish:true});setResult(value);return value},"自动审核已完成，通过的规则已尝试发布")}>自动审核并应用可用规则</button></div>
     <p className="muted">需要语义复核的候选会在上方自动整理任务中按总预算继续处理。只复核现有候选也可单独启动，不必重新提取材料。</p>
-    <div className="actions"><label className="field"><span>审核模型</span><select aria-label="疑难规则审核模型" value={reviewModel} onChange={e=>setReviewModel(e.target.value)}><option value="primary">当前主模型</option><option value="gpt">GPT 备选（明确指定）</option></select></label><label className="field"><span>审核预算上限（USD）</span><input aria-label="疑难规则审核预算" type="number" min={0} step={0.01} value={reviewBudget} onChange={e=>setReviewBudget(Number(e.target.value))}/></label><button className="btn" disabled={busy||!Number.isFinite(reviewBudget)||reviewBudget<0} onClick={()=>run("semantic-review",()=>send(`/projects/${pid}/rules/ai-extract`,{automatic:true,review_existing_only:true,provider_profile:reviewModel,budget_limit:reviewBudget,allow_gpt:reviewModel==="gpt",gpt_budget:reviewModel==="gpt"?reviewBudget:0}),"疑难条款审核已排队；实际模型、Token和费用归属会在任务中分别展示")}>复核现有疑难条款（计费）</button></div>
+    <div className="actions"><label className="field"><span>审核模型</span><select aria-label="疑难规则审核模型" value={reviewModel} onChange={e=>setReviewModel(e.target.value)}><option value="primary">当前主模型</option><option value="gpt">GPT 备选（明确指定）</option></select></label><label className="field"><span>审核预算上限（USD）</span><input aria-label="疑难规则审核预算" type="number" min={0} step={0.01} value={reviewBudget} onChange={e=>setReviewBudget(Number(e.target.value))}/></label><button className="btn" disabled={busy||gate.blocked||!Number.isFinite(reviewBudget)||reviewBudget<0} onClick={()=>run("semantic-review",()=>send(`/projects/${pid}/rules/ai-extract`,{automatic:true,review_existing_only:true,provider_profile:reviewModel,budget_limit:reviewBudget,allow_gpt:reviewModel==="gpt",gpt_budget:reviewModel==="gpt"?reviewBudget:0}),"疑难条款审核已排队；实际模型、Token和费用归属会在任务中分别展示")}>复核现有疑难条款（计费）</button></div>
     {result&&<p className="muted">机器审核通过 {result.machine_verified} 条，自动归并 {result.merged??0} 条。{result.rule_package?`已发布规则包 V${result.rule_package.version}。`:result.publication_blockers?.map((b:Row)=>b.message).join("；")}</p>}
     <details className="rule-advanced"><summary>材料权威性设置（{files.length} 份）</summary><p className="muted">只需按文件设置。学校正式要求可设为约束依据；一般课件保留为课程建议。</p>
       {files.map((f:Row)=><label key={f.id} className="field"><span>{f.name}</span><select aria-label={`来源政策：${f.name}`} value={policy[f.id]??"course"} onChange={e=>setPolicy({...policy,[f.id]:e.target.value})}><option value="course">课程资料：作为建议</option><option value="binding">明确适用的正式要求：作为约束依据</option><option value="reference">知识参考：不作为论文约束</option></select></label>)}

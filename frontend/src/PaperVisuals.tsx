@@ -11,7 +11,7 @@ import {
   Minus,
   Undo2,
 } from "lucide-react";
-import { api, send, ApiError } from "./client";
+import { apiUrl, api, send, ApiError } from "./client";
 import WorkspaceDialog from "./workspace/WorkspaceDialog";
 import ImageGenerationSettings from "./ImageGenerationSettings";
 import FigureStandardsPanel from "./FigureStandardsPanel";
@@ -267,7 +267,7 @@ function Studio({
         (restoreImage
           ? {
               spec: assetMeta.spec,
-              image: `/api/v1/images/${asset.sha256}`,
+              image: apiUrl(`/images/${asset.sha256}`),
               width: assetMeta.width,
               height: assetMeta.height,
               render_hash: asset.sha256,
@@ -491,7 +491,7 @@ function Studio({
             setPreviewCode(source);
             setPreview({
               spec: metadata.spec,
-              image: `/api/v1/images/${asset.sha256}`,
+              image: apiUrl(`/images/${asset.sha256}`),
               width: metadata.width,
               height: metadata.height,
               render_hash: asset.sha256,
@@ -798,7 +798,7 @@ function Studio({
         ? await send(prefix + "/preview", { spec: metadata.spec })
         : {
             spec: metadata.spec,
-            image: `/api/v1/images/${record.sha256}`,
+            image: apiUrl(`/images/${record.sha256}`),
             width: metadata.width,
             height: metadata.height,
             render_hash: record.sha256,
@@ -1468,7 +1468,7 @@ function Studio({
                 <>
                   <a
                     className="btn"
-                    href={`/api/v1${prefix}/${saved!.id}/download?format=${kind === "three_line_table" ? "docx" : "png"}`}
+                    href={apiUrl(`${prefix}/${saved!.id}/download?format=${kind === "three_line_table" ? "docx" : "png"}`)}
                     download
                   >
                     <Download size={15} />
@@ -1476,7 +1476,7 @@ function Studio({
                   </a>
                   <a
                     className="btn"
-                    href={`/api/v1${prefix}/${saved!.id}/download?format=source`}
+                    href={apiUrl(`${prefix}/${saved!.id}/download?format=source`)}
                     download
                   >
                     {nativeImage ? "下载生图记录" : "下载源代码"}

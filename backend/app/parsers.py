@@ -233,7 +233,8 @@ def parse_file(fid,progress=lambda *a:None,repair=False,native_only=False):
     except Exception as e:
         db.execute('UPDATE files SET status=?,error=? WHERE id=?',('failed',str(e)[:1000],fid));raise
 
-def keyword_search(pid,query,kind='research',limit=12,remote=False,knowledge=False):
+def keyword_search(pid,query,kind='research',limit=12,remote=False,knowledge=False,file_ids=None):
+    from .document_observations import current_source_sql
     for term in db.rows('SELECT zh,en FROM terms WHERE project_id=?',(pid,)):
         if term['zh'].lower() in query.lower() or term['en'].lower() in query.lower(): query+=' '+term['zh']+' '+term['en']
     terms=list(dict.fromkeys(tokens(query).split()))[:35]
@@ -242,8 +243,10 @@ def keyword_search(pid,query,kind='research',limit=12,remote=False,knowledge=Fal
     role="s.kind='evidence'" if kind=='research' and not knowledge else ("s.kind IN ('example','counterexample')" if kind=='example' else '1=1')
     permission="AND f.egress!='local_only' AND NOT EXISTS (WITH RECURSIVE origin(id) AS (SELECT parent_file_id FROM file_derivations WHERE child_file_id=f.id UNION SELECT d.parent_file_id FROM file_derivations d JOIN origin o ON d.child_file_id=o.id) SELECT 1 FROM origin o JOIN files p ON p.id=o.id WHERE p.egress='local_only' OR p.active=0 OR p.project_id!=f.project_id)" if remote else ''
     scope=__import__('app.reference_knowledge',fromlist=['scope_sql']).scope_sql() if knowledge else ''
-    sql=f"SELECT s.*,f.name,f.role,f.egress,f.extension,p.page_number,p.title AS page_title,p.review_state,bm25(source_fts) AS rank FROM source_fts JOIN sources s ON s.id=source_fts.source_id JOIN files f ON f.id=s.file_id LEFT JOIN pages p ON p.id=s.page_id WHERE source_fts MATCH ? AND f.project_id=? AND f.active=1 AND {role} {permission} {scope} ORDER BY rank,s.id LIMIT ?"
-    return db.rows(sql,(match,pid,limit))
+    if file_ids and (not isinstance(file_ids,list) or len(file_ids)>100 or any(not isinstance(fid,str) for fid in file_ids)):raise ValueError('原件范围无效')
+    file_scope=' AND f.id IN ('+','.join('?' for _ in file_ids)+')' if file_ids else ''
+    sql=f"SELECT s.*,f.name,f.role,f.egress,f.extension,p.page_number,p.title AS page_title,p.review_state,bm25(source_fts) AS rank FROM source_fts JOIN sources s ON s.id=source_fts.source_id JOIN files f ON f.id=s.file_id LEFT JOIN pages p ON p.id=s.page_id WHERE source_fts MATCH ? AND f.project_id=? AND f.active=1 AND {current_source_sql()} AND {role} {permission} {scope} {file_scope} ORDER BY rank,s.id LIMIT ?"
+    return db.rows(sql,(match,pid,*(file_ids or []),limit))
 
 
 def search(pid,query,kind='research',limit=12,remote=False):

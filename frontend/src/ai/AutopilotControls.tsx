@@ -70,10 +70,19 @@ export default function AutopilotControls() {
               : "AI 接管资料与规则（计费）"}
         </button>
       </div>
+      {c.billingGate.reason && (
+        <p className="autopilot-budget" role="status">
+          {c.billingGate.reason}。本地解析与已有结果仍可查看。
+        </p>
+      )}
       {!active && c.budget > c.available && (
         <p className="error-text">
           本轮预算不能超过当前可用的 {c.available.toFixed(2)} {currency}。
-          <button className="text-button" disabled={disabled} onClick={c.useAvailableBudget}>
+          <button
+            className="text-button"
+            disabled={disabled}
+            onClick={c.useAvailableBudget}
+          >
             使用当前可用预算 {c.available.toFixed(2)} {currency}
           </button>
         </p>
@@ -89,18 +98,36 @@ export default function AutopilotControls() {
         </p>
       )}
       <div className="autopilot-budget-actions">
-        {data.exception_count>0 && <button className="btn" disabled={!c.canStart} onClick={c.repairExceptions}>
-          {pending === "repair" ? "正在提交修复…" : "修复当前 "+data.exception_count+" 项例外（计费）"}
-        </button>}
-        <button className="btn" disabled={disabled} onClick={c.reconcileBilling}>
+        {data.exception_count > 0 && (
+          <button
+            className="btn"
+            disabled={!c.canStart}
+            onClick={c.repairExceptions}
+          >
+            {pending === "repair"
+              ? "正在提交修复…"
+              : "修复当前 " + data.exception_count + " 项例外（计费）"}
+          </button>
+        )}
+        <button
+          className="btn"
+          disabled={disabled}
+          onClick={c.reconcileBilling}
+        >
           {pending === "billing" ? "正在核对账单…" : "核对账单并刷新预算"}
         </button>
-        {(data.budget.unknown_reserved ?? 0) > 0 && <span>
-          未核实预留 {Number(data.budget.unknown_reserved).toFixed(2)} {currency}。
-          核对失败会保留预留，不会增加项目预算。
-        </span>}
+        {(data.budget.unknown_reserved ?? 0) > 0 && (
+          <span>
+            未核实预留 {Number(data.budget.unknown_reserved).toFixed(2)}{" "}
+            {currency}。 核对失败会保留预留，不会增加项目预算。
+          </span>
+        )}
       </div>
-      {c.message && <p className="autopilot-budget" role="status">{c.message}</p>}
+      {c.message && (
+        <p className="autopilot-budget" role="status">
+          {c.message}
+        </p>
+      )}
       {latest && (
         <div className="autopilot-job" role="status">
           <strong>{taskStatusLabels[latest.status] ?? latest.status}</strong>

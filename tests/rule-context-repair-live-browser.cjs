@@ -1,0 +1,44 @@
+const fs = require('fs'), path = require('path'), assert = require('node:assert/strict');
+const { chromium } = require('C:/Users/abcta/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright');
+const root = path.resolve(__dirname, '..'), origin = 'http://127.0.0.1:8765';
+const pid = 'bcc2b1c6944946508906ee6e0ecaa80a';
+(async () => {
+  const verification = JSON.parse(fs.readFileSync(path.join(root, '.runtime/rule-candidate-repair-apply.json'), 'utf8'));
+  const browser = await chromium.launch({ headless: true, executablePath: path.join(root, '.runtime/browsers/chromium-1234/chrome-win64/chrome.exe') });
+  try {
+    const context = await browser.newContext({ viewport: { width: 1440, height: 1100 }, locale: 'zh-CN' });
+    const token = JSON.parse(fs.readFileSync(path.join(root, '.runtime/session-8765.json'), 'utf8')).bootstrap_token;
+    assert.equal((await context.request.post(origin + '/api/v1/session', { data: { token } })).status(), 200);
+    const response = await context.request.get(`${origin}/api/v1/projects/${pid}/rules`);
+    assert.equal(response.status(), 200); const data = await response.json();
+    assert.equal(data.pending_diagnostics.total, verification.counts.candidate);
+    assert.equal(data.pending_diagnostics.by_kind.source_quality, verification.counts.candidate);
+    const corrected = data.rules.find(r => r.id === 'cbdebf3e62fb412a9c9b057d0a341c8e');
+    assert.equal(corrected.state, 'reference_only');
+    assert.match(corrected.statement, /数量不少于十篇/); assert.doesNotMatch(corrected.statement, /数量不少于二十篇/);
+    const evidence = await (await context.request.get(`${origin}/api/v1/rules/${corrected.id}/source`)).json();
+    assert.match(evidence.source.text, /数量不少于十篇/);
+    const loc = JSON.parse(evidence.source.locator);
+    assert.equal(loc.verification_method, 'assistant_visual_original_comparison'); assert.equal(loc.human_approval, false);
+    const page = await context.newPage(); const errors = []; page.on('pageerror', e => errors.push(e.message)); page.setDefaultTimeout(30000);
+    await page.addInitScript(pid => localStorage.setItem('paper_project', pid), pid);
+    await page.goto(origin); await page.getByRole('button', { name: '论文规则', exact: true }).click();
+    const overview = page.locator('section[aria-label="规则概况与发布状态"]');
+    await overview.getByText('规则包 V33', { exact: true }).waitFor();
+    assert.match(await overview.innerText(), new RegExp(`原图转录 ${verification.counts.candidate} 条`));
+    assert.match(await overview.innerText(), /不代表全部资料识别正确/);
+    await overview.screenshot({ path: path.join(root, '.runtime/rule-context-repair-overview.png') });
+    await overview.getByRole('button', { name: /待确认 \/ 分类/ }).click();
+    const row = page.locator('.rule-row').first(); await row.getByText('原图转录待核对', { exact: true }).waitFor();
+    await row.locator('.rule-source-link').first().click();
+    const dialog = page.getByRole('dialog'); await dialog.waitFor();
+    await dialog.getByRole('button', { name: '关闭原文依据', exact: true }).click();
+    await page.setViewportSize({ width: 390, height: 844 });
+    await overview.screenshot({ path: path.join(root, '.runtime/rule-context-repair-mobile.png') });
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
+    assert.deepEqual(errors, []);
+    const report = { pending: data.pending_diagnostics, correctedRuleId: corrected.id, checks: ['actual project counts', 'original image number correction', 'source revision provenance', 'visible issue reasons', 'source dialog', 'mobile layout'], errors };
+    fs.writeFileSync(path.join(root, '.runtime/rule-context-repair-browser-report.json'), JSON.stringify(report, null, 2));
+    console.log(JSON.stringify(report, null, 2));
+  } finally { await browser.close(); }
+})().catch(e => { console.error(e); process.exitCode = 1; });

@@ -140,7 +140,7 @@ def _chinese_number(value):
     return digits.get(value)
 
 
-def inventory(pid,settings=None,snapshots=None,artifacts=None):
+def inventory(pid,settings=None,snapshots=None,artifacts=None,section_plan=None):
     settings=settings or policy(pid)
     format_hash=settings.get('_format_hash') or hashlib.sha256(db.dumps({'format':db.setting('format:'+pid,{}) or {},'template':db.setting('template:'+pid)}).encode()).hexdigest()
     if snapshots is None:
@@ -148,7 +148,7 @@ def inventory(pid,settings=None,snapshots=None,artifacts=None):
         for sec in sections:
             rev=documents.current(sec)
             if rev:snapshots.append({'section':sec,'revision':rev,'document':db.loads(rev['document'],{})})
-    else:sections=[s['section'] for s in snapshots]
+    else:sections=section_plan if section_plan is not None else [s['section'] for s in snapshots]
     artifacts=artifacts if artifacts is not None else {a['id']:a for a in db.rows('SELECT * FROM artifacts WHERE project_id=?',(pid,))}
     by_id={s['id']:s for s in sections};roots={};number=0
     for sec in sections:

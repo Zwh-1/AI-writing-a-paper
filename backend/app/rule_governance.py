@@ -8,7 +8,7 @@ VERSION='rule-review-v2'
 ACTIVE=('confirmed','machine_verified')
 DIRECTIVE=re.compile(r'必须|不得|禁止|应当|建议|需要|不少于|不超过|不得超过|至少|至多|要求|应采用|应包括|应包含|应说明|应使用')
 DOMAIN=re.compile(r'论文|摘要|关键词|参考文献|引用|文献综述|研究方法|研究背景|实验|数据|结果|结论|标题|正文|字体|字号|行距|页边距|缩进|图表|学术|抄袭|编造|剽窃')
-EXAMPLE=re.compile(r'错误示例|反例|不合格示例|错误写法|以下为错误|正例|范例|例如|举例')
+EXAMPLE=re.compile(r'错误示例|反例|不合格示例|错误写法|以下为错误|正例|范例|例如|举例|❌|✅|错误[一二三四五六七八九十0-9]+[：:]|写作示范')
 CONDITIONAL=re.compile(r'如果|除非|除.{0,20}外|当.{1,30}时|视情况|按.{1,20}类型|分别|或者|二选一')
 GRADE=re.compile(r'[ABCDＡＢＣＤ]\s*级|评分范围|评级|达到.{0,12}等级',re.I)
 
@@ -64,10 +64,11 @@ def record(pid,before,after,source,outcome,reasons):
 
 @db.atomic
 def review_project(pid,source_ids=None):
+    from .rule_generations import visible
     policy=source_policy(pid);counts={};changed=[]
     selected=set(source_ids) if source_ids is not None else None
     sources={s['id']:s for s in db.rows("SELECT s.*,f.sha256 AS file_sha256,f.name AS source_file,p.text AS page_text FROM sources s JOIN files f ON f.id=s.file_id LEFT JOIN pages p ON p.id=s.page_id WHERE f.project_id=? AND f.active=1 AND f.role='rules' AND f.status='ready' AND (p.id IS NULL OR p.review_state!='not_applicable')",(pid,))}
-    for rule in db.rows("SELECT * FROM rules WHERE project_id=? AND state IN ('candidate','machine_verified','reference_only') ORDER BY created_at,id",(pid,)):
+    for rule in visible(pid,db.rows("SELECT * FROM rules WHERE project_id=? AND state IN ('candidate','machine_verified','reference_only') ORDER BY created_at,id",(pid,))):
         sid=rule['source_id']
         if selected is not None and sid not in selected:continue
         source=sources.get(sid)
@@ -138,7 +139,7 @@ def restore(pid,decision_id):
     current=db.one('SELECT * FROM rules WHERE id=?',(row['rule_id'],));after=db.loads(row['after_row'])
     if current!=after:raise HTTPException(409,'条款已有后续修改，不能覆盖')
     before=db.loads(row['before_row'])
-    for key in ('statement','state','modality','scope','checker','rule_key','value','category'):
+    for key in ('statement','source_id','state','modality','scope','checker','rule_key','value','category','decision_note'):
         db.execute('UPDATE rules SET '+key+'=? WHERE id=?',(before[key],row['rule_id']))
     db.execute('UPDATE rule_decisions SET restored=1 WHERE id=?',(decision_id,))
     db.audit(pid,'restore_machine_review',{'decision_id':decision_id,'rule_id':row['rule_id']})
@@ -151,11 +152,14 @@ def machine_valid(rule):
     return machine_matches(rule,row,source)
 
 
-def machine_matches(rule,row,source):
+def machine_matches(rule,row,source,receipt_snapshot=None):
     if not row or row['outcome']!='machine_verified':return False
     if not source or row['source_hash']!=source_hash(source):return False
     from .rule_text_integrity import inspect_rule
     if inspect_rule(rule,source)['needs_attention']:return False
+    from . import ai_autopilot as auto
+    receipt=receipt_snapshot if receipt_snapshot is not None else auto.receipt(rule['project_id'],'rule',rule['id'])
+    if receipt.get('decision_method')=='scoped-source-review-v1' and receipt.get('fingerprint')!=auto.rule_fingerprint(rule,auto.rule_source(rule)):return False
     after=db.loads(row['after_row'],{})
     return all(rule.get(k)==after.get(k) for k in ('statement','state','modality','scope','checker','rule_key','value','category','operations','source_id'))
 
@@ -164,10 +168,14 @@ def machine_validity(pid,items):
     """Apply the same evidence checks using one current decision/source snapshot."""
     if not items:return {}
     decisions={row['rule_id']:row for row in latest_decision_rows(pid)}
-    sources={row['id']:row for row in db.rows('''SELECT s.*,f.sha256 AS file_sha256,f.name AS source_file,p.text AS page_text
+    source_rows=db.rows('''SELECT s.*,f.sha256 AS file_sha256,f.name AS source_file,p.text AS page_text,r.id AS snapshot_rule_id,receipt.value AS receipt_json
         FROM sources s JOIN files f ON f.id=s.file_id LEFT JOIN pages p ON p.id=s.page_id
-        WHERE f.project_id=? AND s.id IN (SELECT source_id FROM rules WHERE project_id=? AND state='machine_verified')''',(pid,pid))}
-    return {rule['id']:machine_matches(rule,decisions.get(rule['id']),sources.get(rule['source_id'])) for rule in items}
+        JOIN rules r ON r.source_id=s.id LEFT JOIN settings receipt ON receipt.key=('ai_autopilot:'||f.project_id||':rule:'||r.id)
+        WHERE f.project_id=? AND r.project_id=? AND r.state='machine_verified' ''',(pid,pid))
+    sources={};receipts={}
+    for row in source_rows:
+        rid=row.pop('snapshot_rule_id');receipts[rid]=db.loads(row.pop('receipt_json'),{});sources[row['id']]=row
+    return {rule['id']:machine_matches(rule,decisions.get(rule['id']),sources.get(rule['source_id']),receipts.get(rule['id'],{})) for rule in items}
 
 
 def page_hash(page):return hashlib.sha256(db.dumps([page['text'],[(s['id'],source_hash(s)) for s in db.rows('SELECT s.*,f.sha256 AS file_sha256 FROM sources s JOIN files f ON f.id=s.file_id WHERE s.page_id=? ORDER BY s.id',(page['id'],))]]).encode()).hexdigest()

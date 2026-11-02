@@ -4,6 +4,12 @@ from . import db,parsers,security,document_reading as reader,knowledge_units as 
 
 
 def prepare(pid,sid,query,max_chars=12000):
+    from .knowledge_lineage import validation_scope
+    with validation_scope():
+        return _prepare(pid,sid,query,max_chars)
+
+
+def _prepare(pid,sid,query,max_chars):
     examples=[];readings=[];gaps=[];file_ids=set();remaining=max_chars
     sessions=db.rows("SELECT id FROM document_readings WHERE project_id=? AND section_id=? AND intent='guidance' ORDER BY updated_at DESC",(pid,sid))
     for row in sessions:
@@ -28,7 +34,13 @@ def prepare(pid,sid,query,max_chars=12000):
             directory=reader.outline(pid,fid,'guidance')
             if directory.get('needs_structure') or not directory.get('current'):
                 passages=[{'text':r['text'],'locator':db.loads(r['locator'],{})} for r in db.rows('SELECT s.* FROM sources s LEFT JOIN pages p ON p.id=s.page_id WHERE s.file_id=? ORDER BY p.page_number,s.id',(fid,))]
-            else:passages=[{'text':u['text'],'locator':u['locator']} for u in (units.get(pid,r['unit_id'],remote=True,intent='guidance') for r in directory['units'])]
+            else:
+                # The directory has exact parsed character counts. Reject an
+                # indivisible oversized example before decorating every page.
+                if sum(u['characters'] for u in directory['units'])>remaining:
+                    gaps.append({'file_id':fid,'reason':'完整指导原件超过本次预算，已延后；未截取正反例或教学条件'})
+                    continue
+                passages=[{'text':u['text'],'locator':u['locator']} for u in (units.get(pid,r['unit_id'],remote=True,intent='guidance') for r in directory['units'])]
             size=sum(len(p['text']) for p in passages)
             if not size or size>remaining:continue
             remaining-=size;file_ids.add(fid)

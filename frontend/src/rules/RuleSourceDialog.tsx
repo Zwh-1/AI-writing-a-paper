@@ -1,8 +1,10 @@
+import { apiUrl } from "../client";
 import { useMemo, useState } from "react";
 import { ChevronLeft, ChevronRight, Search } from "lucide-react";
 import WorkspaceDialog from "../workspace/WorkspaceDialog";
-import { checkerLabels, scopeLabels, stateLabels } from "../RuleEditor";
+import { checkerLabels, ruleScopeLabel, stateLabels } from "../RuleEditor";
 import type { Row } from "../workspace/types";
+import ImageCoveragePanel from "../references/ImageCoveragePanel";
 
 export default function RuleSourceDialog({
   source,
@@ -32,7 +34,7 @@ export default function RuleSourceDialog({
     }
   }, [source.package]);
   const results = snapshot.rules.filter((rule) =>
-    `${rule.statement} ${scopeLabels[rule.scope] ?? rule.scope}`
+    `${rule.statement} ${ruleScopeLabel(rule)}`
       .toLowerCase()
       .includes(query.trim().toLowerCase()),
   );
@@ -79,7 +81,7 @@ export default function RuleSourceDialog({
                   <p>{rule.statement}</p>
                   <small>
                     {stateLabels[rule.modality]} ·{" "}
-                    {scopeLabels[rule.scope] ?? rule.scope} ·{" "}
+                    {ruleScopeLabel(rule)} ·{" "}
                     {checkerLabels[rule.checker]}
                   </small>
                 </div>
@@ -118,13 +120,57 @@ export default function RuleSourceDialog({
             <>
               <p className="muted mb">
                 {source.file.name} · 第 {source.page?.page_number ?? "?"} 页 ·{" "}
-                {source.page?.review_state === "reviewed"
+                {source.reading_context?.requires_original_comparison
+                  ? "候选原文待核对"
+                  : source.rule.source_observation
+                  ? "已对照原图复验 · 助手复验，非人工确认"
+                  : source.page?.review_state === "reviewed"
                   ? "原文已核对"
                   : source.page?.review_state === "not_applicable"
                     ? "此页已排除"
                     : "原文待核对"}
               </p>
+              {source.rule.source_observation && (
+                <p className="muted mb">
+                  {source.rule.source_observation.label}。{source.rule.source_observation.scope_limited && "以下仅展示已核对摘录，图中其余文字请打开原页查看。"}
+                </p>
+              )}
+              <h4>候选提取时保存的来源</h4>
               <pre className="rule-source-text">{source.source.text}</pre>
+              {source.reading_context && (
+                <section aria-label="候选完整来源上下文">
+                  <h4>完整来源上下文</h4>
+                  <p>{source.reading_context.scope_note}</p>
+                  {source.reading_context.raw_observations.length > 0 && (
+                    <p>
+                      原候选来源 {source.reading_context.legacy_source_characters} 字 ·
+                      完整保存观察 {source.reading_context.full_observation_characters} 字
+                    </p>
+                  )}
+                  {source.reading_context.source_issues.includes("legacy_source_is_not_complete_image_observation") && (
+                    <p role="status">旧来源只包含部分或另一份转录；请核对下方完整观察。{source.rule.state === "candidate" ? "候选仍保持待核验状态。" : "整图观察须单独核对。"}</p>
+                  )}
+                  {source.reading_context.native_context.map((part: Row, index: number) => (
+                    <details key={`native-${index}`}>
+                      <summary>原页文字与备注</summary>
+                      <pre className="rule-source-text">{part.text}{part.notes ? `\n\n[原页备注]\n${part.notes}` : ""}</pre>
+                    </details>
+                  ))}
+                  {source.reading_context.raw_observations.map((observation: Row, index: number) => (
+                    <details key={`raw-${index}`} open>
+                      <summary>完整保存的OCR观察 · 尚未核对</summary>
+                      <pre className="rule-source-text">{observation.text}</pre>
+                    </details>
+                  ))}
+                  {source.reading_context.verified_passages.map((passage: Row) => (
+                    <details key={passage.source_id}>
+                      <summary>{passage.coverage === "complete_image_text" ? "整图校对文字" : passage.coverage === "selected_complete_passages" ? "独立校对摘录" : "历史转录 · 覆盖范围未核清"}</summary>
+                      <pre className="rule-source-text">{passage.text}</pre>
+                    </details>
+                  ))}
+                </section>
+              )}
+              <ImageCoveragePanel pid={source.file.project_id} fid={source.file.id} page={source.page?.page_number} />
               <div className="actions">
                 <button
                   className="btn primary"
@@ -139,7 +185,7 @@ export default function RuleSourceDialog({
                 </button>
                 <a
                   className="btn"
-                  href={`/api/v1/files/${source.file.id}/download`}
+                  href={apiUrl(`/files/${source.file.id}/download`)}
                 >
                   下载原文件
                 </a>

@@ -175,7 +175,7 @@ def request_image(cfg,key,prompt,reference=None):
     """One Images API request; no text-model fallback and no implicit retry."""
     values={'model':MODEL,'prompt':prompt,'n':1,'size':cfg['size'],'quality':cfg['quality'],
             'output_format':'png','background':'opaque'}
-    headers={'Authorization':'Bearer '+key}
+    headers={'Authorization':'Bearer '+key,**({'X-Client-Request-Id':provider._CLIENT_REQUEST_ID.get()} if provider._CLIENT_REQUEST_ID.get() else {})}
     with provider.client(cfg) as client:
         if reference is None:
             response=client.post(provider.endpoint(cfg['base_url'],'/v1/images/generations'),headers=headers,json=values)
@@ -186,6 +186,7 @@ def request_image(cfg,key,prompt,reference=None):
     try:data=response.json()
     except ValueError as error:raise ImageResponseError('生图接口未返回有效 JSON，请确认中转站支持 Images API') from error
     if not isinstance(data,dict):raise ImageResponseError('生图响应不是 JSON 对象')
+    data['_response_evidence']=provider.response_evidence(response,data)
     return data
 
 
@@ -223,6 +224,8 @@ def generate(task):
     if not payload.get('image_brief'):payload=_prepare(pid,payload)
     assert_current(pid,payload['image_brief'])
     cfg,key=snapshot();check_context(pid,context)
+    from .expense_evidence import resolve_config,preflight
+    cfg=resolve_config(pid,cfg,key)
     if cfg['currency']!=provider.config().get('currency','USD'):raise BudgetExceeded('生图费用币种与项目预算币种不同')
     prompt=_prompt(pid,payload);reference=None
     if payload.get('source_artifact_id'):
@@ -235,6 +238,7 @@ def generate(task):
         reference=render_diagram(payload['current_spec'])[0]
     if reference is not None and len(reference)>50_000_000:raise ValueError('参考图片超过50MB，请缩小图片后再修改')
     reservation=cfg['image_price'] if cfg['image_price'] is not None else cfg['max_request_cost']
+    if reservation>cfg['max_request_cost']:raise BudgetExceeded('有依据的每张图片价格超过本次请求上限')
     identity=db.uid();manifest={'provider':cfg,'provider_profile':PROFILE,'provider_route':PROFILE,
         'credential_hash':key_hash(key),'operation':'image_edit' if reference is not None else 'image_generate',
         'visual_context':context,'prompt_blob':security.put_blob(prompt.encode('utf-8')),
@@ -242,12 +246,17 @@ def generate(task):
         'image_brief':payload['image_brief']}
     if reference is not None:manifest['reference_blob']=security.put_blob(reference)
     with db.transaction():
+        pricing_basis=preflight(pid,cfg,key,images=True)
+        manifest['client_request_id']=identity
+        manifest['expense_pricing_basis']=pricing_basis
+        manifest['cost_evidence']={'method':'per_image_configured_estimate' if cfg['image_price'] is not None else 'unknown_price_request_ceiling','image_price':cfg['image_price'],'image_count':1,'currency':cfg['currency'],'reserved':reservation,'estimate_only':True}
         project=security.require_project(pid)
         used=db.one("SELECT COALESCE(SUM(budget_charge),0) amount FROM generation_budget_usage WHERE project_id=? AND status NOT IN ('rejected','failed_before_send')",(pid,))['amount']
         if used+reservation>project['budget']:raise BudgetExceeded('项目预算不足以预留本次 gpt-image-2 生图费用')
         db.execute('INSERT INTO generation_runs(id,task_id,project_id,status,model,protocol,manifest,reserved,created_at) VALUES(?,?,?,?,?,?,?,?,?)',
                    (identity,task['id'],pid,'pending',MODEL,'images',db.dumps(manifest),reservation,db.now()))
     sent=False;received=False
+    trace_token=provider._CLIENT_REQUEST_ID.set(identity)
     try:
         assert_ai_allowed(pid,payload.get('figure_purpose','design_schematic'))
         assert_current(pid,payload['image_brief'])
@@ -257,9 +266,10 @@ def generate(task):
         db.execute("UPDATE generation_runs SET status='sent' WHERE id=?",(identity,));sent=True
         with provider.request_scope(cfg,key):data=request_image(cfg,key,prompt,reference)
         received=True
+        manifest['response_evidence']=data.get('_response_evidence',{})
         usage=data.get('usage',{}) if isinstance(data.get('usage',{}),dict) else {}
         normalized={'input_tokens':usage.get('input_tokens'),'output_tokens':usage.get('output_tokens'),'raw':usage}
-        db.execute('UPDATE generation_runs SET status=?,usage=?,manifest=? WHERE id=?',('completed',db.dumps(normalized),db.dumps(manifest),identity))
+        db.execute('UPDATE generation_runs SET status=?,usage=?,manifest=?,cost=?,remote_id=? WHERE id=?',('completed',db.dumps(normalized),db.dumps(manifest),cfg['image_price'],str(data.get('id') or data.get('created') or ''),identity))
         png,size,revised=_decode(data)
         alignment_status='pending_human_review';alignment_message='需逐项核对图片与目标段落'
         try:assert_current(pid,payload['image_brief'])
@@ -284,11 +294,14 @@ def generate(task):
         return {'asset':asset,'spec':spec,'source_context':source_context(pid,context),'render_engine':MODEL,
                 'missing_materials':[],'automatic_acceptance':False,'run_id':identity}
     except Exception as error:
+        if getattr(error,'response_evidence',None):manifest['response_evidence']=error.response_evidence
         received=received or isinstance(error,ImageResponseError)
         before_send=isinstance(error,(httpx.ConnectError,httpx.ConnectTimeout))
-        unknown=sent and not received and not before_send and (isinstance(error,httpx.RequestError) or isinstance(error,provider.ProviderError) and error.unknown)
+        unknown=sent and not received and not before_send and (not isinstance(error,provider.ProviderError) or error.unknown)
         status='completed_invalid' if received else 'failed_before_send' if not sent or before_send else 'outcome_unknown' if unknown else 'rejected'
         # A received response may be charged even when its image bytes are invalid.
         db.execute('UPDATE generation_runs SET status=?,error=?,manifest=? WHERE id=?',(status,security.redact(str(error).replace(key,'[已隐藏密钥]')),db.dumps(manifest),identity))
         if isinstance(error,httpx.RequestError):raise provider.ProviderError('生图连接失败' if before_send else '生图请求已发送，远端结果未知；请核对后重试',unknown=unknown) from error
         raise
+    finally:
+        provider._CLIENT_REQUEST_ID.reset(trace_token)

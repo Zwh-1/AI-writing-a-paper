@@ -58,6 +58,7 @@ PRAGMA user_version=2;
 """
 
 _ACTIVE=contextvars.ContextVar("paper_transaction",default=None)
+_READ_SESSION=contextvars.ContextVar('paper_read_session',default=None)
 
 def connect():
     c = sqlite3.connect(DB_PATH, timeout=20)
@@ -65,6 +66,23 @@ def connect():
     c.execute('PRAGMA foreign_keys=ON')
     c.execute('PRAGMA busy_timeout=20000')
     return c
+
+@contextmanager
+def read_session():
+    """Reuse a connection for a synchronous read operation, without a read lock.
+
+    SELECTs remain autocommit. Lazy index writes use their own transaction and
+    subsequent reads see the commit. This is not a long-lived data snapshot.
+    """
+    existing=_READ_SESSION.get()
+    if _ACTIVE.get() is not None or existing is not None and existing[0]==DB_PATH:
+        yield
+        return
+    connection=connect();token=_READ_SESSION.set((DB_PATH,connection))
+    try:yield
+    finally:
+        _READ_SESSION.reset(token)
+        connection.close()
 
 @contextmanager
 def transaction():
@@ -122,7 +140,11 @@ def init():
 def rows(sql,args=()):
     active=_ACTIVE.get()
     if active is not None:return [dict(r) for r in active.execute(sql,args).fetchall()]
-    with connect() as c: return [dict(r) for r in c.execute(sql,args).fetchall()]
+    session=_READ_SESSION.get()
+    if session is not None and session[0]==DB_PATH:return [dict(r) for r in session[1].execute(sql,args).fetchall()]
+    c=connect()
+    try:return [dict(r) for r in c.execute(sql,args).fetchall()]
+    finally:c.close()
 
 def one(sql,args=()):
     result=rows(sql,args); return result[0] if result else None
@@ -131,8 +153,10 @@ def execute(sql,args=()):
     active=_ACTIVE.get()
     if active is not None:
         active.execute(sql,args);return
-    with connect() as c:
+    c=connect()
+    try:
         c.execute(sql,args); c.commit()
+    finally:c.close()
 
 def setting(key,default=None):
     r=one('SELECT value FROM settings WHERE key=?',(key,)); return loads(r['value'],default) if r else default

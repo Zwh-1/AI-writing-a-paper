@@ -174,20 +174,19 @@ def page_ocr(page_id,language='zh-Hans-CN'):
     if not assets and not recognized and page['has_visual']:
         errors.append('页面标记含视觉内容，但没有可识别图片；请查看原件或人工转录')
     source_ids=[];all_text=[];new_parts=[]
-    native='\n'.join(r['text'] for r in db.rows("SELECT text FROM sources WHERE page_id=? AND method IN ('native','native_supplement','embedded_native')",(page_id,)))
-    native_norm=_normal(native)
     kind='rule_candidate' if page['role']=='rules' else 'example' if page['role']=='example' else 'commentary' if page['role'] in ('draft','supervisor') else 'evidence'
     with db.transaction() as c:
         for result in recognized:
             all_text.append(result['text'])
-            candidate='\n'.join(line['text'] for line in result.get('lines',[]) if _normal(line['text']) and not (len(_normal(line['text']))>=8 and _normal(line['text']) in native_norm))
+            # Store the complete image observation. A line repeated in native
+            # text still has its own position and cannot be dropped from OCR.
+            candidate=result['text']
             added=False
-            for start in range(0,len(candidate),1000):
-                fragment=candidate[start:start+1000]
+            for start,fragment in [(0,candidate)]:
                 if not fragment.strip():continue
                 old=c.execute("SELECT id FROM sources WHERE page_id=? AND method='windows_ocr' AND text=?",(page_id,fragment)).fetchone()
                 if old:source_ids.append(old['id']);continue
-                sid=db.uid();locator={'kind':'windows_ocr','page':page['page_number'],'asset_sha256':result['asset_sha256'],'ocr_version':OCR_VERSION,'char_start':start,'origin':result['origin'],'recognition':[result] if start==0 else []}
+                sid=db.uid();locator={'kind':'windows_ocr','page':page['page_number'],'asset_sha256':result['asset_sha256'],'ocr_version':OCR_VERSION,'char_start':start,'char_end':len(candidate),'storage_scope':'complete_image_observation','origin':result['origin'],'recognition':[result]}
                 c.execute('INSERT INTO sources VALUES(?,?,?,?,?,?,?,?,?)',(sid,page['file_id'],page_id,db.dumps(locator),fragment,fragment,kind,'windows_ocr',0));c.execute('INSERT INTO source_fts VALUES(?,?)',(sid,tokens(fragment)));source_ids.append(sid);added=True
             if added:new_parts.append(candidate)
         if new_parts:

@@ -1,0 +1,8 @@
+.duplicate-three-parts { display: grid; gap: 1rem; min-width: 0; }
+.duplicate-three-parts > section { border-top: 1px solid var(--line, #dce6e0); padding-top: 1rem; min-width: 0; }
+.duplicate-three-parts h4 { margin: 0 0 .5rem; }
+.duplicate-three-parts p { overflow-wrap: anywhere; }
+.duplicate-three-parts .rule-source-text { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 24rem; overflow: auto; }
+.duplicate-three-parts .rule-duplicate-members > div { padding-block: .65rem; border-bottom: 1px solid var(--line, #dce6e0); }
+.duplicate-three-parts .rule-advanced > div { margin-block: .75rem; }
+@media (max-width: 600px) { .duplicate-three-parts .actions { flex-wrap: wrap; } .duplicate-three-parts .btn { max-width: 100%; white-space: normal; } }

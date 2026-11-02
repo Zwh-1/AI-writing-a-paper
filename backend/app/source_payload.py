@@ -2,7 +2,7 @@
 import hashlib
 from . import db
 
-LOCATOR_FIELDS=('kind','page','slide','page_number','slide_number','char_start','char_end','paragraph','part')
+LOCATOR_FIELDS=('kind','page','slide','page_number','slide_number','char_start','char_end','paragraph','part','read_scope','transcription_scope','extraction_origin')
 
 
 def compact_locator(value):

@@ -386,6 +386,7 @@
 }
 .autopilot-exception-filters {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 5px;
 }
@@ -420,6 +421,9 @@
 .autopilot-exceptions article > div {
   min-width: 0;
 }
+.autopilot-purpose-hint { display: inline-block; margin-left: .6rem; color: var(--text-muted, #64796d); }
+.autopilot-reading-text { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 22rem; overflow: auto; font: inherit; line-height: 1.8; }
+.autopilot-exceptions article details { margin-top: .6rem; }
 .autopilot-exceptions article strong {
   font-size: 12px;
   display: block;

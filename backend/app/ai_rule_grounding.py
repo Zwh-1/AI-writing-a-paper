@@ -56,11 +56,8 @@ def build(rule,source,fingerprint,feedback=''):
     evidence=units(source,rule['statement'])
     item={'id':'R0','_identity':rule['id'],'_fingerprint':fingerprint,'statement':rule['statement'],'modality':rule['modality'],'source_file':source['source_file'],'source_role':source.get('role','manual'),'authority':rule_governance.source_policy(rule['project_id']).get(source['file_id'],'course'),'evidence_units':evidence,'file_ids':[source['file_id']] if source['file_id'] else [],'previous_validation_error':feedback,'grounding_version':VERSION}
     from .ai_autopilot import SYSTEM
-    while source_payload.token_upper_bound(SYSTEM+'\n'+INSTRUCTION,db.dumps(item))+4096>int(provider.config()['context_limit']):
-        removable=next((u for u in evidence if u.get('kind')=='page_context'),None)
-        if removable is None:removable=next((u for u in reversed(evidence) if u['id'].startswith('S')),None)
-        if removable is None:raise ValueError('完整原文证据超过接口上下文上限，保留例外')
-        evidence.remove(removable)
+    if source_payload.token_upper_bound(SYSTEM+'\n'+INSTRUCTION,db.dumps(item))+4096>int(provider.config()['context_limit']):
+        raise ValueError('完整原文证据超过接口上下文上限，需分步阅读，保留例外；未删减证据')
     return item
 
 
@@ -125,11 +122,12 @@ def validate(rule,source,item,decision):
 
 
 def review_pending(task,job_id):
+    from .rule_generations import visible
     from . import tasks
     from . import ai_autopilot as a
     from .rule_pipeline import finalize_billing
     pid=task['project_id'];pending=[];notes=[];completed=0
-    for rule in db.rows('SELECT * FROM rules WHERE project_id=? ORDER BY created_at,id',(pid,)):
+    for rule in visible(pid,db.rows('SELECT * FROM rules WHERE project_id=? ORDER BY created_at,id',(pid,))):
         source=a.rule_source(rule);fp=a.rule_fingerprint(rule,source);old=a.receipt(pid,'rule',rule['id'])
         if old.get('state') in ('unknown','conflict'):continue
         if old.get('fingerprint')==fp and old.get('completed'):continue

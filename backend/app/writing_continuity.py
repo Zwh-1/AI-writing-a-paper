@@ -74,6 +74,9 @@ def status(pid,sid,cfg=None):
 
 def fit_optional(payload,manifest,fits):
     """Drop remote excerpts before boundary passages, retaining exact version scope."""
+    if not fits() and payload.get('knowledge_context'):
+        payload.pop('knowledge_context')
+        manifest.setdefault('knowledge_omissions',[]).append({'reason':'派生综合超过上下文预算；保留原文证据、完整正文与强制规则'})
     expanded={row['section_id'] for row in payload.get('expanded_original_passages',[]) if row.get('section_id')}
     optional=[row for row in payload.get('related_sections',[]) if row.get('scope') in OPTIONAL_SCOPES and row['section_id'] not in expanded]
     optional.sort(key=lambda row:row.get('scope')!='cross_section_passages')

@@ -38,3 +38,6 @@ playwright-report/
 # manuscript text, source excerpts, account usage, or private project metadata.
 docs/**
 !docs/*.md
+
+# Public route manifests contain API paths and owners only.
+!docs/api-contract-v2.json

@@ -8,7 +8,7 @@ router = APIRouter(prefix='/projects/{pid}/evidence-knowledge')
 
 @router.post('/search')
 def search_api(pid: str, body: dict):
-    return service.search(pid, body.get('query', ''), units.integer(body,'limit',10,1,30), collection=body.get('collection', 'all'))
+    return service.search(pid, body.get('query', ''), units.integer(body,'limit',10,1,30), collection=body.get('collection', 'all'),file_ids=body.get('file_ids'))
 
 
 @router.post('/evaluation-samples')

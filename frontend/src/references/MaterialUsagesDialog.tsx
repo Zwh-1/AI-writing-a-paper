@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { send } from "../client";
 import WorkspaceDialog from "../workspace/WorkspaceDialog";
 import { useWorkspaceResource } from "../workspace/useWorkspaceResource";
@@ -8,9 +8,11 @@ import { kindLabels, usageLabels } from "./documentReadingLabels";
 export default function MaterialUsagesDialog({
   pid,
   onClose,
+  initialFileId,
 }: {
   pid: string;
   onClose: () => void;
+  initialFileId?: string;
 }) {
   const base = `/projects/${pid}/document-reading`;
   const [tick, setTick] = useState(0),
@@ -22,6 +24,15 @@ export default function MaterialUsagesDialog({
     [error, setError] = useState(""),
     [saved, setSaved] = useState(false);
   const files = useWorkspaceResource<Row[]>(`${base}/materials`, tick);
+  useEffect(() => {
+    if (!initialFileId || selected || !files.data) return;
+    const item = files.data.find((f) => f.file_id === initialFileId);
+    if (item) {
+      setSelected(item);
+      setValues(item.usages || []);
+      setKind(item.source_kind || "unclassified");
+    }
+  }, [initialFileId, files.data]);
   const primary = selected
     ? (
         {

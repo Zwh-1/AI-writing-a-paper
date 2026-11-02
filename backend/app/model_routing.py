@@ -1,5 +1,6 @@
 """DeepSeek primary and separately authenticated GPT backup, with audited calls."""
 import math,re
+from contextlib import contextmanager
 from urllib.parse import urlsplit
 from fastapi import HTTPException
 from . import db,provider,security
@@ -71,6 +72,23 @@ def models():
     return {'models':values,'message':'已取得 GPT 模型列表' if values else '当前密钥没有返回 GPT 模型，请在 EcoAPI 开通权限或更换密钥'}
 
 
+@contextmanager
+def task_scope(task):
+    """Assemble writing with the same route, key and limits used for sending."""
+    from .summary_billing import priced_config
+    forced=db.loads(task.get('payload'),{}).get('provider_profile')=='gpt'
+    with provider.settings_lock():
+        existing=provider._REQUEST.get()
+        if forced:
+            cfg,key=(dict(existing['config']),existing['key']) if existing and existing.get('route')=='gpt' else (config(),security.get_key(PROFILE))
+        else:
+            cfg,key=(dict(existing['config']),existing['key']) if existing else (provider.config(),provider.get_key())
+    if forced and not (cfg.get('enabled') and cfg.get('model') and key):
+        raise provider.ProviderError('请在“GPT 备选”保存有权限的密钥并选择 GPT 模型')
+    with provider.request_scope(priced_config(cfg,key),key,route='gpt' if forced else 'deepseek'):
+        yield
+
+
 def call(executor,task,system,user,manifest,images=None):
     from .tasks import event
     profile=db.loads(task.get('payload'),{}).get('provider_profile')
@@ -80,9 +98,11 @@ def call(executor,task,system,user,manifest,images=None):
         primary=dict(existing['config']) if existing else provider.config()
         key=existing['key'] if existing else '' if forced else provider.get_key()
         backup=config();backup_key=security.get_key(PROFILE) if backup['enabled'] and backup['model'] else ''
+        if forced and existing and existing.get('route')=='gpt':backup,backup_key=dict(existing['config']),existing['key']
     available=bool(backup['enabled'] and backup['model'] and backup_key)
     def execute(c,k,route,reason=None):
-        selected=dict(c)
+        from .summary_billing import priced_config
+        selected=priced_config(c,k)
         options=manifest.get('request_options',{})
         if options.get('max_output_tokens'):selected['max_output_tokens']=min(int(selected['max_output_tokens']),int(options['max_output_tokens']))
         if options.get('reasoning_effort') in ('low','high','max'):selected['reasoning_effort']=options['reasoning_effort']
@@ -92,7 +112,7 @@ def call(executor,task,system,user,manifest,images=None):
         elif selected.get('thinking_enabled') is False:selected.pop('reasoning_effort',None)
         meta={**manifest,'provider_route':route}
         if reason:meta.update(fallback_reason=provider.redact(reason),automatic_retry_index=0)
-        with provider.request_scope(selected,k):return executor(task,system,user,meta,images)
+        with provider.request_scope(selected,k,route='gpt' if route=='gpt' else (existing or {}).get('route') or 'deepseek'):return executor(task,system,user,meta,images)
     if forced:
         if not available:raise provider.ProviderError('GPT 备选尚未配置完成，请在接口与设置中检测并选择 GPT 模型')
         return execute(backup,backup_key,'gpt')

@@ -265,6 +265,24 @@ def test_guidance_preparation_preserves_entire_teaching_scope(client):
     assert not prepare(pid,sid,'证书哈希上链',max_chars=10)['examples']
 
 
+def test_oversized_guidance_defers_whole_document_before_reading_every_unit(client, monkeypatch):
+    from app.guidance_preparation import prepare
+    pid=project(client);sid=section(client,pid)
+    original=file(client,pid,'摘要教学\n\n错误示例：系统计划实现功能。\n\n正确示例：实现了证书哈希上链。\n\n示例不构成本项目成果。',role='example')
+    reader.outline(pid,original['id'],'guidance',ensure=True)
+    calls=[];get=units.get
+    def observe(*args,**kwargs):
+        calls.append(args)
+        return get(*args,**kwargs)
+    monkeypatch.setattr(units,'get',observe)
+    result=prepare(pid,sid,'证书哈希上链',max_chars=10)
+    assert not result['examples'] and not calls
+    assert any(g.get('file_id')==original['id'] and '完整' in g['reason'] for g in result['gaps'])
+    assert prepare(pid,sid,'证书哈希上链')['examples'] and calls
+    db.execute("UPDATE files SET egress='local_only' WHERE id=?",(original['id'],))
+    assert not prepare(pid,sid,'证书哈希上链')['examples']
+
+
 def test_human_reading_citation_review_checks_exact_adopted_passage(paper):
     from app import knowledge_evaluation,export_checks
     c,pid,sid,original,parsed=paper;opened=open_paper(paper)

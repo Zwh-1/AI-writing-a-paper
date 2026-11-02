@@ -40,14 +40,20 @@ def decode(raw):
     text=raw.decode(encoding)
     return text,encoding
 
-def capture(pid,rid,mode='working_tree',ref=None):
+def capture(pid,rid,mode='working_tree',ref=None,progress=None):
     binding=owned('repository',rid,pid);root=Path(binding['root_path_local']);scope=db.loads(binding['scope_json'],{})
     if not binding['root_path_local'] or not root.is_absolute():fail('REBIND_REQUIRED','恢复的项目需重新绑定本机代码目录')
     if mode not in ('working_tree','git_commit'):fail('INVALID_CAPTURE_MODE','快照模式无效')
     if not root.is_dir() or reparse(root):fail('INVALID_ROOT','来源目录已变化')
     snapshot=db.uid();start=db.now();raws={};entries=[];gaps=[];excluded=[];total=0;head=None
+    read=0
+    def beat():
+        nonlocal read
+        read+=1
+        if progress and read%300==0:progress('正在重新采集完整快照',read)
     def take(name,raw,observed):
         nonlocal total
+        beat()
         safe_relative(name)
         if len(raw)>scope.get('max_file_bytes',2097152) or total+len(raw)>scope.get('max_total_bytes',209715200):
             gaps.append({'path':name,'reason':'size_limit'});return

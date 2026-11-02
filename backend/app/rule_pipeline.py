@@ -35,22 +35,12 @@ def batches(sources,cfg=None):
     def fits(items):return source_payload.token_upper_bound(SYSTEM,source_payload.content(items))+int(cfg.get('max_output_tokens',8192))<=int(cfg.get('context_limit',100000))
     for source in sources:
         digest=source_payload.source_hash(source)
-        for part_index,start in enumerate(range(0,len(source['text']),3000)):
-            part=source['text'][start:start+3000]
-            unit={**source,'text':part,'part_key':source['id']+':'+str(part_index),'part_start':start,'part_end':start+len(part),'source_hash':digest}
-            pending=[unit]
-            while pending:
-                item=pending.pop(0)
-                if not fits([item]):
-                    if len(item['text'])<128:raise ValueError('上下文配置不足以容纳最小规则请求与输出预留')
-                    middle=len(item['text'])//2
-                    left={**item,'text':item['text'][:middle],'part_end':item['part_start']+middle}
-                    right={**item,'text':item['text'][middle:],'part_start':item['part_start']+middle}
-                    for split in (left,right):split['part_key']=split['id']+':'+str(split['part_start'])+'-'+str(split['part_end'])
-                    pending=[left,right]+pending;continue
-                item['item_key']=hashlib.sha256(db.dumps([VERSION,item['id'],digest,item['part_start'],item['part_end']]).encode()).hexdigest()
-                if chunk and (len(chunk)>=4 or size+len(item['text'])>3500 or any(s['id']==item['id'] for s in chunk) or not fits(chunk+[item])):result.append(chunk);chunk=[];size=0
-                chunk.append(item);size+=len(item['text'])
+        if not source['text'].strip():continue
+        item={**source,'part_key':source['id']+':0','part_start':0,'part_end':len(source['text']),'source_hash':digest}
+        if not fits([item]):raise ValueError('完整来源超过接口上下文预算，需按原件分步阅读；未按字符切断原句或条件')
+        item['item_key']=hashlib.sha256(db.dumps([VERSION,item['id'],digest,0,len(source['text'])]).encode()).hexdigest()
+        if chunk and (len(chunk)>=4 or size+len(item['text'])>3500 or any(s['id']==item['id'] for s in chunk) or not fits(chunk+[item])):result.append(chunk);chunk=[];size=0
+        chunk.append(item);size+=len(item['text'])
     if chunk:result.append(chunk)
     return result
 
@@ -118,7 +108,8 @@ def checkpoints(task,payload):
 
 def source_scope(pid,file_ids=None):
     sources=db.rows("SELECT s.*,f.project_id,f.egress,f.sha256 AS file_sha256,f.name AS source_file,p.page_number,p.text AS page_text FROM sources s JOIN files f ON f.id=s.file_id LEFT JOIN pages p ON p.id=s.page_id WHERE f.project_id=? AND f.role='rules' AND f.active=1 AND f.status='ready' AND (p.id IS NULL OR p.review_state!='not_applicable') ORDER BY f.id,p.page_number,s.id",(pid,))
-    return [s for s in sources if (not file_ids or s['file_id'] in file_ids) and db.loads(s['locator'],{}).get('kind')!='rule_excerpt' and s['text'].strip()]
+    superseded=db.setting('document_observation_supersessions',{})
+    return [s for s in sources if s['id'] not in superseded and (not file_ids or s['file_id'] in file_ids) and s['method']!='document_rule_context' and db.loads(s['locator'],{}).get('kind') not in ('rule_excerpt','document_rule_context') and s['text'].strip()]
 
 
 def ensure_job(task,payload):

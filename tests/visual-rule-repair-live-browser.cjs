@@ -1,0 +1,45 @@
+const fs = require('fs'), path = require('path'), assert = require('node:assert/strict');
+const { chromium } = require('C:/Users/abcta/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright');
+const root = path.resolve(__dirname, '..'), origin = 'http://127.0.0.1:8765', pid = 'bcc2b1c6944946508906ee6e0ecaa80a';
+(async () => {
+  const browser = await chromium.launch({ headless: true, executablePath: path.join(root, '.runtime/browsers/chromium-1234/chrome-win64/chrome.exe') });
+  try {
+    const context = await browser.newContext({ viewport: { width: 1440, height: 1100 }, locale: 'zh-CN' });
+    const token = JSON.parse(fs.readFileSync(path.join(root, '.runtime/session-8765.json'), 'utf8')).bootstrap_token;
+    assert.equal((await context.request.post(origin + '/api/v1/session', { data: { token } })).status(), 200);
+    const response = await context.request.get(`${origin}/api/v1/projects/${pid}/rules`); assert.equal(response.status(), 200);
+    const data = await response.json(); assert.equal(data.pending_diagnostics.total, 0);
+    assert.equal(data.rules.filter(r => r.state === 'reference_only').length, 1473);
+    const verification = JSON.parse(fs.readFileSync(path.join(root, '.runtime/visual-repair-round2/verification.json'), 'utf8'));
+    const expectedObserved = Object.values(verification.visual_record_counts).reduce((a, b) => a + b, 0);
+    const observed = data.rules.filter(r => r.source_observation); assert.equal(observed.length, expectedObserved);
+    const partial = observed.filter(r => r.source_observation.scope_limited).length;
+    const inventory = JSON.parse(fs.readFileSync(path.join(root, '.runtime/visual-repair-round2/inventory.json'), 'utf8'));
+    const referenceRule = inventory.groups.find(g => g.index === 9).records[0].rule.id;
+    const corrected = data.rules.find(r => r.id === referenceRule);
+    assert.match(corrected.statement, /近五年文献≥50%/); assert.equal(corrected.state, 'reference_only');
+    const legacy = data.rules.find(r => r.id === '8c574a415b9845ecb31522431c0d71e4'); assert.match(legacy.statement, /6000字/); assert.match(legacy.statement, /8000字/);
+    const source = await (await context.request.get(`${origin}/api/v1/rules/${referenceRule}/source`)).json();
+    const metadata = JSON.parse(source.source.locator); assert.equal(metadata.transcription_scope, 'complete_image_text'); assert.equal(source.source.verified, 0);
+    const page = await context.newPage(), errors = []; page.on('pageerror', e => errors.push(e.message)); page.setDefaultTimeout(30000);
+    await page.addInitScript(pid => localStorage.setItem('paper_project', pid), pid); await page.goto(origin);
+    await page.getByRole('button', { name: '论文规则', exact: true }).click();
+    const overview = page.locator('section[aria-label="规则概况与发布状态"]'); await overview.getByText('规则包 V33', { exact: true }).waitFor();
+    assert.match(await overview.innerText(), new RegExp(`已对照原图处理 ${expectedObserved} 条`));
+    assert.match(await overview.innerText(), new RegExp(`其中 ${partial} 条仅核对所列摘录`));
+    assert.match(await overview.getByRole('button', { name: /待确认 \/ 分类/ }).innerText(), /0/);
+    await overview.screenshot({ path: path.join(root, '.runtime/visual-repair-round2/overview.png') });
+    await overview.getByRole('button', { name: /仅供参考/ }).click();
+    await page.getByRole('textbox', { name: '搜索规则', exact: true }).fill('有缺失的情况怎么办');
+    const row = page.locator('.rule-row').filter({ hasText: /已核对所列图像摘录|已对照原图转录全部文字/ }).first(); await row.waitFor();
+    await row.screenshot({ path: path.join(root, '.runtime/visual-repair-round2/excerpt-record.png') });
+    await row.locator('.rule-source-link').first().click(); await page.getByRole('dialog').waitFor();
+    await page.getByRole('dialog').getByText(/助手复验，非人工确认/).waitFor();
+    await page.getByRole('dialog').getByText(/图中其余文字请打开原页查看/).waitFor();
+    await page.getByRole('dialog').getByRole('button', { name: '关闭原文依据', exact: true }).click();
+    await page.setViewportSize({ width: 390, height: 844 }); await overview.screenshot({ path: path.join(root, '.runtime/visual-repair-round2/mobile.png') });
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)); assert.deepEqual(errors, []);
+    const report = { pending: 0, reference: 1473, repaired: 339, partialRecords: partial, checked: ['live project counts', 'scope disclosure', 'corrected inequality', '6000 and 8000 digit recovery', 'source proof', 'mobile layout'], errors };
+    fs.writeFileSync(path.join(root, '.runtime/visual-repair-round2/browser-report.json'), JSON.stringify(report, null, 2)); console.log(JSON.stringify(report, null, 2));
+  } finally { await browser.close(); }
+})().catch(e => { console.error(e); process.exitCode = 1; });

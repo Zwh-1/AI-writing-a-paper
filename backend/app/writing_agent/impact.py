@@ -121,9 +121,17 @@ def resolve_manual(pid,sid,body):
     project_stale(sid);return reasons(pid,sid)
 
 def check_manifest(pid,manifest):
+    if manifest.get('live_input_versions') is not None:
+        from ..writing_live import validate
+        try:validate(pid,manifest,manifest.get('writing_task_id'))
+        except __import__('fastapi').HTTPException:return ['项目、资料、图表或格式版本']
     from ..knowledge_units import get as get_unit
     from fastapi import HTTPException
     unit_conflicts=[]
+    if manifest.get('knowledge_refs'):
+        from ..knowledge_lineage import validate_refs
+        try:validate_refs(pid,manifest['knowledge_refs'],remote=bool(manifest.get('remote')))
+        except HTTPException:unit_conflicts.append('图谱或Wiki依赖版本与权限')
     from ..document_reading import context as reading_context
     for identity,version in manifest.get('document_reading_versions',{}).items():
         try:

@@ -30,8 +30,50 @@ def freeze(pid):
         material_uses=[dict(x) for x in c.execute('SELECT u.* FROM file_usage_additions u JOIN files f ON f.id=u.file_id WHERE f.project_id=?',(pid,))]
         material_profiles=[dict(x) for x in c.execute('SELECT sp.* FROM file_source_profiles sp JOIN files f ON f.id=sp.file_id WHERE f.project_id=?',(pid,))]
         reading_reviews=[dict(x) for x in c.execute("SELECT * FROM audit WHERE project_id=? AND action='human_knowledge_citation_review' ORDER BY id",(pid,))]
+        from .documents import nodes
+        evidence_ids={eid for revision in revisions.values() for node in nodes(db.loads(revision['document'],{})) for eid in node.get('attrs',{}).get('evidenceIds',[])}
+        project_evidence={identity:dict(c.execute('SELECT * FROM evidence_items WHERE id=? AND project_id=?',(identity,pid)).fetchone()) for identity in evidence_ids if c.execute('SELECT id FROM evidence_items WHERE id=? AND project_id=?',(identity,pid)).fetchone()}
+        graph_wiki=freeze_knowledge(c,pid,revisions)
         c.commit()
-    return {'project':project,'sections':sections,'revisions':revisions,'references':refs,'citations':cites,'artifacts':artifacts,'package':dict(package) if package else None,'settings':settings,'findings':findings,'facts':facts,'file_versions':files,'knowledge_units':knowledge_units,'knowledge_links':knowledge_links,'knowledge_claim_checks':knowledge_checks,'document_readings':reading_records,'citation_reading_links':reading_links,'material_usages':material_uses,'material_profiles':material_profiles,'reading_citation_reviews':reading_reviews,'created_at':db.now()}
+    return {'project':project,'sections':sections,'revisions':revisions,'references':refs,'citations':cites,'artifacts':artifacts,'package':dict(package) if package else None,'settings':settings,'findings':findings,'facts':facts,'file_versions':files,'knowledge_units':knowledge_units,'knowledge_links':knowledge_links,'knowledge_claim_checks':knowledge_checks,'document_readings':reading_records,'citation_reading_links':reading_links,'material_usages':material_uses,'material_profiles':material_profiles,'reading_citation_reviews':reading_reviews,'project_evidence':project_evidence,'graph_wiki':graph_wiki,'created_at':db.now()}
+
+def freeze_knowledge(connection,pid,revisions):
+    from .documents import nodes
+    queue=[]
+    for revision in revisions.values():
+        for node in nodes(db.loads(revision['document'],{})):
+            attrs=node.get('attrs',{})
+            queue.extend(('assertion',cid) for cid in attrs.get('knowledgeClaimIds',[]))
+            queue.extend(('wiki_version',vid) for vid in attrs.get('wikiVersionIds',[]))
+            queue.extend(('wiki_block',bid) for bid in attrs.get('wikiBlockIds',[]))
+        if revision.get('task_id'):
+            for run in connection.execute('SELECT manifest FROM generation_runs WHERE task_id=? AND project_id=?',(revision['task_id'],pid)):
+                manifest=db.loads(run['manifest'],{})
+                queue.extend((r['type'],r['id']) for r in manifest.get('knowledge_refs',[]))
+    tables={'assertion':('kg_assertions','claim_version_id'),'wiki_version':('wiki_versions','id'),'wiki_block':('wiki_blocks','id'),'entity_version':('kg_entity_versions','id'),'observation':('knowledge_observations','id'),'artifact':('knowledge_artifacts','id')}
+    objects=[];dependencies=[];seen=set()
+    while queue:
+        kind,identity=queue.pop(0)
+        if (kind,identity) in seen:continue
+        seen.add((kind,identity))
+        if len(seen)>10000:raise ValueError('知识引用追溯超过导出范围，请缩小导出范围')
+        if kind not in tables:continue
+        table,key=tables[kind]
+        row=connection.execute('SELECT b.*,v.project_id,v.page_id FROM wiki_blocks b JOIN wiki_versions v ON v.id=b.version_id WHERE b.id=? AND v.project_id=?',(identity,pid)).fetchone() if kind=='wiki_block' else connection.execute(f'SELECT * FROM {table} WHERE {key}=? AND project_id=?',(identity,pid)).fetchone()
+        if not row:raise ValueError('正文知识引用缺少所属项目的历史对象')
+        item=dict(row)
+        if kind=='assertion':
+            claim=connection.execute('SELECT proposition_json FROM claim_versions WHERE id=?',(identity,)).fetchone();item['proposition']=db.loads(claim['proposition_json'],{})
+            item['assessments']=[dict(r) for r in connection.execute('SELECT * FROM kg_support_assessments WHERE claim_version_id=?',(identity,))]
+        if kind=='wiki_version':
+            item['blocks']=[dict(r) for r in connection.execute('SELECT * FROM wiki_blocks WHERE version_id=? ORDER BY position',(identity,))]
+        objects.append({'type':kind,'id':identity,'snapshot':item})
+        if kind=='wiki_block':
+            item['sources']=[dict(r) for r in connection.execute('SELECT * FROM wiki_links WHERE block_id=?',(identity,))]
+            queue.extend((r['target_type'],r['target_id']) for r in item['sources'])
+        for dependency in connection.execute('SELECT * FROM knowledge_dependencies WHERE project_id=? AND downstream_type=? AND downstream_id=?',(pid,kind,identity)):
+            d=dict(dependency);dependencies.append(d);queue.append((d['upstream_type'],d['upstream_id']))
+    return {'format':'knowledge-writing-trace.v1','objects':objects,'dependencies':dependencies,'complete':True,'note':'与导出正文同一只读事务的知识历史快照，不自动证明支持性'}
 
 def check_docx(path,fmt,section_index=None):
     from docx import Document
@@ -45,7 +87,9 @@ def check_docx(path,fmt,section_index=None):
         add(f'section_{i+1}.width_mm',sec.page_width.mm,210,.1);add(f'section_{i+1}.height_mm',sec.page_height.mm,297,.1)
         for side in ('top','bottom','left','right'):add(f'section_{i+1}.margin_{side}_mm',getattr(sec,side+'_margin').mm,fmt['margin_'+side],.1)
     normal=doc.styles['Normal'];add('body.font_size_pt',normal.font.size.pt if normal.font.size else None,fmt['font_size'],.01);add('body.latin_font',normal.font.name,fmt['latin_font'])
-    rfonts=normal.element.get_or_add_rPr().find(qn('w:rFonts'));add('body.east_asian_font',rfonts.get(qn('w:eastAsia')) if rfonts is not None else None,fmt['font']);add('body.line_spacing',normal.paragraph_format.line_spacing,fmt['line_spacing'],.01)
+    rfonts=normal.element.get_or_add_rPr().find(qn('w:rFonts'));add('body.east_asian_font',rfonts.get(qn('w:eastAsia')) if rfonts is not None else None,fmt['font'])
+    if fmt.get('line_spacing_points'):add('body.line_spacing_pt',getattr(normal.paragraph_format.line_spacing,'pt',None),fmt['line_spacing_points'],.01)
+    else:add('body.line_spacing',normal.paragraph_format.line_spacing,fmt['line_spacing'],.01)
     ind=normal.element.get_or_add_pPr().find(qn('w:ind'));actual=float(ind.get(qn('w:firstLineChars')))/100 if ind is not None and ind.get(qn('w:firstLineChars')) else None;add('body.first_line_chars',actual,fmt['first_line_chars'],.01)
     return {'checks':result,'pass':sum(x['result']=='pass' for x in result),'fail':sum(x['result']=='fail' for x in result),'visual_verification':'unknown','page_count_verification':'unknown'}
 

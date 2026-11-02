@@ -24,6 +24,13 @@ if __name__=='__main__':
         from app.retrieval import model_instance,DEFAULT_MODEL
         model_instance(sys.argv[2] if len(sys.argv)>2 else DEFAULT_MODEL,download=True)
         print('Local neural model is ready.')
+    elif mode=='portable-resources':
+        from app.portable_resources import prepare
+        raise SystemExit(1 if prepare()['state']=='failed' else 0)
+    elif mode=='portable-resources-start':
+        import json
+        from app.portable_resources import start_background
+        print(json.dumps(start_background(),ensure_ascii=False))
     elif mode=='remote-ai-budget':
         from app import db
         import math

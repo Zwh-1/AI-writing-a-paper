@@ -1,6 +1,13 @@
 main.references-main {
-  padding: 40px 44px 56px;
+  padding: 32px 36px 48px;
 }
+.references-workspace > [role="tabpanel"] { scroll-margin-top:75px; min-width:0; }
+.reference-evidence-switch { display:flex; flex-wrap:wrap; gap:8px; margin:0 0 16px; }
+.reference-evidence-switch [aria-pressed="true"] { background:#e7f1eb; color:#275e48; border-color:#bcd4c5; }
+.references-workspace > .workspace-tabs { flex-wrap:wrap; }
+.references-workspace > .workspace-tabs > button { flex:1 1 auto; min-width:0; }
+.references-workspace .reference-row-actions { max-width:260px; gap:8px; }
+.references-workspace .reference-row-actions .btn { min-height:34px; padding:7px 10px; font-size:12px; }
 .references-workspace {
   min-width: 0;
 }
@@ -640,5 +647,33 @@ main.references-main {
   }
   .reference-dropzone {
     padding: 20px 14px;
+  }
+}
+.literature-refresh-panel {
+  min-width: 0;
+}
+.literature-refresh-files {
+  max-height: 380px;
+  overflow: auto;
+  margin-top: 12px;
+}
+.literature-refresh-files article {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px 0;
+  border-top: 1px solid var(--border, #dedbd2);
+}
+.literature-refresh-files article > div {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.literature-refresh-files article > button {
+  flex-shrink: 0;
+}
+@media (max-width: 700px) {
+  .literature-refresh-files article {
+    flex-direction: column;
   }
 }

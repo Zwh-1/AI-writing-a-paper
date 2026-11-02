@@ -25,7 +25,8 @@ def resolve_config(configuration):
     if 'reconcile_billing' in configuration:
         if type(configuration['reconcile_billing']) is not bool:fail('INVALID_PROFILE','账单核对开关无效')
         cfg['reconcile_billing']=configuration['reconcile_billing']
-    return cfg,key
+    from ..summary_billing import priced_config
+    return priced_config(cfg,key),key
 
 def fingerprint(cfg,key=None):
     from . import prompts

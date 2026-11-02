@@ -1,7 +1,7 @@
 import json,os
 import httpx,pytest
 from test_workbench import client,project,file
-from app import db,security,provider,tasks,material_summary as summary,summary_billing as billing
+from app import db,security,provider,tasks,material_summary as summary,summary_billing as billing,summary_billing
 
 def seed(pid,identity='billing-secret',status='completed',input_tokens=100,output_tokens=50,legacy=False):
     task=tasks.enqueue(pid,'material_summary',{'file_id':'billing-fixture-'+db.uid()});rid=db.uid()
@@ -31,6 +31,25 @@ def test_reconciles_exact_scope_without_faking_individual_cost(client,monkeypatc
     assert db.one('SELECT * FROM generation_billing_groups')['currency']=='USD'
     assert billing.reconcile(p)['reconciled']
     assert db.one('SELECT COUNT(*) n FROM generation_billing_group_runs')['n']==1
+
+
+def test_primary_reconciliation_uses_primary_credential_and_account_slot(client,monkeypatch):
+    setup(monkeypatch)
+    monkeypatch.delenv('PAPER_API_KEY',raising=False)
+    monkeypatch.delenv('PAPER_API_KEY_FILE',raising=False)
+    monkeypatch.setattr(provider,'get_key',lambda:'billing-secret')
+    db.set_setting('provider',summary.config())
+    credential=security.DATA/'credential.dpapi'
+    credential.write_bytes(b'fixture-key-file-only-used-for-timestamp')
+    old=credential.stat().st_mtime-60
+    os.utime(credential,(old,old))
+    pid=project(client);seed(pid,legacy=True)
+    summary_account={'sentinel':'summary-account-is-independent'}
+    db.set_setting('material_summary_account_usage',summary_account)
+    result=billing.reconcile(pid,profile='primary')
+    assert result['reconciled'] and result['amount']==0.02
+    assert db.setting('account_usage')['unit']=='USD'
+    assert db.setting('material_summary_account_usage')==summary_account
 
 @pytest.mark.parametrize('problem',['count','input','output','currency','key','active','negative','missing_unit','nan'])
 def test_mismatch_keeps_reservations(client,monkeypatch,problem):
@@ -90,6 +109,20 @@ def test_queue_position_and_batch_status(client,monkeypatch):
     assert summary.status(a['id'])['task']['queue_ahead']==0
     assert summary.status(b['id'])['task']['queue_ahead']==1
     data=client.get('/api/v1/projects/'+p+'/materials/summary-status').json();assert data['totals']['queued']==2
+
+
+def test_batch_status_reads_project_budget_once_for_all_files(client,monkeypatch):
+    p=project(client)
+    originals=[file(client,p,f'第{i}份本地资料。') for i in range(8)]
+    calls=[]
+    snapshot={'limit':20,'used':3,'available':17,'unknown_calls':0,'currency':'USD'}
+    monkeypatch.setattr(summary_billing,'budget',lambda project_id,reservation=0:(calls.append((project_id,reservation)) or snapshot))
+    response=client.get(f'/api/v1/projects/{p}/materials/summary-status')
+    assert response.status_code==200,response.text
+    result=response.json()
+    assert len(result['files'])==len(originals)
+    assert result['budget']==snapshot
+    assert len(calls)==1 and calls[0][0]==p
 
 
 def test_unknown_status_not_repeated_by_batch(client,monkeypatch):

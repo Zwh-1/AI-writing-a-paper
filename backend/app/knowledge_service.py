@@ -5,19 +5,36 @@ from . import db, security, knowledge_units as units
 
 
 def source_is_excluded(pid,source_id):
+    if source_id in db.setting('document_observation_supersessions',{}):return True
     source=db.one('SELECT s.file_id,p.page_number FROM sources s JOIN files f ON f.id=s.file_id LEFT JOIN pages p ON p.id=s.page_id WHERE s.id=? AND f.project_id=?',(source_id,pid))
     if not source:return False
     return bool(db.one("SELECT u.id FROM knowledge_units u JOIN knowledge_parses p ON p.id=u.parse_id JOIN knowledge_heads h ON h.parse_id=p.id WHERE p.project_id=? AND p.file_id=? AND u.review_state='excluded' AND (json_extract(u.locator,'$.page')=? OR EXISTS(SELECT 1 FROM json_each(u.locator,'$.segments') segment WHERE json_extract(segment.value,'$.locator.page')=?)) LIMIT 1",(pid,source['file_id'],source['page_number'],source['page_number'])))
 
 
 def eligible(pid, remote=False, collection='all'):
-    all_rows = units.list_units(pid, state='all', _all=True)['items']
-    return [r for r in all_rows if r['current'] and r['review_state'] != 'excluded'
-            and (collection != 'reviewed' or r['review_state'] == 'reviewed' and not r['open_disputes'])
-            and (not remote or security.file_allows_remote(r['file_id'], pid))]
+    # Ranking needs the current unit and its locator, not every unit's complete
+    # dispute history and claim reviews. Decorate only the originals actually read.
+    from .material_policy import research_sql
+    rows=db.rows("SELECT u.*,p.project_id,p.file_id,p.file_hash,p.input_hash,p.engine,p.strategy,f.name,f.extension,f.role,(SELECT COUNT(*) FROM knowledge_disputes d WHERE d.unit_id=u.id AND d.state='open') open_disputes FROM knowledge_units u JOIN knowledge_parses p ON p.id=u.parse_id JOIN knowledge_heads h ON h.parse_id=p.id JOIN files f ON f.id=p.file_id WHERE p.project_id=? AND f.active=1 AND u.review_state!='excluded' AND "+research_sql()+" ORDER BY u.id",(pid,))
+    current={};permitted={};excluded={};result=[]
+    with units.cache_inputs():
+        for row in rows:
+            fid=row['file_id']
+            if fid not in current:
+                original=db.one('SELECT * FROM files WHERE id=?',(fid,));current[fid]=units.parse_current(row,original)
+                permitted[fid]=not remote or security.file_allows_remote(fid,pid)
+                excluded[fid]={r['page_number'] for r in db.rows("SELECT page_number FROM pages WHERE file_id=? AND review_state='not_applicable'",(fid,))}
+            if not current[fid] or not permitted[fid] or collection=='reviewed' and (row['review_state']!='reviewed' or row['open_disputes']):continue
+            locator=db.loads(row['locator'],{})
+            pages={locator.get('page',1)}|{s.get('locator',{}).get('page') for s in locator.get('segments',[])}
+            if pages&excluded[fid]:continue
+            result.append({**row,'locator':locator,'current':True})
+    return result
 
 
-def search(pid, query, limit=10, remote=False, collection='all', include_units=True):
+@db.read_session()
+@units.cache_inputs()
+def search(pid, query, limit=10, remote=False, collection='all', include_units=True,file_ids=None):
     started=time.perf_counter()
     from . import reference_knowledge, parsers, retrieval, model_install
     from fastapi import HTTPException
@@ -26,12 +43,17 @@ def search(pid, query, limit=10, remote=False, collection='all', include_units=T
         from fastapi import HTTPException
         raise HTTPException(422, '知识库范围无效')
     available = eligible(pid, remote, collection)
+    if file_ids:
+        from .knowledge_lineage import descendants_of_files
+        descendants_of_files(pid,file_ids)
+        available=[u for u in available if u['file_id'] in file_ids]
     cfg = retrieval.config(pid)
     combined=bool(available and include_units and collection!='originals')
-    original = reference_knowledge.search(pid, query, min(100,max(limit,int(cfg['candidate_k']))) if combined else limit, remote,**({'rerank_override':'fusion'} if combined else {}))
+    original = reference_knowledge.search(pid, query, min(100,max(limit,int(cfg['candidate_k']))) if combined else limit, remote,**({'file_ids':file_ids} if file_ids else {}),**({'rerank_override':'fusion'} if combined else {}))
     by_id = {r['id']: r for r in available}
     raw = []
     for hit in original['items']:
+        if file_ids and hit['file_id'] not in file_ids:continue
         if (remote or collection!='originals') and source_is_excluded(pid,hit['id']):continue
         related = [u for u in available if u['file_id'] == hit['file_id'] and u['locator'].get('page') == hit.get('page_number') and
                    (u['locator'].get('source_id') == hit['id'] or hit['text'].strip() in u['text'] or u['text'].strip() in hit['text'])]
@@ -49,13 +71,13 @@ def search(pid, query, limit=10, remote=False, collection='all', include_units=T
         ranked = [r for r in db.rows('SELECT ft.unit_id,bm25(knowledge_unit_fts) AS rank FROM knowledge_unit_fts ft JOIN knowledge_units u ON u.id=ft.unit_id JOIN knowledge_parses p ON p.id=u.parse_id JOIN knowledge_heads h ON h.parse_id=p.id WHERE knowledge_unit_fts MATCH ? AND p.project_id=? ORDER BY rank LIMIT 500', (match, pid)) if r['unit_id'] in by_id][:100]
     scores = {r['unit_id']: 1 / (61 + i) for i, r in enumerate(ranked)}
     cfg = retrieval.config(pid)
-    if by_id and model_install.status(cfg['model'])['ready']:
+    if by_id and db.setting('reference_knowledge:'+pid,{}).get('semantic_enabled',True) and model_install.status(cfg['model'])['ready']:
         namespace = retrieval.model_key(cfg['model'])
         vector_rows = [r for r in db.rows('SELECT v.*,ch.text_hash AS current_hash FROM knowledge_unit_vectors v JOIN knowledge_unit_chunks ch ON ch.id=v.chunk_id JOIN knowledge_units u ON u.id=v.unit_id JOIN knowledge_parses p ON p.id=u.parse_id WHERE p.project_id=? AND v.model=?', (pid, namespace)) if r['unit_id'] in by_id and r['text_hash'] == r['current_hash']]
         if vector_rows:
             try:
                 import numpy as np
-                q = retrieval.embed([query], cfg['model'])[0]; dense = []
+                q = retrieval.query_embedding(query, cfg['model']); dense = []
                 for row in vector_rows:
                     v = np.frombuffer(row['vector'], dtype=np.float32)
                     if len(v) == len(q) and np.isfinite(v).all() and float(np.linalg.norm(v)):
@@ -98,8 +120,8 @@ def search(pid, query, limit=10, remote=False, collection='all', include_units=T
                 rank_inputs.append({**hit,'text':text})
             try:
                 scored=retrieval.cross_encoder_rerank(query,rank_inputs,cfg['cross_encoder'])
-                result=[{**by_identifier[r['id']],'rerank_score':r['rerank_score'],'rerank_rank':r['rerank_rank']} for r in scored]
-                pipeline['rerank']={'status':'completed','type':'cross_encoder','model':cfg['cross_encoder'],'scored':len(scored),'input_scope':'index_excerpt_parent_evidence_read_separately'}
+                result=[{**by_identifier[r['id']],'rerank_score':r['rerank_score'],'rerank_rank':r['rerank_rank'],'rerank_cache_hit':r.get('rerank_cache_hit',False)} for r in scored]
+                pipeline['rerank']={'status':'completed','type':'cross_encoder','model':cfg['cross_encoder'],'scored':len(scored),'cache_hits':sum(bool(r.get('rerank_cache_hit')) for r in scored),'input_scope':'index_excerpt_parent_evidence_read_separately'}
             except Exception as error:
                 pipeline['rerank']['status']='failed';original.setdefault('warnings',[]).append('证据单元重排未完成，保留融合排序：'+str(error))
         else:pipeline['rerank']['status']='unavailable'
@@ -134,9 +156,9 @@ def read_source(pid, source_id, remote=False, max_chars=16000):
     return {**item, 'status': 'read', 'complete': False, 'scope': 'legacy_fragment_only', 'issues': ['structure_not_built'], 'semantic_support': 'not_checked', 'knowledge_unit_id': None}
 
 
-def prepare_writing(pid, query, sid, limit=8):
-    from .document_preparation import prepare
-    return prepare(pid,query,sid,limit)
+def prepare_writing(pid, query, sid, limit=8, budget_bytes=None):
+    from .knowledge_router import prepare_writing as prepare
+    return prepare(pid,query,sid,limit,budget_bytes=budget_bytes)
 
 
 def for_model(read):

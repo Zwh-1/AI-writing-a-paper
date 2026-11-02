@@ -50,7 +50,7 @@ export default function GptFallbackSettings({ pid }: { pid: string }) {
         <label className="checkbox"><input type="checkbox" checked={cfg.enabled} onChange={(e) => setCfg({ ...cfg, enabled: e.target.checked })} />启用 GPT 备选</label>
         <label className="checkbox"><input type="checkbox" checked={cfg.supports_images} onChange={(e) => setCfg({ ...cfg, supports_images: e.target.checked })} />所选 GPT 模型支持图片输入</label>
         <details className="mb"><summary>GPT 输出与预算</summary><div className="form-grid">{[
-          ["max_output_tokens", "GPT 输出上限"], ["timeout_seconds", "GPT 超时秒数"], ["max_request_cost", "GPT 单次未知费用预留"], ["input_price", "GPT 每百万输入 Token 单价"], ["output_price", "GPT 每百万输出 Token 单价"],
+          ["max_output_tokens", "GPT 输出上限"], ["timeout_seconds", "GPT 超时秒数"], ["max_request_cost", "GPT 单次费用上限"], ["input_price", "GPT 每百万输入 Token 单价"], ["output_price", "GPT 每百万输出 Token 单价"],
         ].map(([name, label]) => <label className="field" key={name}>{label}<input aria-label={label} type="number" step="any" min="0" value={cfg[name] ?? ""} onChange={(e) => setCfg({ ...cfg, [name]: e.target.value === "" ? null : Number(e.target.value) })} /></label>)}</div></details>
         <div className="actions"><button type="submit" className="btn primary">{busy ? "处理中…" : "保存 GPT 备选"}</button><button type="button" className="btn" onClick={() => void save(true)}>检测 GPT 模型</button><button type="button" className="btn" disabled={!pid || !saved?.ready || dirty} onClick={async () => {
           if (pending.current) return;

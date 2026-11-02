@@ -42,6 +42,7 @@
   position: sticky;
   top: 0;
   z-index: 10;
+  flex-wrap: wrap;
 }
 .workspace-tabs > button {
   display: flex;
@@ -225,6 +226,7 @@
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 4px;
     padding: 8px 0;
+    position: static;
   }
   .workspace-tabs > button {
     padding: 10px 8px;

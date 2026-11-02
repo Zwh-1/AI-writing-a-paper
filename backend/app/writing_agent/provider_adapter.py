@@ -36,9 +36,8 @@ def transport(system,user,cfg,images=None):
         if not choices:raise provider.ProviderError('模型没有返回候选',unknown=True)
         message=choices[0].get('message',{});text=message.get('content') or '';calls=[{'id':x.get('id'),'name':x.get('function',{}).get('name'),'arguments':x.get('function',{}).get('arguments','{}')} for x in message.get('tool_calls',[])];finish=choices[0].get('finish_reason');raw=data.get('usage',{});usage={'input_tokens':raw.get('prompt_tokens'),'output_tokens':raw.get('completion_tokens'),'raw':raw};items=[]
     envelope={'agent_transport':True,'text':text,'tool_calls':calls,'message':message,'items':items,'finish':finish,'reported_model':data.get('model')}
-    cost=None
-    if cfg.get('input_price') is not None and cfg.get('output_price') is not None and usage.get('input_tokens') is not None and usage.get('output_tokens') is not None:cost=(usage['input_tokens']*float(cfg['input_price'])+usage['output_tokens']*float(cfg['output_price']))/1000000
-    result={'text':db.dumps(envelope),'usage':usage,'cost':cost,'remote_id':data.get('id'),'request_hash':digest({'path':path,'body':body})}
+    cost=provider.usage_cost(cfg,usage)
+    result={'text':db.dumps(envelope),'usage':usage,'cost':cost,'remote_id':data.get('id'),'response_evidence':provider.response_evidence(r,data),'request_hash':digest({'path':path,'body':body})}
     if finish in ('length','incomplete','MAX_TOKENS'):raise provider.ProviderError('生成预算耗尽，保留不完整候选',response_result=result)
     if not text and not calls:raise provider.ProviderError('模型响应没有正文或工具调用',response_result=result)
     return result
@@ -116,6 +115,8 @@ def save_billing_interval(task_id,frame_hash,before,after,usage):
     proof=reconcile(before,after,usage)
     row=db.one("SELECT * FROM generation_runs WHERE task_id=? AND status IN ('completed','completed_invalid') AND json_extract(manifest,'$.agent_frame_hash')=? ORDER BY rowid DESC LIMIT 1",(task_id,frame_hash))
     if not row:return
+    from ..expense_evidence import append
+    append(row['project_id'],'interval_observation',{'before':before,'after':after,'usage':usage,'matched_proof':proof},row['id'])
     meta=db.loads(row['manifest'],{});meta['billing_interval_observation']={'before':before,'after':after,'matched':proof is not None}
     if proof:meta['billing_interval_proof']=proof;db.execute('UPDATE generation_runs SET cost=?,manifest=? WHERE id=?',(proof['amount'],db.dumps(meta),row['id']))
     else:db.execute('UPDATE generation_runs SET manifest=? WHERE id=?',(db.dumps(meta),row['id']))

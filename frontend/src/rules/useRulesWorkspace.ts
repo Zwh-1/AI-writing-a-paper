@@ -2,16 +2,29 @@ import { useEffect, useRef, useState } from "react";
 import { api } from "../client";
 import { useWorkspaceResource } from "../workspace/useWorkspaceResource";
 import type { Row, WorkspaceAction } from "../workspace/types";
+import { useSourceLocation } from "../workspace/sourceNavigation";
 
-export type RulesView = "catalog" | "automation" | "issues" | "publication";
+export type RulesView =
+  "catalog" | "sources" | "automation" | "issues" | "publication" | "knowledge";
 export function useRulesWorkspace(
   pid: string,
   tick: number,
   act: WorkspaceAction,
 ) {
   const resource = useWorkspaceResource<Row>(`/projects/${pid}/rules`, tick);
-  const [view, setView] = useState<RulesView>("catalog"),
-    [filter, setFilter] = useState("all");
+  const route = useSourceLocation(pid, "rules", "catalog");
+  const view: RulesView = [
+    "catalog",
+    "sources",
+    "automation",
+    "issues",
+    "publication",
+    "knowledge",
+  ].includes(route.location.view || "")
+    ? (route.location.view as RulesView)
+    : "catalog";
+  const setView = (view: RulesView) => route.update({ view });
+  const [filter, setFilter] = useState("all");
   const [catalogKey, setCatalogKey] = useState(0);
   const [editing, setEditing] = useState<Row | null>(null),
     [source, setSource] = useState<Row | null>(null),
@@ -83,6 +96,7 @@ export function useRulesWorkspace(
   };
   return {
     ...resource,
+    route,
     view,
     setView,
     filter,

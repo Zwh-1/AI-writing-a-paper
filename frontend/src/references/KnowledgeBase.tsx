@@ -10,6 +10,12 @@ import {
 import { api, send } from "../client";
 import WorkspaceDialog from "../workspace/WorkspaceDialog";
 import { useWorkspaceResource } from "../workspace/useWorkspaceResource";
+import {
+  ResearchColumns,
+  ResearchEmpty,
+  ReferenceInspector,
+  useReferenceTitle,
+} from "./ReferenceWorkbenchParts";
 import type { Row, WorkspaceAction } from "../workspace/types";
 
 type Resource = {
@@ -66,13 +72,17 @@ export function KnowledgeBasePanel({
   files,
   act,
   onSource,
+  fileId,
 }: {
   pid: string;
   knowledge: Resource;
   files: Row[];
   act: WorkspaceAction;
   onSource: SourceAction;
+  fileId?: string;
 }) {
+  const titleOf = useReferenceTitle();
+  const [selectedHit, setSelectedHit] = useState("");
   const [query, setQuery] = useState(""),
     [result, setResult] = useState<Row | null>(null),
     [searchedQuery, setSearchedQuery] = useState(""),
@@ -88,8 +98,15 @@ export function KnowledgeBasePanel({
     return () => window.clearInterval(timer);
   }, [active?.id, knowledge.load]);
   useEffect(() => () => request.current?.abort(), []);
+  useEffect(() => {
+    request.current?.abort();
+    lock.current = false;
+    setSearching(false);
+    setResult(null);
+    setSearchedQuery("");
+  }, [fileId, pid]);
   return (
-    <section className="panel reference-knowledge" aria-label="文献知识库">
+    <section className="reference-knowledge" aria-label="文献知识库">
       <div className="knowledge-heading">
         <div>
           <h2>
@@ -123,36 +140,6 @@ export function KnowledgeBasePanel({
           {active ? "索引处理中" : "更新知识库"}
         </button>
       </div>
-      <div className="knowledge-metrics" aria-label="知识库索引统计">
-        <span>
-          原文 <strong>{knowledge.data?.documents ?? "—"}</strong> 篇
-        </span>
-        <span>
-          知识片段{" "}
-          <strong>
-            {knowledge.data?.chunks?.toLocaleString("zh-CN") ?? "—"}
-          </strong>
-        </span>
-        <span>
-          向量索引{" "}
-          <strong>
-            {knowledge.data?.vectors?.toLocaleString("zh-CN") ?? "—"}
-          </strong>{" "}
-          / {knowledge.data?.chunks?.toLocaleString("zh-CN") ?? "—"}
-        </span>
-        <span className="knowledge-mode">
-          {knowledge.data?.mode === "hybrid"
-            ? "BM25 + 向量 · RRF 融合"
-            : "BM25 全文检索"}
-        </span>
-        {knowledge.data?.rerank_enabled && (
-          <span className="knowledge-mode">
-            {knowledge.data?.reranker_ready
-              ? "Cross-Encoder 重排已就绪"
-              : "重排模型待安装"}
-          </span>
-        )}
-      </div>
       {active && (
         <p className="knowledge-progress" role="status">
           <LoaderCircle size={15} className="spin" />
@@ -167,132 +154,226 @@ export function KnowledgeBasePanel({
           </button>
         </div>
       )}
-      <form
-        className="knowledge-search"
-        onSubmit={async (event) => {
-          event.preventDefault();
-          if (lock.current || !query.trim()) return;
-          lock.current = true;
-          setSearching(true);
-          setError("");
-          request.current?.abort();
-          const controller = new AbortController();
-          request.current = controller;
-          try {
-            const found = await api(`/projects/${pid}/knowledge-base/search`, {
-              method: "POST",
-              body: JSON.stringify({ query: query.trim(), limit: 10 }),
-              signal: controller.signal,
-            });
-            setResult(found);
-            setSearchedQuery(query.trim());
-          } catch (failure) {
-            if (!controller.signal.aborted)
-              setError((failure as Error).message);
-          } finally {
-            lock.current = false;
-            if (!controller.signal.aborted) setSearching(false);
-          }
-        }}
-      >
-        <label>
-          <Search size={18} />
-          <input
-            aria-label="检索文献知识库"
-            placeholder="检索原文内容，例如：灵魂绑定代币如何用于学历验证？"
-            value={query}
-            maxLength={5000}
-            disabled={searching}
-            onChange={(event) => setQuery(event.target.value)}
-          />
-        </label>
-        <button
-          type="submit"
-          className="btn primary"
-          disabled={searching || !query.trim()}
-        >
-          {searching ? (
-            <LoaderCircle size={16} className="spin" />
-          ) : (
-            <Search size={16} />
-          )}
-          {searching ? "正在检索…" : "检索知识库"}
-        </button>
-      </form>
       {error && (
         <p className="error-text" role="alert">
           {error}
         </p>
       )}
-      {result && (
-        <div className="knowledge-results" aria-label="知识库检索结果">
-          <p className="knowledge-result-summary" role="status">
-            “{searchedQuery}” · 返回 {result.items.length} 个原文片段 ·{" "}
-            {result.reranker === "cross_encoder"
-              ? "BM25 + 向量 → RRF → Cross-Encoder 重排"
-              : result.mode === "neural_keyword_rrf"
-                ? "BM25 + 向量 → RRF 融合"
-                : "BM25 全文检索"}
-          </p>
-          {result.pipeline && (
-            <details className="knowledge-pipeline-details">
-              <summary>查看检索过程</summary>
-              <div className="knowledge-pipeline-stages">
-                <span>
-                  BM25 召回{" "}
-                  <strong>{result.pipeline.bm25?.candidates ?? 0}</strong>
-                </span>
-                <span>
-                  向量召回{" "}
-                  <strong>{result.pipeline.dense?.candidates ?? 0}</strong>
-                </span>
-                <span>
-                  RRF 候选{" "}
-                  <strong>{result.pipeline.rrf?.candidates ?? 0}</strong>
-                </span>
-                <span>
-                  Cross-Encoder 重排{" "}
-                  <strong>
-                    {result.pipeline.rerank?.type === "cross_encoder" &&
-                    result.pipeline.rerank?.status === "completed"
-                      ? result.pipeline.rerank.scored
-                      : 0}
-                  </strong>
-                </span>
-              </div>
-              {result.timings_ms?.total != null && (
-                <small>
-                  本次检索耗时 {(result.timings_ms.total / 1000).toFixed(2)} 秒
-                </small>
-              )}
-            </details>
-          )}
-          {result.warnings?.map((warning: string) => (
-            <p className="muted" key={warning}>
-              {warning}
-            </p>
-          ))}
-          {result.items.length ? (
-            <div className="knowledge-result-list">
-              {result.items.map((item: Row) => (
-                <KnowledgeHit
-                  key={item.id}
-                  item={item}
-                  files={files}
-                  onSource={onSource}
+      <ResearchColumns
+        className="fulltext-workbench"
+        directory={
+          <>
+            <div className="research-directory-heading">
+              <h3>原文检索</h3>
+              <span>{result?.items.length ?? 0} 条结果</span>
+            </div>
+            <form
+              className="knowledge-search"
+              onSubmit={async (event) => {
+                event.preventDefault();
+                if (lock.current || !query.trim()) return;
+                lock.current = true;
+                setSearching(true);
+                setError("");
+                request.current?.abort();
+                const controller = new AbortController();
+                request.current = controller;
+                try {
+                  const found = await api(
+                    `/projects/${pid}/knowledge-base/search`,
+                    {
+                      method: "POST",
+                      body: JSON.stringify({
+                        query: query.trim(),
+                        limit: 10,
+                        file_ids: fileId ? [fileId] : undefined,
+                      }),
+                      signal: controller.signal,
+                    },
+                  );
+                  setSelectedHit("");
+                  setResult(found);
+                  setSearchedQuery(query.trim());
+                } catch (failure) {
+                  if (!controller.signal.aborted)
+                    setError((failure as Error).message);
+                } finally {
+                  lock.current = false;
+                  if (!controller.signal.aborted) setSearching(false);
+                }
+              }}
+            >
+              <label>
+                <Search size={18} />
+                <input
+                  aria-label="检索文献知识库"
+                  placeholder="检索原文内容，例如：灵魂绑定代币如何用于学历验证？"
+                  value={query}
+                  maxLength={5000}
+                  disabled={searching}
+                  onChange={(event) => setQuery(event.target.value)}
                 />
+              </label>
+              <button
+                type="submit"
+                className="btn primary"
+                disabled={searching || !query.trim()}
+              >
+                {searching ? (
+                  <LoaderCircle size={16} className="spin" />
+                ) : (
+                  <Search size={16} />
+                )}
+                {searching ? "正在检索…" : "检索知识库"}
+              </button>
+            </form>
+
+            <p className="research-directory-help">
+              输入问题或文献中的术语，定位相关原文。
+            </p>
+            <div className="fulltext-result-directory">
+              {result?.items.map((item: Row, index: number) => (
+                <button
+                  key={item.id}
+                  className="research-directory-item"
+                  aria-pressed={
+                    item.id === (selectedHit || result.items[0]?.id)
+                  }
+                  onClick={() => setSelectedHit(item.id)}
+                >
+                  <small>
+                    {index + 1} · 第 {item.page_number || "—"} 页
+                  </small>
+                  <strong>{item.reference_title || titleOf(item)}</strong>
+                  <p className="ek-directory-excerpt">
+                    {item.text?.slice(0, 120)}
+                  </p>
+                </button>
               ))}
             </div>
-          ) : (
-            <div className="knowledge-empty">
-              <BookOpen size={26} />
-              <p>
-                没有找到匹配的原文片段。可换用文献中的术语，或更新知识库索引。
+            {result && !result.items.length && (
+              <p className="research-directory-empty">
+                没有找到匹配的片段，试试其他关键词。
               </p>
-            </div>
-          )}
-        </div>
-      )}
+            )}
+          </>
+        }
+        inspector={
+          <>
+            <ReferenceInspector title="当前检索">
+              <p>{searchedQuery || "尚未提交检索问题"}</p>
+              {result && (
+                <p>
+                  找到 {result.items.length}{" "}
+                  个原文片段。选择左侧结果阅读完整内容。
+                </p>
+              )}
+              <p>检索排序用于定位，论断是否成立还需要对照原文。</p>
+            </ReferenceInspector>
+            <ReferenceInspector title="知识库状态">
+              <details>
+                <summary>查看索引与检索过程</summary>{" "}
+                <div className="knowledge-metrics" aria-label="知识库索引统计">
+                  <span>
+                    原文 <strong>{knowledge.data?.documents ?? "—"}</strong> 篇
+                  </span>
+                  <span>
+                    知识片段{" "}
+                    <strong>
+                      {knowledge.data?.chunks?.toLocaleString("zh-CN") ?? "—"}
+                    </strong>
+                  </span>
+                  <span>
+                    向量索引{" "}
+                    <strong>
+                      {knowledge.data?.vectors?.toLocaleString("zh-CN") ?? "—"}
+                    </strong>{" "}
+                    / {knowledge.data?.chunks?.toLocaleString("zh-CN") ?? "—"}
+                  </span>
+                  <span className="knowledge-mode">
+                    {knowledge.data?.mode === "hybrid"
+                      ? "BM25 + 向量 · RRF 融合"
+                      : "BM25 全文检索"}
+                  </span>
+                  {knowledge.data?.rerank_enabled && (
+                    <span className="knowledge-mode">
+                      {knowledge.data?.reranker_ready
+                        ? "Cross-Encoder 重排已就绪"
+                        : "重排模型待安装"}
+                    </span>
+                  )}
+                </div>
+                {result && (
+                  <>
+                    {result.pipeline && (
+                      <details className="knowledge-pipeline-details">
+                        <summary>查看检索过程</summary>
+                        <div className="knowledge-pipeline-stages">
+                          <span>
+                            BM25 召回{" "}
+                            <strong>
+                              {result.pipeline.bm25?.candidates ?? 0}
+                            </strong>
+                          </span>
+                          <span>
+                            向量召回{" "}
+                            <strong>
+                              {result.pipeline.dense?.candidates ?? 0}
+                            </strong>
+                          </span>
+                          <span>
+                            RRF 候选{" "}
+                            <strong>
+                              {result.pipeline.rrf?.candidates ?? 0}
+                            </strong>
+                          </span>
+                          <span>
+                            Cross-Encoder 重排{" "}
+                            <strong>
+                              {result.pipeline.rerank?.type ===
+                                "cross_encoder" &&
+                              result.pipeline.rerank?.status === "completed"
+                                ? result.pipeline.rerank.scored
+                                : 0}
+                            </strong>
+                          </span>
+                        </div>
+                        {result.timings_ms?.total != null && (
+                          <small>
+                            本次检索耗时{" "}
+                            {(result.timings_ms.total / 1000).toFixed(2)} 秒
+                          </small>
+                        )}
+                      </details>
+                    )}
+                    {result.warnings?.map((warning: string) => (
+                      <p key={warning}>{warning}</p>
+                    ))}
+                  </>
+                )}
+              </details>
+            </ReferenceInspector>
+          </>
+        }
+      >
+        {result?.items.length ? (
+          <div className="reference-document">
+            <span className="research-kicker">原文片段</span>
+            <KnowledgeHit
+              item={
+                result.items.find((item: Row) => item.id === selectedHit) ||
+                result.items[0]
+              }
+              files={files}
+              onSource={onSource}
+            />
+          </div>
+        ) : (
+          <ResearchEmpty title="从一个问题定位原文">
+            在左侧输入关键词，检索结果会保留文献题名、页码和回查入口。
+          </ResearchEmpty>
+        )}
+      </ResearchColumns>
     </section>
   );
 }

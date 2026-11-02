@@ -251,6 +251,8 @@ def set_validity(pid,eid,value):
     owned('evidence',eid,pid)
     if value not in ('current','stale','revoked','historical'):fail('INVALID_STATE','证据状态无效')
     db.execute('UPDATE evidence_items SET validity=? WHERE id=?',(value,eid))
+    from ..knowledge_lineage import changed as knowledge_changed
+    knowledge_changed(pid,'evidence',eid,'项目证据有效性变化')
     from .impact import changed
     changed(pid,'evidence',eid,'证据状态发生变化')
     return get(pid,eid)

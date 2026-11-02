@@ -34,6 +34,13 @@
               "type": "string"
             }
           },
+          "brief_points": {
+            "type": "array",
+            "description": "本次写作任务书中本段覆盖的内容点编号，取自 writing_brief.points 的 id",
+            "items": {
+              "type": "string"
+            }
+          },
           "preserve_node_id": {
             "type": "string"
           }

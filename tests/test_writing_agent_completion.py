@@ -41,9 +41,9 @@ def test_version_six_upgrades_without_resetting_rows(env,monkeypatch):
     db.set_setting('kept-user-value',{'text':'旧资料不能丢失'})
     assert db.one('PRAGMA user_version')['user_version']==6
     monkeypatch.setattr(migrations,'FILES',original_files);monkeypatch.setattr(migrations,'CURRENT',original_current);db.init();db.init()
-    assert db.one('PRAGMA user_version')['user_version']==9
+    assert db.one('PRAGMA user_version')['user_version']==original_current
     assert db.setting('kept-user-value')=={'text':'旧资料不能丢失'}
-    assert (directory/'migration-before-writing-v9.sqlite3').is_file()
+    assert (directory/f'migration-before-writing-v{original_current}.sqlite3').is_file()
     assert not db.rows('PRAGMA foreign_key_check')
 
 def test_commit_snapshot_is_distinct_from_dirty_working_tree(env):

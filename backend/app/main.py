@@ -9,6 +9,9 @@ from . import db,security,parsers,rules,documents,provider,tasks,reviews,exports
 from .config import ROOT,DATA,PORT,APP_VERSION,MAX_FILE
 from . import material_summary
 from . import model_routing
+from . import deepseek_pool
+from . import deepseek_profiles
+from .api.v2 import install as install_api_v2
 
 @asynccontextmanager
 async def lifespan(app):
@@ -18,28 +21,8 @@ async def lifespan(app):
     yield
 
 app=FastAPI(title='砚台 · 论文工作台',version=APP_VERSION,lifespan=lifespan)
-from .writing_agent.api import router as writing_agent_router
-app.include_router(writing_agent_router,prefix='/api/v1')
-from .ai_autopilot_api import router as ai_autopilot_router
-app.include_router(ai_autopilot_router,prefix='/api/v1')
-from .reference_library import router as reference_library_router
-app.include_router(reference_library_router,prefix='/api/v1')
-from .reference_knowledge import router as reference_knowledge_router
-app.include_router(reference_knowledge_router,prefix='/api/v1')
-from .knowledge_units import router as evidence_knowledge_router
-from .knowledge_imports import router as knowledge_imports_router
-app.include_router(evidence_knowledge_router,prefix='/api/v1')
-app.include_router(knowledge_imports_router,prefix='/api/v1')
-from .knowledge_evaluation import router as knowledge_evaluation_router
-app.include_router(knowledge_evaluation_router,prefix='/api/v1')
-from .document_reading import router as document_reading_router
-app.include_router(document_reading_router,prefix='/api/v1')
-from .paper_visuals import router as paper_visuals_router
-app.include_router(paper_visuals_router,prefix='/api/v1')
-from .image_generation import router as image_generation_router
-app.include_router(image_generation_router,prefix='/api/v1')
-from .figure_standards import router as figure_standards_router
-app.include_router(figure_standards_router,prefix='/api/v1')
+from .api.routers import mount as mount_api_routers
+mount_api_routers(app)
 from pydantic import ValidationError
 @app.exception_handler(ValidationError)
 async def writing_contract_error(request,error):
@@ -98,6 +81,11 @@ def patch_project(pid,body:dict):
             db.execute(f'UPDATE projects SET {key}=?,updated_at=? WHERE id=?',(val,db.now(),pid))
     if 'brief' in body: documents.fact_changed(pid,'brief')
     return project(pid)
+@app.get('/api/v1/projects/{pid}/budget')
+def project_budget(pid):
+    body_project(pid)
+    from .summary_billing import budget
+    return budget(pid)
 @app.get('/api/v1/projects/{pid}/files')
 def files(pid):
     body_project(pid)
@@ -214,6 +202,9 @@ def patch_file(fid,body:dict):
         db.execute('UPDATE sources SET kind=? WHERE file_id=? AND kind=?',(new_kind,fid,old_kind))
     from .reference_knowledge import sync_document
     sync_document(fid)
+    from .knowledge_lineage import changed as knowledge_changed,access_changed
+    if any(key in body and body[key]!=f[key] for key in ('role','active')):knowledge_changed(f['project_id'],'file',fid,'原件用途或有效状态变化')
+    if 'egress' in body and body['egress']!=f['egress']:access_changed(f['project_id'],fid)
     documents.fact_changed(f['project_id'],fid);return file_record(fid)
 @app.get('/api/v1/files/{fid}/download')
 def download_file(fid):
@@ -254,6 +245,9 @@ def review_page(page_id,body:dict):
     db.execute('UPDATE pages SET review_state=?,review_note=? WHERE id=?',(state,body.get('review_note',''),page_id));db.execute('UPDATE sources SET verified=? WHERE page_id=?',(int(state=='reviewed'),page_id))
     from .reference_knowledge import sync_document
     sync_document(p['file_id'])
+    if body.get('transcript') or state=='not_applicable' or p['review_state']=='not_applicable':
+        from .knowledge_lineage import changed as knowledge_changed
+        knowledge_changed(p['project_id'],'file',p['file_id'],'原页转录或适用范围变化')
     return page_detail(page_id)
 @app.post('/api/v1/pages/{page_id}/ocr')
 def ocr_page(page_id):
@@ -294,7 +288,9 @@ def rule_source(rid):
     if not r['source_id']:return {'source':None,'file':None,'page':None}
     source=db.one('SELECT * FROM sources WHERE id=?',(r['source_id'],))
     if not source:raise HTTPException(404,'规则原文已不存在')
-    return {'source':source,'file':file_record(source['file_id']),'page':page_detail(source['page_id']) if source['page_id'] else None}
+    from .rule_source_context import read
+    return {'source':source,'file':file_record(source['file_id']),'page':page_detail(source['page_id']) if source['page_id'] else None,
+            'reading_context':read(r,source)}
 @app.post('/api/v1/projects/{pid}/rules/extract')
 def extract_rules(pid): body_project(pid);return tasks.enqueue(pid,'extract_rules',{})
 @app.post('/api/v1/projects/{pid}/rules')
@@ -351,7 +347,28 @@ def batch_review_rules(pid,body:dict):
 def merge_duplicate_rules(pid,body:dict):
     from .rule_duplicates import merge
     body_project(pid)
-    return merge(pid,body.get('canonical_id'),body.get('duplicate_ids'))
+    return merge(pid,body.get('canonical_id'),body.get('duplicate_ids'),review_id=body.get('review_id'),expected_fingerprint=body.get('expected_fingerprint'))
+
+@app.post('/api/v1/projects/{pid}/rules/duplicates/review')
+def review_duplicate_rules(pid,body:dict):
+    from .duplicate_workflow import prepare
+    body_project(pid)
+    return prepare(pid,body.get('canonical_id'),body.get('duplicate_ids'))
+
+@app.post('/api/v1/projects/{pid}/rules/duplicates/adopt')
+def adopt_duplicate_review(pid,body:dict):
+    from .duplicate_workflow import adopt
+    body_project(pid)
+    if not isinstance(body.get('review_id'),str) or not isinstance(body.get('expected_fingerprint'),str):raise HTTPException(422,'请选择当前复核记录')
+    return adopt(pid,body['review_id'],body['expected_fingerprint'])
+
+@app.get('/api/v1/projects/{pid}/rules/duplicates/reviews/{review_id}')
+def get_duplicate_review(pid:str,review_id:str):
+    from .duplicate_workflow import review_key
+    body_project(pid)
+    value=db.setting(review_key(pid,review_id),{})
+    if not value:raise HTTPException(404,'重复资料复核记录不存在')
+    return value
 @app.post('/api/v1/projects/{pid}/rules/duplicates/{merge_id}/restore')
 def restore_duplicate_rules(pid,merge_id:int):
     from .rule_duplicates import restore
@@ -425,7 +442,8 @@ def set_locks(sid,body:dict):
     return {'node_ids':body.get('node_ids',[])}
 @app.post('/api/v1/sections/{sid}/writing-tasks')
 def create_writing(sid,body:dict,request:Request):
-    s=security.require_section(sid);body['section_id']=sid;p,_=tasks.writing_preflight(s['project_id'],body);body['rule_package_id']=p['rule_package_id']
+    s=security.require_section(sid)
+    body['section_id']=sid;p,_=tasks.writing_preflight(s['project_id'],body);body['rule_package_id']=p['rule_package_id']
     if s['kind']!='abstract_en':
         from .writing_continuity import status
         preview=status(s['project_id'],sid)
@@ -470,14 +488,18 @@ def add_reference(pid,body:dict):
     if fid and file_record(fid)['project_id']!=pid: raise HTTPException(422,'文献文件不属于项目')
     rid=db.uid();db.execute('INSERT INTO bibliography(id,project_id,metadata,file_id,verification,created_at) VALUES(?,?,?,?,?,?)',(rid,pid,db.dumps(body.get('metadata',body)),fid,body.get('verification','unverified'),db.now()));return db.one('SELECT * FROM bibliography WHERE id=?',(rid,))
 @app.patch('/api/v1/references/{rid}')
+@db.atomic
 def patch_reference(rid,body:dict):
     r=db.one('SELECT * FROM bibliography WHERE id=?',(rid,))
     if not r: raise HTTPException(404,'文献不存在')
     fid=body.get('file_id',r['file_id'])
     if fid and file_record(fid)['project_id']!=r['project_id']:raise HTTPException(422,'文献文件不属于项目')
     db.execute('INSERT INTO bibliography_revisions VALUES(?,?,?,?)',(db.uid(),rid,r['metadata'],db.now()))
+    from .writing_agent.impact import retain_existing
+    for consumer in db.rows('SELECT DISTINCT s.id FROM sections s JOIN citations c ON c.revision_id=s.current_revision_id WHERE s.project_id=? AND c.reference_id=?',(r['project_id'],rid)):retain_existing(r['project_id'],consumer['id'])
+    db.execute('UPDATE bibliography SET metadata=?,file_id=?,verification=?,revision=revision+1 WHERE id=?',(db.dumps(body.get('metadata',db.loads(r['metadata'],{}))),fid,body.get('verification',r['verification']),rid))
     documents.fact_changed(r['project_id'],rid)
-    db.execute('UPDATE bibliography SET metadata=?,file_id=?,verification=?,revision=revision+1 WHERE id=?',(db.dumps(body.get('metadata',db.loads(r['metadata'],{}))),fid,body.get('verification',r['verification']),rid));return db.one('SELECT * FROM bibliography WHERE id=?',(rid,))
+    return db.one('SELECT * FROM bibliography WHERE id=?',(rid,))
 @app.get('/api/v1/projects/{pid}/mentor-tasks')
 def mentor_tasks(pid): body_project(pid);return db.rows('SELECT * FROM mentor_tasks WHERE project_id=?',(pid,))
 @app.post('/api/v1/projects/{pid}/mentor-tasks')
@@ -541,8 +563,19 @@ def format_profile(pid): body_project(pid);return {'config':exports.format_confi
 @app.put('/api/v1/projects/{pid}/format')
 def save_format(pid,body:dict):
     body_project(pid);cfg={k:v for k,v in body.items() if k in exports.DEFAULT_FORMAT}
-    for k in ('font_size','line_spacing','first_line_chars','margin_top','margin_bottom','margin_left','margin_right'):
+    if cfg.get('line_spacing_points') is None:cfg.pop('line_spacing_points',None)
+    for k in ('font_size','line_spacing','line_spacing_points','first_line_chars','margin_top','margin_bottom','margin_left','margin_right'):
         if k in cfg and not 0<=float(cfg[k])<=100: raise HTTPException(422,'排版参数范围无效')
+        if k in cfg:cfg[k]=float(cfg[k])
+    if 'alignment' in cfg and cfg['alignment'] not in ('left','center','right','justify'):raise HTTPException(422,'段落对齐方式无效')
+    for key in ('font','latin_font','heading_font'):
+        if key in cfg and (not isinstance(cfg[key],str) or not cfg[key].strip() or len(cfg[key])>100):raise HTTPException(422,'请输入有效的字体名称')
+    if 'font_size' in cfg and not 4<=float(cfg['font_size'])<=72:raise HTTPException(422,'正文字号须为4至72磅')
+    if 'line_spacing' in cfg and not .5<=float(cfg['line_spacing'])<=4:raise HTTPException(422,'倍数行距须为0.5至4；固定行距请填写磅值')
+    from .paper_format import resolve
+    effective=resolve(pid,settings=cfg)['config']
+    if effective.get('line_spacing_points') and effective['line_spacing_points']<effective['font_size']:raise HTTPException(422,'固定行距不能小于正文字号，以免裁切文字')
+    if effective['margin_left']+effective['margin_right']>=195 or effective['margin_top']+effective['margin_bottom']>=280:raise HTTPException(422,'页边距没有为正文保留足够空间')
     db.set_setting('format:'+pid,cfg);return format_profile(pid)
 @app.post('/api/v1/projects/{pid}/template')
 async def upload_template(pid:str,file:UploadFile=File(...)):
@@ -573,7 +606,7 @@ def download_backup(bid):
 async def restore_backup(file:UploadFile=File(...)): return exports.restore_backup(await file.read(2_000_000_001))
 @app.get('/api/v1/tasks')
 def task_list(project_id:str|None=None,summary:bool=False,active_only:bool=False):
-    fields='id,project_id,kind,status,phase,progress,error,cancel_requested,attempt,created_at,updated_at' if summary else '*'
+    fields='id,project_id,kind,status,phase,progress,error,cancel_requested,attempt,created_at,updated_at,json_extract(payload,\'$.acknowledged_at\') AS acknowledged_at,json_extract(payload,\'$.acknowledged_note\') AS acknowledged_note' if summary else '*'
     clauses=[];args=[]
     if project_id:clauses.append('project_id=?');args.append(project_id)
     if summary and active_only:
@@ -590,6 +623,9 @@ def task_list(project_id:str|None=None,summary:bool=False,active_only:bool=False
 def task(tid):
     t=db.one('SELECT * FROM tasks WHERE id=?',(tid,))
     if not t: raise HTTPException(404,'任务不存在')
+    if t['kind']=='write_paper':
+        from .paper_writing import uncheckpointed_runs
+        t['resume_requires_ack']=bool(uncheckpointed_runs(t)) if t['status'] not in ('queued','running','succeeded') else False
     t['payload']=db.loads(t['payload'],{});t['result']=db.loads(t['result']);t['error']=provider.readable_error(t['error'])
     if t['kind']=='rules_ai':
         from .rule_review_receipts import receipt
@@ -605,10 +641,16 @@ def cancel(tid):
 @app.post('/api/v1/tasks/{tid}/retry')
 def retry(tid,body:dict):
     t=task(tid)
+    if t['kind']=='write_paper':
+        from .paper_writing import resume
+        original=db.one('SELECT * FROM tasks WHERE id=?',(tid,))
+        return resume(original,body)
     if t['status'] not in ('failed','budget_blocked','cancelled','outcome_unknown','incomplete'): raise HTTPException(409,'任务当前不可重试')
     paid=db.one("SELECT id FROM generation_runs WHERE task_id=? AND (status IN ('completed','sent','pending','outcome_unknown') OR (?='paper_image' AND status='completed_invalid')) LIMIT 1",(tid,t['kind']))
     if (t['status'] in ('outcome_unknown','incomplete') or paid) and not body.get('acknowledge_possible_duplicate_charge'): raise HTTPException(422,'远端可能已执行；重试须明确知悉可能再次计费')
     payload=dict(t['payload'])
+    if (t['kind'].startswith('knowledge_') or t['kind']=='graph_wiki_build') and body.get('acknowledge_possible_duplicate_charge'):
+        payload['acknowledge_possible_duplicate_charge']=True
     if t['kind']=='rules_ai':
         payload['resume_task_id']=t['id']
         if body.get('retry_unknown'):payload['retry_unknown']=bool(body.get('acknowledge_possible_duplicate_charge'))
@@ -619,12 +661,22 @@ def retry(tid,body:dict):
         if body['provider_profile']=='gpt':model_routing.snapshot()
         payload['provider_profile']=body['provider_profile']
     return tasks.enqueue(t['project_id'],t['kind'],payload)
+ACKNOWLEDGEABLE=('outcome_unknown','failed','incomplete','budget_blocked','cancelled')
 @app.post('/api/v1/tasks/{tid}/acknowledge')
-def acknowledge_task(tid):
+def acknowledge_task(tid,body:dict|None=None):
+    body=body or {}
     t=task(tid)
-    if t['status']!='outcome_unknown': raise HTTPException(409,'只有远端状态未知的任务需要核实关闭')
-    db.execute("UPDATE tasks SET status='acknowledged',updated_at=? WHERE id=?",(db.now(),tid))
-    db.audit(t['project_id'],'task_outcome_acknowledged',{'task_id':tid,'generation_runs':db.rows('SELECT id,status FROM generation_runs WHERE task_id=?',(tid,))})
+    if t['status'] not in ACKNOWLEDGEABLE: raise HTTPException(409,'只有已结束或结果待核实的任务可以标记核实')
+    payload=dict(t['payload'])
+    note=str(body.get('note') or '').strip()
+    # 核实只记录人工确认痕迹，不改写任务结果，也不改变失败原因，
+    # 便于之后仍然按原状态重试；只有远端状态未知的任务沿用旧的关闭语义。
+    payload['acknowledged_at']=db.now()
+    payload['acknowledged_status']=t['status']
+    if note: payload['acknowledged_note']=note
+    closed='acknowledged' if t['status']=='outcome_unknown' else t['status']
+    db.execute('UPDATE tasks SET status=?,payload=?,updated_at=? WHERE id=?',(closed,db.dumps(payload),db.now(),tid))
+    db.audit(t['project_id'],'task_acknowledged',{'task_id':tid,'previous_status':t['status'],'note':note,'generation_runs':db.rows('SELECT id,status FROM generation_runs WHERE task_id=?',(tid,))})
     return task(tid)
 @app.get('/api/v1/tasks/{tid}/events')
 async def task_events(tid:str,after:int=0):
@@ -650,6 +702,9 @@ def settings():
 @app.put('/api/v1/settings')
 @provider.settings_atomic
 def save_settings(body:dict):
+    if deepseek_profiles.enabled():
+        deepseek_profiles.save_active(body)
+        return settings()
     cfg={**provider.config(),**body.get('provider',{})};url=cfg['base_url'].rstrip('/');parsed=__import__('urllib.parse',fromlist=['urlparse']).urlparse(url)
     if parsed.scheme!='https' or not parsed.hostname or parsed.username or parsed.password: raise HTTPException(422,'中转站需使用不含凭据的HTTPS地址')
     if cfg['protocol'] not in ('openai','responses'): raise HTTPException(422,'协议无效，请使用 Chat Completions 或 Responses')
@@ -696,28 +751,36 @@ def provider_image_probe(body:dict):
 def get_account_usage():return provider.account_usage()
 @app.get('/api/v1/provider/account-usage/history')
 def account_usage_history():return db.setting('account_usage_history',[])
+@app.get('/api/v1/deepseek-pool/settings')
+def pool_settings():return deepseek_pool.settings()
+@app.put('/api/v1/deepseek-pool/settings')
+def save_pool_settings(body:dict):return deepseek_pool.save_settings(body)
+@app.post('/api/v1/deepseek-pool/endpoints/{endpoint_id}/key')
+def save_pool_key(endpoint_id:str,body:dict):
+    if not isinstance(body,dict) or 'api_key' not in body:raise HTTPException(422,'请求须包含 api_key')
+    return deepseek_pool.save_endpoint_key(endpoint_id,body['api_key'])
 @app.get('/api/v1/projects/{pid}/usage')
-def usage(pid): body_project(pid);return db.rows('SELECT * FROM generation_runs WHERE project_id=? ORDER BY created_at DESC',(pid,))
+def usage(pid):
+    body_project(pid)
+    from .expense_evidence import ledger
+    evidence={r['id']:r for r in ledger(pid)['runs']}
+    return [{**r,'expense_basis':evidence[r['id']]} for r in db.rows('SELECT * FROM generation_runs WHERE project_id=? ORDER BY created_at DESC',(pid,))]
 @app.post('/api/v1/usage/{rid}/settle')
 def settle_usage(rid,body:dict):
-    if float(body['cost'])<0: raise HTTPException(422,'费用不能为负数')
-    db.execute('UPDATE generation_runs SET cost=?,status=CASE WHEN status=\'outcome_unknown\' THEN \'manually_settled\' ELSE status END WHERE id=?',(float(body['cost']),rid));return {'ok':True}
+    raise HTTPException(422,'不能仅凭手填金额结算；请通过费用依据账本导入可匹配该请求的服务商JSON凭证')
 @app.get('/api/v1/projects/{pid}/audit')
 def audit(pid): body_project(pid);return db.rows('SELECT * FROM audit WHERE project_id=? ORDER BY id DESC LIMIT 100',(pid,))
 @app.post('/api/v1/projects/{pid}/outline/ai')
 def ai_outline(pid): body_project(pid);return tasks.enqueue(pid,'outline_ai',{})
 
-from .completion import router as completion_router
-app.include_router(completion_router,prefix='/api/v1')
-
-from .extras import router as extras_router
-app.include_router(extras_router,prefix='/api/v1')
-
-from .advanced import router as advanced_router
-app.include_router(advanced_router,prefix='/api/v1')
+mount_api_routers(app,supplements=True)
 
 frontend=Path(os.environ.get('PAPER_FRONTEND_DIR',str(ROOT/'frontend'/'dist'))).resolve()
 if frontend.exists():
-    app.mount('/assets',StaticFiles(directory=frontend/'assets'),name='assets')
+    app.mount('/assets',StaticFiles(directory=frontend/'assets',check_dir=False),name='assets')
     @app.get('/{path:path}')
-    def spa(path:str): return FileResponse(frontend/'index.html')
+    def spa(path:str):
+        if path=='api' or path.startswith('api/'):raise HTTPException(404,'接口不存在')
+        return FileResponse(frontend/'index.html')
+
+install_api_v2(app)

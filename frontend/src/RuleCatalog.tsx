@@ -25,6 +25,8 @@ type Props = {
   onAutomation?: () => void;
   onBatch: (ids: string[], state: string) => Promise<any>;
   run: (key: string, fn: () => Promise<any>, message: string) => Promise<any>;
+  initialFileId?: string;
+  onFileChange?: (fileId: string) => void;
 };
 const states = [
   ["all", "全部记录"],
@@ -61,9 +63,16 @@ export default function RuleCatalog({
   onAutomation,
   onBatch,
   run,
+  initialFileId,
+  onFileChange,
 }: Props) {
   const [query, setQuery] = useState("");
-  const [file, setFile] = useState("");
+  const [file, setFile] = useState(initialFileId || "");
+  useEffect(() => {
+    setFile(initialFileId || "");
+    setPage(1);
+    setSelected([]);
+  }, [initialFileId]);
   const [selected, setSelected] = useState<string[]>([]);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
@@ -134,6 +143,7 @@ export default function RuleCatalog({
   const clear = () => {
     setQuery("");
     setFile("");
+    onFileChange?.("");
     onFilter("all");
   };
   const batch = async (state: string) => {
@@ -191,7 +201,10 @@ export default function RuleCatalog({
             aria-label="按规则出处筛选"
             value={file}
             disabled={batchBusy}
-            onChange={(event) => setFile(event.target.value)}
+            onChange={(event) => {
+              setFile(event.target.value);
+              onFileChange?.(event.target.value);
+            }}
           >
             <option value="">全部出处</option>
             <option value="manual">用户新增规则</option>

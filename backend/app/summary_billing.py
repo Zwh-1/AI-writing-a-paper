@@ -11,6 +11,22 @@ class BudgetExceeded(ValueError):pass
 
 def key_hash(key):return hashlib.sha256(key.encode()).hexdigest()
 
+
+def priced_config(configuration, key):
+    """Reuse only prices verified for this exact account, endpoint and model."""
+    cfg=dict(configuration)
+    if all(finite(cfg.get(k)) for k in ('input_price','output_price')):return cfg
+    evidence=db.setting('ai_autopilot_reference_pricing',{})
+    if (evidence.get('verified') and evidence.get('model')==cfg.get('model')
+        and evidence.get('base_url')==cfg['base_url'].rstrip('/').removesuffix('/v1')
+        and evidence.get('credential_hash')==key_hash(key)
+        and evidence.get('currency')==cfg.get('currency')
+        and all(finite(evidence.get(k)) for k in ('input_price','output_price'))):
+        for name in ('input_price','output_price'):
+            if not finite(cfg.get(name)):cfg[name]=evidence[name]
+        cfg['pricing_evidence']=evidence
+    return cfg
+
 def budget(pid,reservation=0):
     project=security.require_project(pid)
     row=db.one("SELECT COALESCE(SUM(budget_charge),0) used,COUNT(*) calls FROM generation_budget_usage WHERE project_id=? AND status NOT IN ('rejected','failed_before_send')",(pid,))
@@ -19,7 +35,8 @@ def budget(pid,reservation=0):
     pending=db.one("SELECT COUNT(*) n,COALESCE(SUM(g.reserved),0) amount FROM generation_runs g LEFT JOIN generation_billing_group_runs m ON m.run_id=g.id WHERE g.project_id=? AND g.cost IS NULL AND m.run_id IS NULL AND g.status IN ('completed','completed_invalid')",(pid,))
     unresolved=db.one("SELECT COUNT(*) n,COALESCE(SUM(reserved),0) amount FROM generation_runs WHERE project_id=? AND status IN ('sent','pending','outcome_unknown')",(pid,))
     estimated=db.one("SELECT COALESCE(SUM(g.cost),0) amount FROM generation_runs g LEFT JOIN generation_billing_group_runs m ON m.run_id=g.id WHERE g.project_id=? AND m.run_id IS NULL AND g.status NOT IN ('rejected','failed_before_send')",(pid,))
-    return {'limit':project['budget'],'used':row['used'],'available':max(0,project['budget']-row['used']),'unknown_calls':unknown['n'],'unknown_reserved':unknown['amount'],'reconciled_amount':groups['amount'],'reconciled_groups':groups['n'],'pending_bill_calls':pending['n'],'pending_bill_reserved':pending['amount'],'unresolved_calls':unresolved['n'],'unresolved_reserved':unresolved['amount'],'estimated_cost':estimated['amount'],'reservation':reservation,'can_call':row['used']+reservation<=project['budget']}
+    from .expense_evidence import budget_currency
+    return {'limit':project['budget'],'used':row['used'],'currency':budget_currency(pid),'used_basis':'budget_occupation_including_estimates_and_holds','available':max(0,project['budget']-row['used']),'unknown_calls':unknown['n'],'unknown_reserved':unknown['amount'],'reconciled_amount':groups['amount'],'reconciled_amount_basis':'conservative_bill_upper_bound_not_verified_net_debit','reconciled_groups':groups['n'],'pending_bill_calls':pending['n'],'pending_bill_reserved':pending['amount'],'unresolved_calls':unresolved['n'],'unresolved_reserved':unresolved['amount'],'estimated_cost':estimated['amount'],'reservation':reservation,'can_call':row['used']+reservation<=project['budget']}
 
 
 def request_reservation(cfg,system,user):
@@ -69,14 +86,14 @@ def reconcile(pid,profile='material-summary'):
             payload=raw.get('data',raw) if normalized['response_scope']=='data' else raw
         except (provider.httpx.RequestError,ValueError,provider.ProviderError) as error:
             return {'reconciled':False,'reason':'账单查询暂不可用：'+security.redact(error),'budget':budget(pid,cfg['max_request_cost'])}
-        account={**normalized,'fetched_at':db.now()};db.set_setting('gpt_fallback_account_usage' if profile=='gpt-fallback' else 'image_generation_account_usage' if profile=='image-generation' else 'material_summary_account_usage',account)
+        account={**normalized,'fetched_at':db.now()};db.set_setting('gpt_fallback_account_usage' if profile=='gpt-fallback' else 'image_generation_account_usage' if profile=='image-generation' else 'account_usage' if profile=='primary' else 'material_summary_account_usage',account)
         if normalized['unit_source']!='response' or normalized['unit'].upper()!=str(cfg['currency']).upper():return {'reconciled':False,'reason':'服务商未明确返回相同币种，保留未知费用预留','account':account,'budget':budget(pid,cfg['max_request_cost'])}
         stat=next((x for x in payload.get('model_stats',[]) if isinstance(x,dict) and x.get('model')==model),None)
         if not stat or type(stat.get('requests')) is not int:return {'reconciled':False,'reason':'服务商缺少可核对的模型请求汇总','account':account,'budget':budget(pid,cfg['max_request_cost'])}
         amounts=[stat[k] for k in ('cost','actual_cost','account_cost') if k in stat]
         if not amounts or not all(finite(x) for x in amounts):return {'reconciled':False,'reason':'服务商费用字段无效，保留预留','account':account,'budget':budget(pid,cfg['max_request_cost'])}
         # Older runs can be attributed only if this DPAPI key predates every run.
-        credential=security.DATA/(profile+'.dpapi');key_env='PAPER_GPT_API_KEY' if profile=='gpt-fallback' else 'PAPER_IMAGE_API_KEY' if profile=='image-generation' else 'PAPER_SUMMARY_API_KEY';legacy_after=credential.stat().st_mtime if credential.exists() and not os.environ.get(key_env) else None
+        credential=security.DATA/('credential.dpapi' if profile=='primary' else profile+'.dpapi');key_env='PAPER_GPT_API_KEY' if profile=='gpt-fallback' else 'PAPER_IMAGE_API_KEY' if profile=='image-generation' else 'PAPER_API_KEY' if profile=='primary' else 'PAPER_SUMMARY_API_KEY';legacy_after=credential.stat().st_mtime if credential.exists() and not os.environ.get(key_env) else None
         candidates=[]
         for run in db.rows('SELECT g.*,t.kind FROM generation_runs g JOIN tasks t ON t.id=g.task_id WHERE g.model=? ORDER BY g.created_at',(model,)):
             manifest=db.loads(run['manifest'],{});snap=manifest.get('provider',{})
@@ -110,7 +127,7 @@ def reconcile(pid,profile='material-summary'):
             token_accounting[local_name]={'local_reported_total':known,'remote_total':remote,'method':alternatives.get(remote,'partial_local_usage_lower_bound'),'reported_cached_tokens':sum(cached) if cached and all(v is not None for v in cached) else None}
         # Use the largest reported amount, avoiding an assumption about discounts.
         amount=max([*amounts,sum(x['cost'] for x in executed if finite(x['cost']))]);ids=[x['id'] for x in executed];anchor=ids[0]
-        evidence={'model_stats':{k:stat[k] for k in ('model','requests','input_tokens','output_tokens','cost','actual_cost','account_cost') if k in stat},'method':'matched_dedicated_key_model_total_conservative_max','token_accounting':token_accounting,'run_ids':ids,'key_lifetime_checked':True,'account_fetched_at':account['fetched_at']}
+        evidence={'model_stats':{k:stat[k] for k in ('model','requests','input_tokens','output_tokens','cost','actual_cost','account_cost') if k in stat},'method':'matched_dedicated_key_model_total_conservative_max','token_accounting':token_accounting,'run_ids':ids,'key_lifetime_checked':True,'account_fetched_at':account['fetched_at'],'currency':normalized['unit'],'request_url':provider.usage_endpoint(cfg['base_url']),'provider_response_sha256':hashlib.sha256(response.content).hexdigest(),'amount_basis':'conservative_max_not_verified_net_debit','per_request_costs_unknown':True}
         with db.transaction() as conn:
             if any(conn.execute('SELECT status FROM generation_runs WHERE id=?',(x,)).fetchone()[0] in ('pending','sent','outcome_unknown') for x in ids):raise ValueError('账单核对期间请求状态已变化')
             conflict=conn.execute('SELECT g.id FROM generation_billing_group_runs m JOIN generation_billing_groups g ON g.id=m.group_id WHERE m.run_id IN ('+','.join('?' for _ in ids)+') AND (g.credential_hash<>? OR g.project_id<>?) LIMIT 1',(*ids,identity,pid)).fetchone()
@@ -124,6 +141,9 @@ def reconcile(pid,profile='material-summary'):
             # Historical truncation consumed tokens; it must not be treated as a rejection before execution.
             for run in executed:
                 if run['status']=='rejected':conn.execute("UPDATE generation_runs SET status='completed_invalid' WHERE id=?",(run['id'],))
+            from .expense_evidence import append
+            previous=db.one('SELECT amount,currency,evidence FROM generation_billing_groups WHERE id=?',(gid,))
+            append(pid,'group_reconciliation',{'group_id':gid,'previous':previous,'amount':amount,'currency':normalized['unit'],'evidence':evidence})
             conn.execute('INSERT OR REPLACE INTO generation_billing_groups VALUES(?,?,?,?,?,?,?,?,?,?)',(gid,pid,base,identity,model,amount,normalized['unit'],anchor,db.dumps(evidence),db.now()))
             for rid in ids:conn.execute('INSERT OR REPLACE INTO generation_billing_group_runs VALUES(?,?)',(rid,gid))
             db.audit(pid,'summary_billing_reconciled',{'group_id':gid,'requests':len(ids),'amount':amount,'currency':normalized['unit'],'method':evidence['method']})

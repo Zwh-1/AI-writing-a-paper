@@ -3,14 +3,20 @@ import WritingSources from "./WritingSources";
 import PaperVisualsButton from "./PaperVisuals";
 import { lazy, Suspense } from "react";
 import WorkspaceDialog from "./workspace/WorkspaceDialog";
+import type { ViewMutationRecord } from "@tiptap/pm/view";
 import OutlineWorkspace from "./outline/OutlineWorkspace";
+import { PaperWritingButton, PaperTaskDialog } from "./paper/PaperWriting";
+import DocumentPreview from "./paper/DocumentPreview";
 const RulesWorkspace = lazy(() => import("./RulesWorkspace"));
 const MaterialsWorkspace = lazy(() => import("./materials/MaterialsWorkspace"));
 const AgentWriting = lazy(() => import("./AgentWriting"));
 const ReferencesWorkspace = lazy(() => import("./references/ReferencesWorkspace"));
 import GptFallbackSettings from "./GptFallbackSettings";
 import ImageGenerationSettings from "./ImageGenerationSettings";
-import { MaterialSummary, MaterialSummarySettings } from "./MaterialSummary";
+import DeepSeekSettings from "./DeepSeekSettings";
+import ExpenseLedger from "./ExpenseLedger";
+import { SOURCE_NAVIGATION, type SourceLocation } from './workspace/sourceNavigation';
+import { MaterialSummary } from "./MaterialSummary";
 import AdvancedPage, { StreamPreview } from "./Advanced";
 import katex from "katex";
 import { version as appVersion } from "../package.json";
@@ -89,11 +95,12 @@ import {
   Languages,
   ArchiveRestore,
   PanelRightClose,
+  Wallet,
 } from "lucide-react";
 import "./styles.css";
 import { LockedNodes } from "./editorLocks";
 type Row = Record<string, any>;
-import { api, send, setCsrf } from "./client";
+import { apiUrl, api, send, setCsrf } from "./client";
 const parse = (x: any, f: any = {}) => {
   try {
     return typeof x === "string" ? JSON.parse(x) : (x ?? f);
@@ -142,6 +149,7 @@ const stateLabel: Row = {
   cancelled: "已取消",
   outcome_unknown: "远端状态未知",
   incomplete: "未完成待恢复",
+  acknowledged: "已核实",
   ready: "文字已提取",
   parsing: "解析中",
   unreviewed: "待核对",
@@ -210,7 +218,7 @@ function Button({
 function Badge({ value, tone }: { value: string; tone?: string }) {
   return (
     <span
-      className={`badge ${tone ?? (["succeeded", "ready", "reviewed", "confirmed", "pass", "human_confirmed"].includes(value) ? "green" : ["failed", "fail", "outcome_unknown"].includes(value) ? "red" : ["running", "queued", "candidate", "unreviewed", "unknown", "pending"].includes(value) ? "amber" : "")}`}
+      className={`badge ${tone ?? (["succeeded", "ready", "reviewed", "confirmed", "pass", "human_confirmed", "acknowledged"].includes(value) ? "green" : ["failed", "fail", "outcome_unknown"].includes(value) ? "red" : ["running", "queued", "candidate", "unreviewed", "unknown", "pending"].includes(value) ? "amber" : "")}`}
     >
       {stateLabel[value] ?? value}
     </span>
@@ -252,10 +260,10 @@ function Modal({
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <section className={`modal ${wide ? "wide" : ""}`}>
+      <section className={`modal ${wide ? "wide" : ""}`} role="dialog" aria-modal="true" aria-label={title}>
         <header>
           <h2>{title}</h2>
-          <button className="icon-button" onClick={onClose}>
+          <button className="icon-button" onClick={onClose} aria-label="关闭窗口">
             <X size={19} />
           </button>
         </header>
@@ -336,20 +344,29 @@ function PageTitle({
     </div>
   );
 }
+const taskVerified = (task: Row) =>
+  Boolean(task.acknowledged_at) || task.status === "acknowledged";
 function taskGroups(tasks: Row[]) {
-  const groups: { task: Row; count: number }[] = [];
+  const groups: { task: Row; count: number; ids: string[] }[] = [];
   const index = new Map<string, number>();
   for (const task of tasks) {
     if (["succeeded", "cancelled"].includes(task.status)) continue;
-    const grouped = ["failed", "budget_blocked", "incomplete"].includes(task.status);
+    const grouped = ["failed", "budget_blocked", "incomplete"].includes(task.status) && !task.acknowledged_at;
     const key = grouped ? `${task.kind}:${task.status}:${task.error ?? task.phase ?? ""}` : task.id;
     const existing = index.get(key);
     if (existing === undefined) {
       index.set(key, groups.length);
-      groups.push({ task, count: 1 });
-    } else groups[existing].count += 1;
+      groups.push({ task, count: 1, ids: [task.id] });
+    } else {
+      groups[existing].count += 1;
+      groups[existing].ids.push(task.id);
+    }
   }
-  return groups;
+  // 已核实的条目降到列表末尾：仍可回看和重试，但不再占用待处理的位置。
+  return [
+    ...groups.filter((g) => !g.task.acknowledged_at),
+    ...groups.filter((g) => g.task.acknowledged_at),
+  ];
 }
 function formValues(e: FormEvent<HTMLFormElement>) {
   e.preventDefault();
@@ -358,19 +375,47 @@ function formValues(e: FormEvent<HTMLFormElement>) {
     string
   >;
 }
-const nav = [
-  ["overview", "项目概览", LayoutDashboard],
-  ["materials", "资料中心", FolderOpen],
-  ["rules", "论文规则", ShieldCheck],
-  ["outline", "提纲与计划", ListTree],
-  ["editor", "写作工作台", PenLine],
-  ["agent-writing", "有据写作", BookOpen],
-  ["research", "研究与成果", FlaskConical],
-  ["references", "文献与术语", Library],
-  ["review", "修改与检查", ClipboardCheck],
-  ["exports", "排版与交付", Download],
-  ["advanced", "高级研究与协作", Activity],
+const sourceNavPages = [
+  { id: "materials", label: "资料中心" },
+  { id: "rules", label: "论文规则" },
+  { id: "references", label: "文献与知识" },
 ] as const;
+type SourceNavPage = (typeof sourceNavPages)[number]["id"];
+const isSourcePage = (value: string): value is SourceNavPage =>
+  sourceNavPages.some((item) => item.id === value);
+const sourcePageLabel = (value: string) =>
+  sourceNavPages.find((item) => item.id === value)?.label;
+const sourceSubPageKey = (pid: string) => `paper-source-subpage:${pid}`;
+const nav: {
+  id: string;
+  label: string;
+  Icon: typeof LayoutDashboard;
+  pages?: readonly { id: string; label: string }[];
+}[] = [
+  { id: "overview", label: "项目概览", Icon: LayoutDashboard },
+  {
+    id: "materials",
+    label: "资料与文献",
+    Icon: Library,
+    pages: sourceNavPages,
+  },
+  { id: "outline", label: "提纲与计划", Icon: ListTree },
+  { id: "editor", label: "写作工作台", Icon: PenLine },
+  { id: "agent-writing", label: "有据写作", Icon: BookOpen },
+  { id: "research", label: "研究与成果", Icon: FlaskConical },
+  { id: "review", label: "修改与检查", Icon: ClipboardCheck },
+  { id: "exports", label: "排版与交付", Icon: Download },
+  { id: "advanced", label: "高级研究与协作", Icon: Activity },
+];
+function navLabel(page: string) {
+  const entry = nav.find((item) =>
+    item.pages
+      ? item.pages.some((sub) => sub.id === page)
+      : item.id === page,
+  );
+  if (!entry) return "";
+  return entry.pages ? `${entry.label} · ${sourcePageLabel(page)}` : entry.label;
+}
 function App() {
   const [ready, setReady] = useState(false),
     [authError, setAuthError] = useState(""),
@@ -384,6 +429,18 @@ function App() {
     [taskDetail, setTaskDetail] = useState<Row | null>(null),
     [allTasks, setAllTasks] = useState<Row[]>([]);
   const lastTaskSig = useRef("");
+  useEffect(() => {
+    const navigate = (event: Event) => {
+      const detail = (event as CustomEvent<{ pid: string; location: SourceLocation }>).detail;
+      if (detail?.pid === pid && ['materials','rules','references'].includes(detail.location?.page)) setPage(detail.location.page);
+    };
+    window.addEventListener(SOURCE_NAVIGATION, navigate);
+    return () => window.removeEventListener(SOURCE_NAVIGATION, navigate);
+  }, [pid]);
+  useEffect(() => {
+    if (pid && isSourcePage(page))
+      sessionStorage.setItem(sourceSubPageKey(pid), page);
+  }, [pid, page]);
   const { data: projects, set: setProjects } = useLoad(
     ready ? "/projects" : null,
     tick,
@@ -409,6 +466,26 @@ function App() {
     }
   };
   const refresh = () => setTick((t) => t + 1);
+  const liveProjectVersion = useRef({pid:"",version:""});
+  useEffect(() => {
+    if (!ready || !pid) return;
+    let active=true, polling=false, timer: ReturnType<typeof setTimeout>;
+    const schedule=(delay:number)=>{clearTimeout(timer);timer=setTimeout(()=>void poll(),delay);};
+    const poll=async()=>{
+      if(polling||!active)return;polling=true;
+      try {
+        const value=await api(`/projects/${pid}/writing-live?stamp=true`);
+        if(!active)return;
+        const previous=liveProjectVersion.current;
+        if(previous.pid===pid&&previous.version&&previous.version!==value.version)setTick(t=>t+1);
+        liveProjectVersion.current={pid,version:value.version};
+      } catch {} finally {polling=false;if(active)schedule(15000);}
+    };
+    const onFocus=()=>schedule(2000);
+    schedule(5000);
+    window.addEventListener("focus",onFocus);
+    return()=>{active=false;clearTimeout(timer);window.removeEventListener("focus",onFocus);};
+  },[ready,pid]);
   useEffect(() => {
     const token = new URLSearchParams(location.hash.slice(1)).get("token");
     send("/session", { token })
@@ -547,17 +624,42 @@ function App() {
           </div>
           <div className="nav-label">创作空间</div>
           <nav>
-            {nav.map(([id, label, Icon]) => (
-              <button
-                key={id}
-                className={page === id ? "active" : ""}
-                onClick={() => setPage(id)}
-              >
-                <Icon size={18} />
-                {label}
-                {page === id && <span className="nav-dot" />}
-              </button>
-            ))}
+            {nav.map(({ id, label, Icon, pages }) => {
+              const current = pages?.some((item) => item.id === page)
+                ? page
+                : "";
+              const active = pages ? !!current : page === id;
+              return (
+                <button
+                  key={id}
+                  className={active ? "active" : ""}
+                  aria-current={active ? "page" : undefined}
+                  title={
+                    pages
+                      ? `${label}：${pages.map((item) => item.label).join(" / ")}`
+                      : label
+                  }
+                  onClick={() => {
+                    if (!pages) return setPage(id);
+                    if (current) return;
+                    const saved = sessionStorage.getItem(
+                      sourceSubPageKey(pid),
+                    );
+                    setPage(
+                      pages.find((item) => item.id === saved)?.id ??
+                        pages[0].id,
+                    );
+                  }}
+                >
+                  <Icon size={18} />
+                  <span className="nav-copy">
+                    {label}
+                    {current && <small>{sourcePageLabel(current)}</small>}
+                  </span>
+                  {active && <span className="nav-dot" />}
+                </button>
+              );
+            })}
           </nav>
           <div className="sidebar-bottom">
             <div className="storage-note">
@@ -581,12 +683,11 @@ function App() {
               我的研究空间
               <ChevronRight size={14} />
               <span>
-                {page === "settings"
-                  ? "接口与设置"
-                  : nav.find((x) => x[0] === page)?.[1]}
+                {page === "settings" ? "接口与设置" : navLabel(page)}
               </span>
             </div>
             <div className="topbar-right">
+              <BudgetEntry />
               <button
                 className="task-trigger"
                 onClick={() => setShowTasks(true)}
@@ -723,7 +824,7 @@ function App() {
       {showTasks && (
         <Modal title="任务中心" wide onClose={() => setShowTasks(false)}>
           {groupedTasks.length ? (
-            groupedTasks.map(({ task: t, count }) => (
+            groupedTasks.map(({ task: t, count, ids }) => (
               <div className="task-row" key={t.id}>
                 <div className="task-icon">
                   {t.status === "running" ? (
@@ -740,6 +841,7 @@ function App() {
                         parse: "解析资料",
                         extract_rules: "整理规则",
                         write: "论文写作",
+                        write_paper: "整篇论文写作",
                         paper_visual: "论文图表候选",
                         paper_image: "GPT 图片生成与修改",
                         review: "论文检查",
@@ -763,9 +865,15 @@ function App() {
                     {t.phase || "等待执行"} · {date(t.created_at)}
                   </small>
                   {count > 1 && <small className="task-group-note">相同问题任务 {count} 个，已合并显示</small>}
+                  {t.acknowledged_at && (
+                    <small className="task-group-note">
+                      已于 {date(t.acknowledged_at)} 人工核实
+                      {t.acknowledged_note ? "：" + t.acknowledged_note : ""}，通知已关闭，任务记录仍保留
+                    </small>
+                  )}
                   {t.error && <p className="error-text">{t.error}</p>}
                 </div>
-                <Badge value={t.status} />
+                <Badge value={taskVerified(t) ? "acknowledged" : t.status} />
                 <Button onClick={() => taskOpen(t)}>查看</Button>
                 {["queued", "running"].includes(t.status) && (
                   <Button
@@ -779,14 +887,28 @@ function App() {
                     <Square size={13} />
                   </Button>
                 )}
-                {t.status === "outcome_unknown" && (
+                {!taskVerified(t) &&
+                  ["failed", "incomplete", "budget_blocked", "cancelled", "outcome_unknown"].includes(t.status) && (
                   <Button
                     onClick={() => {
-                      if (!confirm("请确认已核对服务方账单或远端任务状态；关闭后不再把它显示为待处理警告。")) return;
-                      act(() => send("/tasks/" + t.id + "/acknowledge"), "已记录核实，关闭提示");
+                      if (
+                        !confirm(
+                          t.status === "outcome_unknown"
+                            ? "请确认已核对服务方账单或远端任务状态；标记后不再把它显示为待处理警告。"
+                            : `标记后${count > 1 ? `这 ${count} 条同因任务` : "这一条"}不再作为待处理问题提醒，任务结果、费用记录和失败原因都会保留，之后仍可重试。确认已核对失败原因？`,
+                        )
+                      )
+                        return;
+                      act(
+                        async () => {
+                          for (const id of ids) await send("/tasks/" + id + "/acknowledge", {});
+                          return true;
+                        },
+                        count > 1 ? `已核实 ${count} 条任务` : "已标记为核实",
+                      );
                     }}
                   >
-                    已核实，关闭提示
+                    已核实
                   </Button>
                 )}
                 {["failed", "cancelled", "outcome_unknown"].includes(
@@ -800,6 +922,7 @@ function App() {
                         ) &&
                           ![
                             "write",
+                          "write_paper",
                             "ocr",
                             "outline_ai",
                             "semantic_review",
@@ -807,7 +930,9 @@ function App() {
                             "provider_probe",
                           ].includes(t.kind)) ||
                         confirm(
-                          "远端可能已执行，重试可能重复计费。确认已核实并继续？",
+                          t.kind === "write_paper"
+                            ? "整篇任务会重新生成未通过章节契约校验的章节。旧请求可能已计费，请先核实账单；确认继续？"
+                            : "远端可能已执行，重试可能重复计费。确认已核实并继续？",
                         )
                       )
                         act(
@@ -836,9 +961,157 @@ function App() {
         </Modal>
       )}
       {taskDetail && (
-        <TaskDetail task={taskDetail} onClose={() => setTaskDetail(null)} />
+        taskDetail.kind === "write_paper" ? <PaperTaskDialog pid={pid} task={taskDetail} act={act} onChanged={refresh} onClose={() => setTaskDetail(null)} /> : <TaskDetail task={taskDetail} onClose={() => setTaskDetail(null)} />
       )}
     </AppContext.Provider>
+  );
+}
+const money = (value: unknown) => Number(value ?? 0).toFixed(2);
+function BudgetDialog({
+  pid,
+  data,
+  onClose,
+}: {
+  pid: string;
+  data: Row | null;
+  onClose: () => void;
+}) {
+  const { act } = useApp();
+  const limit = Number(data?.limit ?? 0);
+  const used = Number(data?.used ?? 0);
+  const available = Number(data?.available ?? 0);
+  const currency = String(data?.currency ?? "USD");
+  const [value, setValue] = useState(String(limit));
+  const [busy, setBusy] = useState(false);
+  const amount = Number(value);
+  const valid = Number.isFinite(amount) && amount >= 0;
+  const unchanged = Math.abs(amount - limit) < 1e-9;
+  const add = (step: number) =>
+    setValue(String(Math.round((limit + step) * 1e6) / 1e6));
+  const save = async () => {
+    if (!valid || busy) return;
+    setBusy(true);
+    try {
+      const d = await act(
+        () => send("/projects/" + pid, { budget: amount }, "PATCH"),
+        `项目预算已更新为 ${money(amount)} ${currency}`,
+      );
+      if (d) onClose();
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Modal title="项目预算" onClose={onClose}>
+      <div className="budget-summary">
+        <div>
+          <span>项目总预算</span>
+          <strong>
+            {money(limit)} {currency}
+          </strong>
+        </div>
+        <div>
+          <span>已占用</span>
+          <strong>
+            {money(used)} {currency}
+          </strong>
+        </div>
+        <div className={available <= 0 ? "alert" : ""}>
+          <span>可用</span>
+          <strong>
+            {money(available)} {currency}
+          </strong>
+        </div>
+      </div>
+      <p className="muted">
+        可用 = 项目总预算 − 已占用。已占用计入已完成、无效完成和手动结算的费用；发送前失败与被拒绝的请求不计入。写作、规则整理等任务的本次预算不能超过「可用」。
+      </p>
+      {Number(data?.unknown_reserved ?? 0) > 0 && (
+        <p className="muted">
+          另有待核实预留 {money(data?.unknown_reserved)} {currency}
+          {Number(data?.unresolved_calls ?? 0) > 0
+            ? `，来自 ${data?.unresolved_calls} 次结果未知的调用`
+            : ""}
+          。可在「费用依据」中核对服务商账单后释放。
+        </p>
+      )}
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          void save();
+        }}
+      >
+        <Field
+          label={`新的项目总预算（${currency}）`}
+          hint="只是本机控制的上限，不会向服务商充值；填小数也可以。"
+        >
+          <input
+            autoFocus
+            type="number"
+            min="0"
+            step="0.01"
+            aria-label="新的项目总预算"
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+          />
+        </Field>
+        <div className="actions mb">
+          {[5, 10, 20].map((step) => (
+            <Button key={step} onClick={() => add(step)}>
+              +{step}
+            </Button>
+          ))}
+          <Button onClick={() => setValue(String(Math.round((used + 10) * 1e6) / 1e6))}>
+            已占用 +10
+          </Button>
+        </div>
+        {valid && amount < used && (
+          <p className="budget-warn" role="alert">
+            低于已占用 {money(used)} {currency}
+            ，保存后可用额度会变成 0，写作等任务将无法发起。
+          </p>
+        )}
+        {!valid && (
+          <p className="budget-warn" role="alert">
+            请填写不小于 0 的金额。
+          </p>
+        )}
+        <div className="actions">
+          <Button variant="primary" type="submit" disabled={!valid || busy || unchanged}>
+            <Save size={15} />
+            {busy ? "保存中…" : "保存预算"}
+          </Button>
+          <Button onClick={onClose}>取消</Button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+function BudgetEntry() {
+  const { pid, tick } = useApp();
+  const [open, setOpen] = useState(false);
+  const { data } = useLoad(pid ? "/projects/" + pid + "/budget" : null, tick);
+  if (!pid) return null;
+  const available = Number(data?.available ?? 0);
+  const limit = Number(data?.limit ?? 0);
+  const currency = String(data?.currency ?? "USD");
+  const low = !!data && available <= Math.max(2, limit * 0.1);
+  return (
+    <>
+      <button
+        className={`budget-trigger${low ? " low" : ""}`}
+        aria-label="项目预算"
+        title={`项目预算 ${money(limit)} ${currency}，可用 ${money(available)} ${currency}`}
+        onClick={() => setOpen(true)}
+      >
+        <Wallet size={16} />
+        <span>预算</span>
+        <strong>
+          {money(available)} / {money(limit)} {currency}
+        </strong>
+      </button>
+      {open && <BudgetDialog pid={pid} data={data} onClose={() => setOpen(false)} />}
+    </>
   );
 }
 function Overview() {
@@ -1165,7 +1438,7 @@ function SourceViewer({ file, onClose }: { file: Row; onClose: () => void }) {
         >
           <ChevronRight size={15} />
         </Button>
-        <a className="btn" href={"/api/v1/files/" + file.id + "/download"}>
+        <a className="btn" href={apiUrl("/files/" + file.id + "/download")}>
           <Download size={14} />
           原文件
         </a>
@@ -1199,7 +1472,7 @@ function SourceViewer({ file, onClose }: { file: Row; onClose: () => void }) {
       {renderJob?.status === "failed" && <p className="error-text">原版式预览失败：{renderJob.error}</p>}
       {p ? (
         <>
-          {showOriginal && file.extension === ".pptx" && <img className="material-original-page" alt={"第" + p.page_number + "页原版式预览"} src={"/api/v1/pages/" + p.id + "/office-preview"} onError={() => {setShowOriginal(false);notify("整页预览暂不可用，请查看原文件或重试本地渲染", true);}} />}
+          {showOriginal && file.extension === ".pptx" && <img className="material-original-page" alt={"第" + p.page_number + "页原版式预览"} src={apiUrl("/pages/" + p.id + "/office-preview")} onError={() => {setShowOriginal(false);notify("整页预览暂不可用，请查看原文件或重试本地渲染", true);}} />}
           <PageSourceTools key={p.id} pageId={p.id} tick={tick} act={act} />
           <div className="section-heading"><h3>本页原文提取核对</h3></div>
           <div className="viewer-status">
@@ -1227,21 +1500,21 @@ function SourceViewer({ file, onClose }: { file: Row; onClose: () => void }) {
               <img
                 className="source-preview"
                 alt="PDF原页"
-                src={"/api/v1/pages/" + p.id + "/preview"}
+                src={apiUrl("/pages/" + p.id + "/preview")}
               />
             )}
             <div className="source-images">
               {images.map((im: Row) => (
                 <a
                   key={im.sha256}
-                  href={"/api/v1/images/" + im.sha256}
+                  href={apiUrl("/images/" + im.sha256)}
                   target="_blank"
                   rel="noreferrer"
                 >
                   <img
                     loading="lazy"
                     alt="幻灯片原始图片"
-                    src={"/api/v1/images/" + im.sha256}
+                    src={apiUrl("/images/" + im.sha256)}
                   />
                 </a>
               ))}
@@ -1378,8 +1651,12 @@ const StableIds = Extension.create({
         attributes: {
           sourceIds: { default: [], renderHTML: () => ({}) },
           factIds: { default: [], renderHTML: () => ({}) },
+          evidenceIds: { default: [], renderHTML: () => ({}) },
           knowledgeUnitIds: { default: [], renderHTML: () => ({}) },
           documentReadingIds: { default: [], renderHTML: () => ({}) },
+          knowledgeClaimIds: { default: [], renderHTML: () => ({}) },
+          wikiVersionIds: { default: [], renderHTML: () => ({}) },
+          wikiBlockIds: { default: [], renderHTML: () => ({}) },
           describesFigureId: { default: "", parseHTML: (e:HTMLElement)=>e.getAttribute("data-describes-figure")||"", renderHTML:(a:Row)=>a.describesFigureId?{"data-describes-figure":a.describesFigureId}:{} },
           nodeId: {
             default: null,
@@ -1398,7 +1675,7 @@ const Citation = Node.create({
   group: "inline",
   atom: true,
   addAttributes() {
-    return { citationId: { default: "" }, nodeId: { default: null } };
+    return { citationId: { default: "",parseHTML:(e:HTMLElement)=>e.getAttribute("data-citation")||"" }, nodeId: { default: null,parseHTML:(e:HTMLElement)=>e.getAttribute("data-node-id") } };
   },
   parseHTML() {
     return [{ tag: "span[data-citation]" }];
@@ -1410,25 +1687,36 @@ const Citation = Node.create({
         "data-citation": HTMLAttributes.citationId,
         class: "citation-node",
       }),
-      "[文献]",
+      citationLabels[HTMLAttributes.citationId] ? `[${citationLabels[HTMLAttributes.citationId]}]` : "[引用待核对]",
     ];
   },
+  addNodeView(){return ({node})=>{let current=node;const dom=document.createElement("span");dom.className="citation-node";dom.contentEditable="false";const sync=()=>{dom.textContent=citationLabels[current.attrs.citationId]?`[${citationLabels[current.attrs.citationId]}]`:"[引用待核对]";dom.dataset.citation=current.attrs.citationId;dom.dataset.nodeId=current.attrs.nodeId||"";dom.title=citationTitles[current.attrs.citationId]||"文献信息待核对";};sync();window.addEventListener("paper-reference-index",sync);return {dom,update(next:any){if(next.type.name!=="citation")return false;current=next;sync();return true;},ignoreMutation:()=>true,destroy(){window.removeEventListener("paper-reference-index",sync);}};}},
 });
+let citationLabels:Record<string,number>={};
+let citationTitles:Record<string,string>={};
 let artifactImages: Record<string, string> = {};
 let figureLabels: Record<string,string> = {};
 let activeFigureSection = "";
+function figureReferenceLabel(attrs:Row){
+  if(attrs.targetSectionId)return figureLabels[attrs.targetSectionId+":"+attrs.targetId];
+  const matches=Object.entries(figureLabels).filter(([key])=>key.includes(":")&&key.endsWith(":"+attrs.targetId));
+  return matches.length===1?matches[0][1]:undefined;
+}
 const CrossReference = Node.create({
   name:"crossReference",inline:true,group:"inline",atom:true,
-  addAttributes(){return {targetId:{default:""},targetSectionId:{default:""},nodeId:{default:null}}},
+  addAttributes(){return {targetId:{default:"",parseHTML:(e:HTMLElement)=>e.getAttribute("data-figure-reference")||""},targetSectionId:{default:"",parseHTML:(e:HTMLElement)=>e.getAttribute("data-target-section")||""},nodeId:{default:null,parseHTML:(e:HTMLElement)=>e.getAttribute("data-node-id")}}},
   parseHTML(){return [{tag:"span[data-figure-reference]"}]},
-  renderHTML({HTMLAttributes}){return ["span",{"data-figure-reference":HTMLAttributes.targetId,"data-target-section":HTMLAttributes.targetSectionId,class:"paper-crossref"},figureLabels[HTMLAttributes.targetSectionId+":"+HTMLAttributes.targetId]||"[图表引用]"]},
-  addNodeView(){return ({node})=>{let current=node;const dom=document.createElement("span");dom.className="paper-crossref";dom.contentEditable="false";const sync=()=>{dom.textContent=figureLabels[current.attrs.targetSectionId+":"+current.attrs.targetId]||"[图表引用待核对]";dom.dataset.figureReference=current.attrs.targetId;};sync();window.addEventListener("paper-figure-index",sync);return {dom,update(next:any){if(next.type.name!=="crossReference")return false;current=next;sync();return true;},ignoreMutation:()=>true,destroy(){window.removeEventListener("paper-figure-index",sync)}};}}
+  renderHTML({HTMLAttributes}){return ["span",{"data-figure-reference":HTMLAttributes.targetId,"data-target-section":HTMLAttributes.targetSectionId,class:"paper-crossref"},figureReferenceLabel(HTMLAttributes)||"[图表引用待核对]"]},
+  addNodeView(){return ({node})=>{let current=node;const dom=document.createElement("span");dom.className="paper-crossref";dom.contentEditable="false";const sync=()=>{dom.textContent=figureReferenceLabel(current.attrs)||"[图表引用待核对]";dom.dataset.figureReference=current.attrs.targetId;dom.dataset.targetSection=current.attrs.targetSectionId;};sync();window.addEventListener("paper-figure-index",sync);return {dom,update(next:any){if(next.type.name!=="crossReference")return false;current=next;sync();return true;},ignoreMutation:()=>true,destroy(){window.removeEventListener("paper-figure-index",sync)}};}}
 });
 class ThesisTableView extends TableView {
-  constructor(...args: ConstructorParameters<typeof TableView>) { super(...args); this.syncAttributes(); }
+  private indexListener=()=>this.syncAttributes();
+  constructor(...args: ConstructorParameters<typeof TableView>) { super(...args); this.syncAttributes();window.addEventListener("paper-figure-index",this.indexListener); }
   syncAttributes() {
     this.table.dataset.tableStyle = this.node.attrs.tableStyle || "grid";
-    this.table.dataset.caption = this.node.attrs.caption || "";
+    const label=figureLabels[activeFigureSection+":"+this.node.attrs.nodeId];
+    this.table.dataset.caption = this.node.attrs.caption||"";
+    if(this.table.dataset.caption){const caption=this.table.caption||this.table.createCaption();caption.textContent=(label?label+" ":"")+this.table.dataset.caption;caption.contentEditable="false";}
     this.table.dataset.note = this.node.attrs.note || "";
   }
   update(node: Parameters<TableView["update"]>[0]) {
@@ -1436,6 +1724,8 @@ class ThesisTableView extends TableView {
     if (updated) this.syncAttributes();
     return updated;
   }
+  ignoreMutation(mutation:ViewMutationRecord){if(this.table.caption&&(mutation.target===this.table.caption||this.table.caption.contains(mutation.target)))return true;if(mutation.type==="selection")return false;if(mutation.type==="childList"&&mutation.target===this.table&&[...Array.from(mutation.addedNodes),...Array.from(mutation.removedNodes)].every(node=>node.nodeName==="CAPTION"))return true;return super.ignoreMutation(mutation);}
+  destroy(){window.removeEventListener("paper-figure-index",this.indexListener);}
 }
 const ThesisTable = Table.extend({
   addAttributes() {
@@ -1538,8 +1828,8 @@ function Writing() {
       <>
         <PageTitle title="写作工作台" />
         <Empty
-          title="先建立提纲，再开始逐节写作"
-          detail="章节目标与适用规则能帮助模型聚焦，也便于你核对结果。"
+          title="先建立论文提纲"
+          detail="整篇或按章写作都使用提纲安排内容，章节目标与适用规则也便于你统一核对结果。"
         >
           <Button variant="primary" onClick={() => setPage("outline")}>
             前往提纲计划
@@ -1555,6 +1845,7 @@ function Writing() {
         description="让每段论述有依据，让每次修改可追溯。"
         actions={
           <>
+            <PaperWritingButton pid={pid} act={act} onChanged={refresh} />
             <Button onClick={() => setPage("agent-writing")}><BookOpen size={16} />有据写作</Button>
             <Button onClick={() => { refresh(); setHistoryOpen(true); }}><History size={16} />版本历史</Button>
           </>
@@ -1734,6 +2025,10 @@ function Writing() {
     </>
   );
 }
+function editorDocument(document:Row){
+  const body=document?.content??[];
+  return body.length&&body[body.length-1].type!=="paragraph"?{...document,content:[...body,{type:"paragraph",attrs:{nodeId:crypto.randomUUID()}}]}:document;
+}
 function RichEditor({
   content,
   refs,
@@ -1750,6 +2045,9 @@ function RichEditor({
   const isEnglishAbstract = content.section.kind === "abstract_en";
   const [contextRevision, setContextRevision] = useState(0);
   const writingContext = useLoad(isEnglishAbstract ? null : "/sections/" + content.section.id + "/writing-context", tick + contextRevision);
+  const liveInputs=useLoad(`/projects/${pid}/writing-live`,tick+contextRevision);
+  const [citationRevision,setCitationRevision]=useState(0);
+  const [remoteConflict,setRemoteConflict]=useState(false);
   const manuscript = writingContext.data?.section_id === content.section.id ? writingContext.data : null;
   activeFigureSection=content.section.id;
   const figureIndex=useLoad("/projects/"+pid+"/figure-index",tick+contextRevision);
@@ -1760,6 +2058,7 @@ function RichEditor({
     saving = useRef(false),
     generation = useRef(0),
     timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const seenRevisions=useRef(new Set([content.section.current_revision_id]));
   const [status, setStatus] = useState("已保存"),
     [refId, setRefId] = useState(""),
     [figureId, setFigureId] = useState(""),
@@ -1773,7 +2072,7 @@ function RichEditor({
   artifactImages = { ...artifactImages, ...Object.fromEntries(
     artifacts
       .filter((a: Row) => a.sha256 && a.kind === "figure")
-      .map((a: Row) => [a.id, "/api/v1/images/" + a.sha256]),
+      .map((a: Row) => [a.id, apiUrl("/images/" + a.sha256)]),
   ) };
   const updateState = (s: string) => {
     setStatus(s);
@@ -1797,10 +2096,11 @@ function RichEditor({
         "PUT",
       );
       revision.current = d.id;
+      seenRevisions.current.add(d.id);
       setContextRevision(value => value + 1);
       if (generation.current === version) {
         dirty.current = false;
-        ed.commands.setContent(parse(d.document), { emitUpdate: false });
+        ed.commands.setContent(editorDocument(parse(d.document)), { emitUpdate: false });
         const max = ed.state.doc.content.size;
         ed.commands.setTextSelection({
           from: Math.min(savedSelection.from, max),
@@ -1836,11 +2136,12 @@ function RichEditor({
       TableHeader,
       TableCell,
     ],
-    content: content.document,
+    content: editorDocument(content.document),
     editorProps: {
       attributes: { class: "paper-editor", "aria-label": "论文正文编辑器" },
     },
     onUpdate: ({ editor }) => {
+      setCitationRevision(value=>value+1);
       dirty.current = true;
       try {
         localStorage.setItem(
@@ -1860,6 +2161,27 @@ function RichEditor({
     },
   });
   editorRef.current = editor;
+  useEffect(()=>{
+    if(!editor||!liveInputs.data)return;
+    const live=liveInputs.data;const numbers:Record<string,number>={};
+    const collect=(node:Row):string[]=>[...(node.type==="citation"?[node.attrs.citationId]:[]),...(node.content??[]).flatMap(collect)];
+    for(const section of live.sections??[]){const ids=section.id===content.section.id?collect(editor.getJSON()):section.citation_ids??[];for(const id of ids){if(!numbers[id])numbers[id]=Object.keys(numbers).length+1;}}
+    citationLabels=numbers;citationTitles=Object.fromEntries((live.references??[]).map((r:Row)=>[r.id,r.metadata?.title||r.metadata?.citation_raw||"文献信息待核对"]));
+    window.dispatchEvent(new Event("paper-reference-index"));
+    const fmt=live.formats_by_section?.[content.section.id]?.config||live.format?.config;
+    if(fmt){
+      const dom=editor.view.dom;dom.style.fontFamily=`"${fmt.latin_font}","${fmt.font}",serif`;dom.style.fontSize=`${fmt.font_size}pt`;
+      dom.style.lineHeight=fmt.line_spacing_points?`${fmt.line_spacing_points}pt`:String(fmt.line_spacing);dom.style.textAlign=fmt.alignment||"justify";
+      dom.style.setProperty("--paper-first-line",`${fmt.first_line_chars}em`);dom.style.setProperty("--paper-heading-font",`"${fmt.heading_font}",serif`);
+      dom.style.setProperty("--paper-citation-position",fmt.reference_superscript?"super":"baseline");dom.style.setProperty("--paper-citation-size",fmt.reference_superscript?".75em":"1em");
+      for(const level of [1,2,3]){
+        const heading=live.format?.components?.[`heading_${level}`]??{};
+        dom.style.setProperty(`--paper-h${level}-font`,`"${heading.font||fmt.heading_font}",serif`);
+        dom.style.setProperty(`--paper-h${level}-size`,`${heading.font_size??({1:16,2:14,3:12} as Record<number,number>)[level]}pt`);
+        dom.style.setProperty(`--paper-h${level}-align`,heading.alignment||"left");dom.style.setProperty(`--paper-h${level}-indent`,`${heading.left_indent_chars??0}em`);
+      }
+    }
+  },[editor,liveInputs.data,citationRevision]);
   useEffect(() => {
     if (editor && !editor.isDestroyed)
       editor.view.dispatch(editor.state.tr.setMeta("locksChanged", Date.now()));
@@ -1917,13 +2239,16 @@ function RichEditor({
   }, [editor]);
 
   useEffect(() => {
+    if(content.section.current_revision_id!==revision.current&&seenRevisions.current.has(content.section.current_revision_id))return;
+    if(content.section.current_revision_id!==revision.current&&(dirty.current||saving.current)){setRemoteConflict(true);return;}
     if (
       content.section.current_revision_id !== revision.current &&
       !dirty.current &&
       !saving.current
     ) {
-      editor?.commands.setContent(content.document, { emitUpdate: false });
+      editor?.commands.setContent(editorDocument(content.document), { emitUpdate: false });
       revision.current = content.section.current_revision_id;
+      seenRevisions.current.add(content.section.current_revision_id);setRemoteConflict(false);
       setLocks(content.locks ?? []);
     }
   }, [content.section.current_revision_id, editor]);
@@ -1986,6 +2311,8 @@ function RichEditor({
           <strong>{isEnglishAbstract ? "英文摘要翻译" : "辅助本节写作"}</strong>
           <span>{isEnglishAbstract ? "直接翻译已保存的中文摘要" : "读取已保存全文后处理当前章"}</span>
         </div>
+        {remoteConflict&&<p className="alert" role="alert">正文在其他窗口已更新，本机未保存修改已保留。请核对版本差异后再保存，避免覆盖新内容。</p>}
+        {liveInputs.data&&<div className="writing-live-summary" aria-label="写作关联依据"><span>已连接{liveInputs.data.repository?.target_snapshot_id?"项目代码 · ":""}{liveInputs.data.material_count} 份资料 · {liveInputs.data.reference_count} 篇文献 · {liveInputs.data.figures?.length??0} 个正文图表</span><small>资料与格式变更会同步刷新，生成时读取当前项目依据。</small>{liveInputs.data.repository?.target_snapshot_id&&<Button onClick={()=>act(()=>send(`/projects/${pid}/writing-live/refresh-project`),"项目依据已更新，后续写作将使用新版本")}>更新项目依据</Button>}</div>}
         {!isEnglishAbstract && <div className="writing-context" aria-label="全文上下文">
           {manuscript?.can_load ? <details>
             <summary>{manuscript.saved_sections ? `全文上下文：${manuscript.saved_sections}/${manuscript.total_sections} 章已有正文 · ${manuscript.characters.toLocaleString()} 字` : "全文上下文：尚无已保存正文，目前只有提纲与研究资料"}</summary>
@@ -2204,7 +2531,7 @@ function RichEditor({
             });
             revision.current = result.revision.id;
             dirty.current = false;
-            artifactImages[asset.id] = "/api/v1/images/" + asset.sha256;
+            artifactImages[asset.id] = apiUrl("/images/" + asset.sha256);
             editor.commands.setContent(parse(result.revision.document), { emitUpdate: false });
             localStorage.removeItem("paper_emergency_" + content.section.id);
             updateState("已保存");
@@ -2214,7 +2541,7 @@ function RichEditor({
           let alreadyInserted = false;
           editor.state.doc.descendants(current => { if (current.attrs.nodeId === node.attrs?.nodeId) alreadyInserted = true; });
           if (alreadyInserted) return await saveNow();
-          if (asset.kind === "figure") artifactImages[asset.id] = "/api/v1/images/" + asset.sha256;
+          if (asset.kind === "figure") artifactImages[asset.id] = apiUrl("/images/" + asset.sha256);
           const insertNodes=asset.insert_nodes??[node];
           const inserted = editor.isActive("table")
             ? editor.chain().focus().insertContentAt(editor.state.selection.$from.after(1), insertNodes).run()
@@ -2345,7 +2672,7 @@ function TaskDetail({ task, onClose }: { task: Row; onClose: () => void }) {
     return <Modal title="gpt-image-2 图片结果" wide onClose={onClose}>
       <div className="inline"><Badge value={t.status} /><strong>{t.phase || "GPT 生图与修改"}</strong></div>
       {t.error && <div className="alert">{t.error}</div>}
-      {asset && <><img alt={asset.name} src={"/api/v1/images/" + asset.sha256} style={{display:"block",maxWidth:"100%",maxHeight:540,objectFit:"contain",margin:"16px auto"}} /><p>{asset.name} · {parse(asset.metadata).width} × {parse(asset.metadata).height} px</p><p>图片保存在“论文图表”的本项目列表中，核对后可从写作工作台插入正文。</p><a className="btn" href={`/api/v1/projects/${pid}/paper-visuals/${asset.id}/download?format=png`} download>下载 PNG</a></>}
+      {asset && <><img alt={asset.name} src={apiUrl("/images/" + asset.sha256)} style={{display:"block",maxWidth:"100%",maxHeight:540,objectFit:"contain",margin:"16px auto"}} /><p>{asset.name} · {parse(asset.metadata).width} × {parse(asset.metadata).height} px</p><p>图片保存在“论文图表”的本项目列表中，核对后可从写作工作台插入正文。</p><a className="btn" href={apiUrl(`/projects/${pid}/paper-visuals/${asset.id}/download?format=png`)} download>下载 PNG</a></>}
       {["budget_blocked","failed","outcome_unknown","cancelled"].includes(t.status) && <div className="actions"><Button onClick={() => void act(() => send(`/tasks/${t.id}/retry`,{acknowledge_possible_duplicate_charge:true}),"已重新排队 gpt-image-2 图片任务")}>重新生图（可能再次计费）</Button><Button onClick={() => void act(async () => {const bill=await send(`/projects/${pid}/tasks/billing-reconcile`,{profile:"image-generation"});if(!bill.reconciled)throw new Error(bill.reason||"账单未能匹配，继续保留费用预留");return bill;},"独立生图接口账单已核对")}>核对生图接口账单</Button></div>}
       <details><summary>查看生图记录</summary><pre className="source-content">{JSON.stringify(result,null,2)}</pre></details>
     </Modal>;
@@ -2364,7 +2691,7 @@ function TaskDetail({ task, onClose }: { task: Row; onClose: () => void }) {
       <div className="task-recovery-summary">
         <div><strong>资料</strong><span>{materials.automatic_completed ?? 0}/{materials.total ?? 0} 已完成</span><small>AI 覆盖 {materials.ai_percent ?? 0}%</small></div>
         <div><strong>规则</strong><span>{rules.automatic_completed ?? 0}/{rules.total ?? 0} 已完成</span><small>AI 覆盖 {rules.ai_percent ?? 0}%</small></div>
-        <div><strong>预算</strong><span>已用 {Number(budget.used ?? 0).toFixed(2)}</span><small>未知预留 {Number(budget.unknown_reserved ?? 0).toFixed(2)}</small></div>
+        <div><strong>预算</strong><span>预算占用 {Number(budget.used ?? 0).toFixed(2)}</span><small>待核实预留 {Number(budget.unknown_reserved ?? 0).toFixed(2)}</small></div>
       </div>
       <div className="alert compact">已保存的资料总结、规则判定和原文依据会被复用。恢复操作只处理尚未完成的范围；远端未知请求不会自动重复发送。</div>
       {t.status !== "acknowledged" && !result.complete && <div className="actions"><Button variant="primary" onClick={recover}>恢复未完成范围</Button><Button onClick={() => onClose()}>稍后处理</Button></div>}
@@ -2412,6 +2739,9 @@ function TaskDetail({ task, onClose }: { task: Row; onClose: () => void }) {
       {result.sections && <CandidateOutline task={t} />}
       {result.polish_validation && <p className="muted">{result.polish_validation.passed ? `独立润写检查：已核对 ${result.polish_validation.paragraphs_checked} 个原段落及其数值、单位、限定标记和保留片段。采用前仍需核对原意。` : "独立润写检查未通过，以下结果需重新处理，不能直接采用。"}</p>}
       {!!result.polish_issues?.length && <div className="alert">润写中发现的待核对问题：{result.polish_issues.join("；")}</div>}
+      {result.document && result.validation_error && (
+        <div className="alert">{result.validation_error}</div>
+      )}
       {result.document && (
         <CandidateMerge task={t} act={act} onClose={onClose} />
       )}
@@ -2441,11 +2771,7 @@ function TaskDetail({ task, onClose }: { task: Row; onClose: () => void }) {
                       )
                     }
                   />
-                  <p>
-                    {n.content
-                      ?.map((c: Row) => (c.type === "text" ? c.text : "[引用]"))
-                      .join("")}
-                  </p>
+                  <DocumentPreview document={{type:"doc",content:[n]}} sectionId={result.section_id} figures={result.figure_index??[]} assets={result.preview_assets??[]} citations={result.citation_numbers??{}}/>
                 </div>
               ))}
             </section>
@@ -2499,10 +2825,10 @@ function TaskDetail({ task, onClose }: { task: Row; onClose: () => void }) {
                 className="download-card"
                 key={name}
                 href={
-                  "/api/v1/exports/" +
+                  apiUrl("/exports/" +
                   result.export_id +
                   "/files/" +
-                  encodeURIComponent(name)
+                  encodeURIComponent(name))
                 }
               >
                 <Download size={18} />
@@ -2610,7 +2936,7 @@ function Research() {
           {artifacts?.map((a: Row) => (
             <div className="artifact-card" key={a.id}>
               {a.kind === "figure" ? (
-                <img alt={a.name} src={"/api/v1/images/" + a.sha256} />
+                <img alt={a.name} src={apiUrl("/images/" + a.sha256)} />
               ) : (
                 <div className="artifact-placeholder">
                   <FileText size={28} />
@@ -3095,7 +3421,7 @@ function Exports() {
             <div>
               <dt>字号 / 行距</dt>
               <dd>
-                {format?.config.font_size} pt / {format?.config.line_spacing} 倍
+                {format?.config.font_size} pt / {format?.config.line_spacing_points?`固定 ${format.config.line_spacing_points} 磅`:`${format?.config.line_spacing} 倍`}
               </dd>
             </div>
             <div>
@@ -3196,10 +3522,10 @@ function Exports() {
             <a
               className="btn"
               href={
-                "/api/v1/exports/" +
+                apiUrl("/exports/" +
                 x.id +
                 "/files/" +
-                encodeURIComponent("论文.docx")
+                encodeURIComponent("论文.docx"))
               }
             >
               DOCX
@@ -3208,10 +3534,10 @@ function Exports() {
             <a
               className="btn"
               href={
-                "/api/v1/exports/" +
+                apiUrl("/exports/" +
                 x.id +
                 "/files/" +
-                encodeURIComponent("检查报告.md")
+                encodeURIComponent("检查报告.md"))
               }
             >
               检查报告
@@ -3219,10 +3545,10 @@ function Exports() {
             <a
               className="btn primary"
               href={
-                "/api/v1/exports/" +
+                apiUrl("/exports/" +
                 x.id +
                 "/files/" +
-                encodeURIComponent("论文交付包.zip")
+                encodeURIComponent("论文交付包.zip"))
               }
             >
               交付包
@@ -3268,7 +3594,7 @@ function Exports() {
               <strong>工作台一致性备份</strong>
               <small>{date(b.created_at)} · 不含 API key</small>
             </div>
-            <a className="btn" href={"/api/v1/backups/" + b.id + "/download"}>
+            <a className="btn" href={apiUrl("/backups/" + b.id + "/download")}>
               下载备份
             </a>
           </div>
@@ -3294,10 +3620,10 @@ function Exports() {
               const f = formValues(e);
               const cfg: Row = {};
               for (const [k, v] of Object.entries(f))
-                cfg[k] = ["font", "latin_font", "heading_font"].includes(k)
+                cfg[k] = ["font", "latin_font", "heading_font","alignment"].includes(k)
                   ? v
                   : Number(v);
-              cfg.reference_superscript = true;
+              cfg.reference_superscript = f.reference_superscript==="on";
               const d = await act(
                 () => send("/projects/" + pid + "/format", cfg, "PUT"),
                 "格式配置已保存",
@@ -3311,7 +3637,8 @@ function Exports() {
                 ["西文字体", "latin_font"],
                 ["标题字体", "heading_font"],
                 ["字号pt", "font_size"],
-                ["行距倍数", "line_spacing"],
+                ["行距倍数（未启用固定行距时使用）", "line_spacing"],
+                ["固定行距（磅；0 为不启用）", "line_spacing_points"],
                 ["首行缩进字符", "first_line_chars"],
                 ["上边距mm", "margin_top"],
                 ["下边距mm", "margin_bottom"],
@@ -3327,10 +3654,12 @@ function Exports() {
                         : "number"
                     }
                     step="0.1"
-                    defaultValue={format?.config[key]}
+                    defaultValue={format?.config[key]??""}
                   />
                 </Field>
               ))}
+              <Field label="段落对齐"><select name="alignment" defaultValue={format?.config.alignment??"justify"}><option value="justify">两端对齐</option><option value="left">左对齐</option><option value="center">居中</option><option value="right">右对齐</option></select></Field>
+              <label className="checkbox"><input type="checkbox" name="reference_superscript" defaultChecked={format?.config.reference_superscript??true}/>文献编号使用上标</label>
             </div>
             <Button type="submit" variant="primary">
               保存格式
@@ -3342,517 +3671,40 @@ function Exports() {
   );
 }
 function SettingsPage() {
-  const { tick, act, notify, pid, refresh } = useApp();
-  const { data, set: setSettings } = useLoad("/settings", tick);
-  const { data: usage } = useLoad(
-    pid ? "/projects/" + pid + "/usage" : null,
-    tick,
-  );
-  const [cfg, setCfg] = useState<Row | null>(null),
-    [key, setKey] = useState(""),
-    [models, setModels] = useState<Row[]>([]),
-    [probing, setProbing] = useState(false),
-    [saving, setSaving] = useState(false),
-    [deleting, setDeleting] = useState(false),
-    [balanceLoading, setBalanceLoading] = useState(false),
-    [balanceError, setBalanceError] = useState(""),
-    [feedback, setFeedback] = useState<{
-      kind: "success" | "error" | "info";
-      text: string;
-    } | null>(null);
-  const busy = probing || saving || deleting || balanceLoading;
-  const acceptSaved = (saved: Row) => {
-    setSettings(saved);
-    setCfg(saved.provider);
-    setModels(saved.capabilities?.models ?? []);
-    setKey("");
-  };
-  const persistSettings = async (detect = false) => {
-    if (busy || !cfg) return;
-    let persisted = false;
-    if (detect) setProbing(true);
-    else setSaving(true);
-    setFeedback({
-      kind: "info",
-      text: detect ? "正在保存设置并检测模型…" : "正在安全保存接口设置…",
-    });
-    try {
-      const trimmed = key.trim();
-      if (key && !trimmed)
-        throw new Error("密钥不能只有空格；留空表示保留已有密钥。");
-      const saved = await send(
-        "/settings",
-        { provider: cfg, ...(trimmed ? { api_key: trimmed } : {}) },
-        "PUT",
-      );
-      acceptSaved(saved);
-      persisted = true;
-      const credentialMessage = saved.credential.configured
-        ? "密钥已保存在本机，输入框显示的是脱敏提示，无需重复填写。"
-        : "接口设置已保存；尚未填写API key。";
-      if (!detect) {
-        setFeedback({ kind: "success", text: credentialMessage });
-        notify("接口设置已保存");
-        return;
-      }
-      if (!saved.credential.configured)
-        throw new Error("尚未填写API key，请先输入密钥。");
-      setFeedback({
-        kind: "info",
-        text: "密钥已保存，正在向中转站获取模型列表…",
-      });
-      const detected = await send("/provider/models");
-      setModels(detected.models);
-      setFeedback({
-        kind: "success",
-        text:
-          "密钥已保存；检测成功，取得 " +
-          detected.models.length +
-          " 个模型。选择模型ID后请保存设置。",
-      });
-      notify("连接成功，取得 " + detected.models.length + " 个模型");
-    } catch (error) {
-      const message = (error as Error).message;
-      const text =
-        persisted && detect
-          ? "设置已保存；模型检测未完成：" +
-            message +
-            " 已保存的密钥会继续保留，无需重新输入。"
-          : "保存失败：" + message + " 输入内容已保留，请修正后重试。";
-      setFeedback({ kind: "error", text });
-      notify(text, true);
-    } finally {
-      setProbing(false);
-      setSaving(false);
-      refresh();
-    }
-  };
-  const refreshBalance = async () => {
-    if (busy || key || JSON.stringify(cfg) !== JSON.stringify(data?.provider)) return;
-    setBalanceLoading(true);
-    setBalanceError("");
-    try {
-      const result = await send("/provider/account-usage");
-      setSettings({ ...data, account_usage: result });
-      notify("中转站账户余额已更新");
-    } catch (error) {
-      setBalanceError((error as Error).message);
-    } finally {
-      setBalanceLoading(false);
-    }
-  };
-  const deleteCredential = async () => {
-    if (busy || !confirm("确认从本机删除已保存密钥？")) return;
-    setDeleting(true);
-    setFeedback({ kind: "info", text: "正在删除本机密钥…" });
-    try {
-      const saved = await send("/settings", { api_key: "" }, "PUT");
-      acceptSaved(saved);
-      setFeedback({
-        kind: saved.credential.configured ? "info" : "success",
-        text: saved.credential.configured
-          ? "已删除文件中的密钥，但当前环境变量仍提供有效密钥。"
-          : "本机密钥已删除。",
-      });
-      notify("本机密钥删除操作已完成");
-    } catch (error) {
-      setFeedback({
-        kind: "error",
-        text: "删除失败：" + (error as Error).message,
-      });
-      notify((error as Error).message, true);
-    } finally {
-      setDeleting(false);
-      refresh();
-    }
-  };
-  useEffect(() => {
-    if (data && !cfg) {
-      setCfg(data.provider);
-      setModels(data.capabilities?.models ?? []);
-    }
-  }, [data, cfg]);
-  if (!cfg)
-    return (
-      <div className="loading">
-        <LoaderCircle className="spin" />
-        加载接口设置…
-      </div>
-    );
-  const update = (k: string, v: any) => setCfg({ ...cfg, [k]: v });
+  const { tick, pid, refresh } = useApp();
+  const { data } = useLoad("/settings", tick);
   return (
     <>
-      <PageTitle
-        title="接口与设置"
-        description="使用自己的中转站与密钥，模型 ID 以服务商实际返回为准。"
-      />
-      <MaterialSummarySettings onSaved={refresh} />
+      <PageTitle title="接口与设置" description="管理 DeepSeek 接口，选择当前使用的服务商与模型。" />
+      <DeepSeekSettings onChanged={refresh} />
       <GptFallbackSettings pid={pid} />
       <ImageGenerationSettings />
       <div className="settings-layout">
         <section className="panel">
-          <div className="section-heading">
-            <h2>
-              <KeyRound size={18} />
-              DeepSeek 主模型接口
-            </h2>
-            <Badge
-              tone={
-                key.trim()
-                  ? "amber"
-                  : data?.credential.configured
-                    ? "green"
-                    : undefined
-              }
-              value={
-                key.trim()
-                  ? "新密钥待保存"
-                  : data?.credential.configured
-                    ? "已保存密钥"
-                    : "待填写密钥"
-              }
-            />
-          </div>
-          <form
-            noValidate
-            aria-label="模型接口设置"
-            onSubmit={async (e) => {
-              e.preventDefault();
-              await persistSettings(false);
-            }}
-          >
-            <fieldset disabled={busy} className="settings-fieldset">
-              <Field label="API 中转站地址">
-                <input
-                  value={cfg.base_url}
-                  onChange={(e) => update("base_url", e.target.value)}
-                  required
-                />
-              </Field>
-              <Field
-                label="API key"
-                hint={`Windows DPAPI 加密保存，不回传完整密钥。${data?.credential.masked ? " 当前保存：" + data.credential.masked + "；留空不会删除。" : ""}`}
-              >
-                <input
-                  type="password"
-                  aria-label="API key"
-                  autoComplete="new-password"
-                  value={key}
-                  onChange={(e) => setKey(e.target.value)}
-                  placeholder={
-                    data?.credential.configured
-                      ? "已保存 " + data.credential.masked + "，留空继续使用"
-                      : "填写自己的 key"
-                  }
-                />
-              </Field>
-              {feedback && (
-                <div
-                  role={feedback.kind === "error" ? "alert" : "status"}
-                  className={"settings-feedback " + feedback.kind}
-                  data-testid="settings-feedback"
-                  aria-live="polite"
-                >
-                  {feedback.kind === "info" && busy ? (
-                    <LoaderCircle size={16} className="spin" />
-                  ) : feedback.kind === "error" ? (
-                    <AlertTriangle size={16} />
-                  ) : (
-                    <CheckCircle2 size={16} />
-                  )}
-                  <span>{feedback.text}</span>
-                </div>
-              )}
-              <Field label="接口协议">
-                <select
-                  value={cfg.protocol}
-                  onChange={(e) => update("protocol", e.target.value)}
-                >
-                  <option value="openai">
-                    OpenAI 兼容 Chat Completions（/v1）
-                  </option>
-                  <option value="responses">OpenAI Responses（/v1）</option>
-                </select>
-              </Field>
-              <div className="model-field">
-                <Field label="模型 ID" hint="先保存密钥，再检测模型列表。">
-                  <input
-                    list="model-list"
-                    value={cfg.model}
-                    onChange={(e) => update("model", e.target.value)}
-                    placeholder="填写中转站的 DeepSeek 模型 ID"
-                  />
-                  <datalist id="model-list">
-                    {models.map((m) => (
-                      <option key={m.id} value={m.id}>
-                        {m.name}
-                      </option>
-                    ))}
-                  </datalist>
-                </Field>
-                <Button disabled={busy} onClick={() => persistSettings(true)}>
-                  {probing ? (
-                    <LoaderCircle className="spin" size={15} />
-                  ) : (
-                    <RefreshCw size={15} />
-                  )}
-                  {probing ? "检测中…" : "检测模型"}
-                </Button>
-              </div>
-              <div className="form-grid">
-                <Field label="单次输出上限 Token">
-                  <input
-                    type="number"
-                    value={cfg.max_output_tokens}
-                    onChange={(e) =>
-                      update("max_output_tokens", Number(e.target.value))
-                    }
-                  />
-                </Field>
-                <Field label="请求超时秒数">
-                  <input
-                    type="number"
-                    min="15"
-                    value={cfg.timeout_seconds}
-                    onChange={(e) =>
-                      update("timeout_seconds", Number(e.target.value))
-                    }
-                  />
-                </Field>
-              </div>
-              <details>
-                <summary>预算与兼容性设置</summary>
-                <label className="checkbox"><input type="checkbox" checked={!!cfg.supports_images} onChange={(e) => update("supports_images", e.target.checked)} />此 DeepSeek 接口支持图片输入（先验证再开启）</label>
-                <Button disabled={busy || !pid || !!key || JSON.stringify(cfg) !== JSON.stringify(data?.provider)} onClick={() => act(() => send("/provider/probe-image", {project_id:pid,provider_profile:"primary"}), "DeepSeek 图片验证已排队，按实际用量计费；结果见任务中心")}>测试 DeepSeek 图片（计费）</Button>
-                <div className="form-grid">
-                  <Field label="每百万输入Token单价">
-                    <input
-                      type="number"
-                      min="0"
-                      step="any"
-                      value={cfg.input_price ?? ""}
-                      placeholder="未配置则费用未知"
-                      onChange={(e) =>
-                        update(
-                          "input_price",
-                          e.target.value === "" ? null : Number(e.target.value),
-                        )
-                      }
-                    />
-                  </Field>
-                  <Field label="每百万输出Token单价">
-                    <input
-                      type="number"
-                      min="0"
-                      step="any"
-                      value={cfg.output_price ?? ""}
-                      onChange={(e) =>
-                        update(
-                          "output_price",
-                          e.target.value === "" ? null : Number(e.target.value),
-                        )
-                      }
-                    />
-                  </Field>
-                  <Field label="单次未知费用预留">
-                    <input
-                      type="number"
-                      min="0.01"
-                      step="any"
-                      value={cfg.max_request_cost}
-                      onChange={(e) =>
-                        update("max_request_cost", Number(e.target.value))
-                      }
-                    />
-                  </Field>
-                  <Field label="计价币种">
-                    <input
-                      value={cfg.currency}
-                      onChange={(e) => update("currency", e.target.value)}
-                    />
-                  </Field>
-                </div>
-                <label className="checkbox">
-                  <input
-                    type="checkbox"
-                    checked={!!cfg.json_mode}
-                    onChange={(e) => update("json_mode", e.target.checked)}
-                  />
-                  启用服务商 JSON 模式（确认支持后开启）
-                </label>
-              </details>
-              <div className="actions mt">
-                <Button type="submit" variant="primary" disabled={busy}>
-                  {saving ? (
-                    <LoaderCircle className="spin" size={15} />
-                  ) : (
-                    <Save size={15} />
-                  )}
-                  {saving ? "保存中…" : "保存接口设置"}
-                </Button>
-                <Button
-                  disabled={
-                    busy ||
-                    !pid ||
-                    !data?.credential.configured ||
-                    !data?.provider.model ||
-                    !!key ||
-                    JSON.stringify(cfg) !== JSON.stringify(data?.provider)
-                  }
-                  onClick={() =>
-                    act(
-                      () =>
-                        send("/provider/probe-generation", { project_id: pid }),
-                      "生成能力测试已排队，按实际用量计费；结果在任务中心",
-                    )
-                  }
-                >
-                  测试生成能力（计费）
-                </Button>
-                {data?.credential.configured && (
-                  <Button disabled={busy} onClick={deleteCredential}>
-                    {deleting ? "删除中…" : "删除密钥"}
-                  </Button>
-                )}
-              </div>
-            </fieldset>
-          </form>
-        </section>
-        <aside>
-          <section className="panel" aria-label="中转站账户余额">
-            <div className="section-heading">
-              <h2>中转站账户余额</h2>
-              <Button
-                disabled={busy || !data?.credential.configured || !!key || JSON.stringify(cfg) !== JSON.stringify(data?.provider)}
-                onClick={refreshBalance}
-              >
-                {balanceLoading ? <LoaderCircle size={15} className="spin" /> : <RefreshCw size={15} />}
-                {balanceLoading ? "查询中…" : "查询余额"}
-              </Button>
-            </div>
-            {data?.account_usage ? (
-              <div data-testid="account-usage">
-                <strong className="balance-amount">{data.account_usage.balance_known ? data.account_usage.remaining_exact : "余额未知"} {data.account_usage.unit}</strong>
-                <dl className="format-list">
-                  <div><dt>账户状态</dt><dd>{data.account_usage.validity_source === "default_assumed" ? "接口未报告有效性" : data.account_usage.is_valid === true ? "有效" : data.account_usage.is_valid === false ? "已停用" : "无法识别"}</dd></div>
-                  <div><dt>查询时间</dt><dd>{date(data.account_usage.fetched_at)}</dd></div>
-                </dl>
-                {data.account_usage.unit_source !== "response" && <p className="muted">接口未提供单位，按约定显示 USD，请核对账单。</p>}
-              </div>
-            ) : <p className="muted">尚未查询。保存接口设置后，点击查询余额。</p>}
-            {balanceError && <p role="alert" className="settings-feedback error">查询失败：{balanceError}。如有上次结果，其查询时间保持不变。</p>}
-            <p className="muted">余额来自 /v1/usage，属于整个中转站账户。项目预算和单次调用费用分别记录；未填写价格时费用仍为待结算。</p>
-            {(!!key || JSON.stringify(cfg) !== JSON.stringify(data?.provider)) && <p className="muted">请先保存当前修改，再查询对应账户。</p>}
-          </section>
-          <section className="panel mt">
-            <div className="section-heading">
-              <h2>使用说明</h2>
-              <Settings size={17} />
-            </div>
-            <ol className="guide-list">
-              <li>填写中转站与自己的 API key。</li>
-              <li>检测模型，选择实际模型 ID。</li>
-              <li>核对资料并发布论文规则包。</li>
-              <li>建立提纲，逐节生成并审阅。</li>
-            </ol>
-            <div className="notice compact">
-              <ShieldCheck size={18} />
-              <p>
-                原件在本机。API
-                调用会将选定资料发送给中转站，每份资料可设置为“仅限本地”。
-              </p>
-            </div>
-          </section>
+          <div className="section-heading"><h2>使用说明</h2><Settings size={17} /></div>
+          <ol className="guide-list">
+            <li>在 DeepSeek 接口列表中添加服务商地址、密钥与模型。</li>
+            <li>点击接口右侧的切换按钮，标记为“使用中”的接口用于后续 DeepSeek 请求。</li>
+            <li>论文写作、资料总结、规则整理与知识库共用当前 DeepSeek 接口。</li>
+            <li>可在接口的更多操作中查询余额，在编辑窗口中检测模型。</li>
+          </ol>
+          <div className="notice compact"><ShieldCheck size={18} /><p>原件在本机。API 调用会将选定资料发送给当前服务商，每份资料可设置为“仅限本地”。</p></div>
           <ArchivedProjects />
-          <section className="panel mt">
-            <h3>本机环境</h3>
-            <dl className="format-list">
-              <div>
-                <dt>版本</dt>
-                <dd>{data?.version}</dd>
-              </div>
-              <div>
-                <dt>密钥存储</dt>
-                <dd>{data?.credential.storage}</dd>
-              </div>
-              <div>
-                <dt>文档渲染</dt>
-                <dd>{data?.renderer_available ? "可用" : "未安装"}</dd>
-              </div>
-            </dl>
-            <details>
-              <summary>数据目录</summary>
-              <code className="path-text">{data?.data_directory}</code>
-            </details>
-          </section>
-        </aside>
+        </section>
+        <section className="panel">
+          <h3>本机环境</h3>
+          <dl className="format-list">
+            <div><dt>版本</dt><dd>{data?.version}</dd></div>
+            <div><dt>密钥存储</dt><dd>{data?.credential.storage}</dd></div>
+            <div><dt>文档渲染</dt><dd>{data?.renderer_available ? "可用" : "未安装"}</dd></div>
+          </dl>
+          <details><summary>数据目录</summary><code className="path-text">{data?.data_directory}</code></details>
+        </section>
       </div>
-      <section className="panel mt">
-        <div className="section-heading">
-          <h2>当前项目调用记录</h2>
-          <span>未知费用保留预留额度</span>
-        </div>
-        {usage?.length ? (
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>时间 / 模型</th>
-                <th>状态</th>
-                <th>输入 / 输出Token</th>
-                <th>费用</th>
-                <th />
-              </tr>
-            </thead>
-            <tbody>
-              {usage.map((u: Row) => {
-                const v = parse(u.usage);
-                return (
-                  <tr key={u.id}>
-                    <td>
-                      <strong>{u.model}</strong>
-                      <small>{date(u.created_at)}</small>
-                    </td>
-                    <td>
-                      <Badge value={u.status} />
-                    </td>
-                    <td>
-                      {v.input_tokens ?? "未知"} / {v.output_tokens ?? "未知"}
-                    </td>
-                    <td>
-                      {u.cost === null ? "待结算" : Number(u.cost).toFixed(5)}
-                    </td>
-                    <td>
-                      {u.cost === null && (
-                        <Button
-                          onClick={() => {
-                            const cost = prompt("按实际账单填写该调用费用");
-                            if (cost !== null && Number.isFinite(Number(cost)))
-                              act(
-                                () =>
-                                  send("/usage/" + u.id + "/settle", {
-                                    cost: Number(cost),
-                                  }),
-                                "已登记实际费用",
-                              );
-                          }}
-                        >
-                          登记账单
-                        </Button>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        ) : (
-          <p className="muted">尚未进行收费模型调用。</p>
-        )}
-      </section>
+      {pid && <ExpenseLedger pid={pid} tick={tick} onChanged={refresh} />}
     </>
   );
 }
-
 function ReferenceTools() {
   const { pid, tick, act } = useApp();
   const { data: citations } = useLoad("/projects/" + pid + "/citations", tick);

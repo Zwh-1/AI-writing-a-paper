@@ -158,15 +158,23 @@ def format_rule_preview(pid):
         expected=value['expected']
         if key in updates and updates[key]!=expected:conflicts.append(key)
         updates[key]=expected;source.append({'rule_id':rule['id'],'key':key,'expected':expected})
-    return {'package_id':pkg['id'] if pkg else None,'current':exports.format_config(pid),'updates':updates,'conflicts':sorted(set(conflicts)),'sources':source}
+    from .paper_format import resolve
+    resolution=resolve(pid)
+    for key,value in resolution.get('components',{}).get('body',{}).items():updates.setdefault(key,value)
+    return {'package_id':pkg['id'] if pkg else None,'current':resolution['config'],'updates':updates,'conflicts':sorted(set(conflicts))+resolution['conflicts'],'sources':source,
+            'components':resolution.get('components',{}),'component_sources':resolution.get('component_sources',{}),'manual_rules':resolution.get('manual_rules',[])}
 
 @router.post('/projects/{pid}/format/apply-rules')
 def apply_format_rules(pid,body:dict):
     preview=format_rule_preview(pid)
     if not preview['package_id'] or body.get('package_id')!=preview['package_id']:raise HTTPException(409,'规则包已更新或尚未发布')
     if preview['conflicts']:raise HTTPException(422,'排版规则仍存在冲突')
-    if not preview['updates']:raise HTTPException(422,'当前规则包没有可执行排版条款，请先为已确认要求配置检查器')
-    config={**preview['current'],**preview['updates']};db.set_setting('format:'+pid,config);db.audit(pid,'apply_format_rules',preview);return config
+    if not preview['updates'] and not preview.get('components'):raise HTTPException(422,'当前规则包没有可执行排版条款，请先为已确认要求配置检查器')
+    config=db.setting('format:'+pid,{}) or {}
+    inferred=set(preview.get('components',{}).get('body',{}))
+    for key in inferred:config.pop(key,None)
+    config.update({key:value for key,value in preview['updates'].items() if key not in inferred})
+    db.set_setting('format:'+pid,config);db.audit(pid,'apply_format_rules',preview);return exports.format_config(pid)
 
 @router.get('/projects/{pid}/format-profiles')
 def list_profiles(pid):security.require_project(pid);return db.rows('SELECT * FROM project_formats WHERE project_id=? ORDER BY created_at DESC',(pid,))

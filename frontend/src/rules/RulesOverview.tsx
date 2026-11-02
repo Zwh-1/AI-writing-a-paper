@@ -16,6 +16,8 @@ export default function RulesOverview({
 }) {
   const ready = data?.readiness;
   const summary = summarizeRuleRecords(data?.rules ?? []);
+  const visualRecords = (data?.rules ?? []).filter((rule: Row) => rule.source_observation);
+  const excerptRecords = visualRecords.filter((rule: Row) => rule.source_observation.scope_limited).length;
   const metrics = [
     {
       key: "all",
@@ -111,7 +113,28 @@ export default function RulesOverview({
         ))}
       </div>
       <div className="rules-count-explanation">
-        <p>全部记录由以上四类组成。仅适用的强制要求与建议进入规则包。</p>
+        <div>
+          <p>全部记录由以上四类组成。仅适用的强制要求与建议进入规则包。</p>
+          {data?.document_coverage && (
+            <p>
+              <strong>资料识别（按原图统计）：</strong>
+              整图对照 {data.document_coverage.counts.full_transcript_compared} · 部分对照 {data.document_coverage.counts.partial_transcript_compared} · OCR 待核对 {data.document_coverage.counts.ocr_unreviewed} · 尚无文字观察 {data.document_coverage.counts.image_unread}。
+              完整观察与校对摘录并列保留，规则分类数量不代表全文识别完成。
+              相同图片复用 {data.document_coverage.reused_image_assets ?? 0} 组，各原页语境分别保留。
+            </p>
+          )}
+          {visualRecords.length > 0 && (
+            <p>
+              当前采用 {visualRecords.length} 条校对文字，其中 {excerptRecords} 条仅核对所列摘录。完整原图与未核对观察可在原文窗口读取。示例中的功能和测试结果不证明本项目已完成。
+            </p>
+          )}
+          {data && data.pending_diagnostics?.total > 0 && (
+            <p>
+              仍需核验：原图转录 {data.pending_diagnostics.by_kind.source_quality} 条 · 上下文 {data.pending_diagnostics.by_kind.context} 条 · 用途判定 {data.pending_diagnostics.by_kind.classification} 条。
+              发布条件仅检查已纳入的规则，不代表全部资料识别正确。
+            </p>
+          )}
+        </div>
         <button
           className="text-button"
           disabled={!data}

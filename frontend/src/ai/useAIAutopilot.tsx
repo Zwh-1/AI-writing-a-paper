@@ -8,6 +8,7 @@ import {
   type ReactNode,
 } from "react";
 import { api, send } from "../client";
+import { useSourceBillingGate } from "../workspace/SourceWorkspace";
 import type { Row } from "../workspace/types";
 import { availableBudget } from "./autopilotBudget";
 
@@ -26,6 +27,16 @@ export type AIException = {
   label: string;
   reason: string;
   state: string;
+  issue_kind?: "source_text" | "rule_decision";
+  content_status?: string;
+  purpose_hint?: string;
+  source_file?: string;
+  source_page?: number;
+  supporting_excerpt?: {
+    text: string;
+    coverage: string;
+    supports_entire_candidate: boolean;
+  };
 };
 export type AutopilotReport = {
   materials: Coverage;
@@ -35,8 +46,15 @@ export type AutopilotReport = {
   exception_count: number;
   tasks: Row[];
   policy: Row;
-  budget: { limit: number; available: number; can_call?: boolean; currency?: string;
-    used?: number; unknown_reserved?: number; pending_bill_reserved?: number };
+  budget: {
+    limit: number;
+    available: number;
+    can_call?: boolean;
+    currency?: string;
+    used?: number;
+    unknown_reserved?: number;
+    pending_bill_reserved?: number;
+  };
   pricing?: Row;
   model_ready: boolean;
   note: string;
@@ -52,6 +70,7 @@ export const taskStatusLabels: Record<string, string> = {
   cancelled: "后续处理已停止",
 };
 function useController(pid: string, tick: number, onUpdated: () => void) {
+  const billingGate = useSourceBillingGate();
   const [data, setData] = useState<AutopilotReport | null>(null),
     [error, setError] = useState("");
   const [loadError, setLoadError] = useState("");
@@ -92,7 +111,10 @@ function useController(pid: string, tick: number, onUpdated: () => void) {
       const running = value.tasks.some((task) =>
         ["queued", "running"].includes(task.status),
       );
-      const ceiling = availableBudget(value.budget.limit, value.budget.available);
+      const ceiling = availableBudget(
+        value.budget.limit,
+        value.budget.available,
+      );
       if (!initialized.current) {
         initialized.current = true;
         setBudget(
@@ -154,8 +176,12 @@ function useController(pid: string, tick: number, onUpdated: () => void) {
       setPending(null);
     }
   };
-  const available = availableBudget(data?.budget.limit ?? 0, data?.budget.available ?? 0);
+  const available = availableBudget(
+    data?.budget.limit ?? 0,
+    data?.budget.available ?? 0,
+  );
   const canStart =
+    !billingGate.blocked &&
     !!data?.model_ready &&
     !pending &&
     !active &&
@@ -186,6 +212,7 @@ function useController(pid: string, tick: number, onUpdated: () => void) {
     active,
     available,
     canStart,
+    billingGate,
     load,
     start: () => {
       if (canStart)
@@ -199,19 +226,29 @@ function useController(pid: string, tick: number, onUpdated: () => void) {
     },
     reconcileBilling: () =>
       perform("billing", async () => {
-        const result = await send("/projects/" + pid + "/tasks/billing-reconcile", {});
+        const result = await send(
+          "/projects/" + pid + "/tasks/billing-reconcile",
+          {},
+        );
         const profiles = result.profiles ?? [result];
         if (!profiles.length) return { message: result.message };
         const failed = profiles.filter((item: Row) => !item.reconciled);
-        return { message: failed.length
-          ? "账单未完全核对，保留未核实预留：" + failed.map((item: Row) => item.reason).join("；")
-          : "账单核对完成，可用预算已刷新。" };
+        return {
+          message: failed.length
+            ? "账单未完全核对，保留未核实预留：" +
+              failed.map((item: Row) => item.reason).join("；")
+            : "账单核对完成，可用预算已刷新。",
+        };
       }),
     repairExceptions: () => {
-      if (canStart && (data?.exception_count ?? 0)>0)
-        return perform("repair",()=>send("/projects/"+pid+"/ai-autopilot/repair-exceptions",{
-          budget_limit:budget,acknowledge_unknown:true,auto_publish:autoPublish,
-        }));
+      if (canStart && (data?.exception_count ?? 0) > 0)
+        return perform("repair", () =>
+          send("/projects/" + pid + "/ai-autopilot/repair-exceptions", {
+            budget_limit: budget,
+            acknowledge_unknown: true,
+            auto_publish: autoPublish,
+          }),
+        );
     },
     cancel: () => {
       if (active)

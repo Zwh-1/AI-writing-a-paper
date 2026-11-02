@@ -1,0 +1,65 @@
+const fs=require('fs'),path=require('path'),assert=require('node:assert/strict');
+const root=path.resolve(__dirname,'..'),out=path.join(root,'.runtime/source-workspace-refactor-20261028');
+const fixture=JSON.parse(fs.readFileSync(path.join(out,'fixture.json'),'utf8')),origin=`http://127.0.0.1:${fixture.port}`;
+const {chromium}=require(path.join(root,'.runtime/browser/node_modules/playwright'));
+(async()=>{
+ const browser=await chromium.launch({headless:true,executablePath:path.join(root,'.runtime/browsers/chromium-1234/chrome-win64/chrome.exe')});const errors=[],writes=[],checks=[];
+ try{
+  const context=await browser.newContext({viewport:{width:1440,height:1050},locale:'zh-CN'});
+  const token=JSON.parse(fs.readFileSync(path.join(root,`.runtime/session-${fixture.port}.json`),'utf8')).bootstrap_token;
+  assert.equal((await context.request.post(origin+'/api/v1/session',{data:{token}})).status(),200);
+  const page=await context.newPage();page.setDefaultTimeout(30000);page.on('pageerror',e=>errors.push(e.message));
+  let calls=[];page.on('request',r=>{if(r.url().includes('/api/v1/'))calls.push(new URL(r.url()).pathname)});
+  await page.route('**/api/v1/**',route=>{const req=route.request(),url=new URL(req.url());if(['GET','HEAD','OPTIONS'].includes(req.method())||url.pathname==='/api/v1/session'||url.pathname.endsWith('/knowledge/query')||url.pathname.endsWith('/knowledge/graph/search'))return route.continue();writes.push(url.pathname);return route.abort();});
+  await page.addInitScript(pid=>localStorage.setItem('paper_project',pid),fixture.project_id);await page.goto(origin);
+  await page.getByRole('button',{name:'资料中心',exact:true}).first().click();
+  await page.locator('.material-row').first().waitFor();const nav=page.getByLabel('资料规则文献联动');await page.waitForFunction(()=>document.querySelector('.source-destination-count')?.textContent.includes('3'));
+  assert.equal(await page.locator('.source-workspace-nav').count(),1);assert.equal(await page.getByRole('heading',{name:'资料与规则 · AI 托管'}).count(),0);
+  await page.getByRole('tab',{name:'用途与流向',exact:true}).click();await page.locator('[data-source-flow]').first().waitFor();
+  assert.equal(await page.locator('[data-source-flow]').count(),3);checks.push('资料入口共享原件并展示规则、书目、知识和阅读关联');
+  await page.locator(`[data-source-flow="${fixture.rule_file}"]`).getByRole('button',{name:'关联规则',exact:true}).click();
+  await page.getByRole('heading',{name:'论文规则工作台',exact:true}).waitFor();await page.locator('.source-focus').getByText('学校写作要求.txt',{exact:true}).waitFor();
+  await page.waitForFunction(fid=>document.querySelector('[aria-label="按规则出处筛选"]')?.value===fid,fixture.rule_file);
+  await page.getByLabel('按规则出处筛选').selectOption('manual');assert.equal(await page.getByLabel('按规则出处筛选').inputValue(),'manual');assert.equal(await page.locator('.source-focus').count(),0);
+  await page.getByLabel('按规则出处筛选').selectOption(fixture.rule_file);await page.locator('.source-focus').waitFor();
+  assert.equal(await page.getByRole('button',{name:'从原件重新生成全部规则（计费）',exact:true}).count(),0);checks.push('从资料定位同一来源规则，重建工具移至整理视图');
+  await page.getByRole('tab',{name:'指导与示例知识',exact:true}).click();await page.getByRole('heading',{name:'图谱与 Wiki',exact:true}).waitFor();
+  assert.deepEqual(await page.getByLabel('知识范围',{exact:true}).locator('option').evaluateAll(es=>es.map(e=>e.value)),['guidance']);
+  await page.locator('.knowledge-page-item').first().waitFor();checks.push('规则知识固定指导范围，保留规则包与派生知识边界');
+  await page.getByRole('tab',{name:'整理与审核',exact:true}).click();await page.getByRole('button',{name:'从原件重新生成全部规则（计费）',exact:true}).waitFor();
+  assert(await page.getByRole('button',{name:'从原件重新生成全部规则（计费）',exact:true}).isDisabled());
+  await page.screenshot({path:path.join(out,'rules-desktop.png')});
+  await page.getByRole('tab',{name:'来源材料',exact:true}).click();await page.getByRole('button',{name:'查看原件',exact:true}).first().click();
+  const viewer=page.getByRole('dialog').first();await viewer.waitFor();await page.getByRole('button',{name:'关闭资料查看',exact:true}).click();
+  await page.getByRole('tab',{name:'资料库',exact:true}).click();await page.getByRole('button',{name:'查看全部来源',exact:true}).click();
+  await page.locator(`[data-file-id="${fixture.research_file}"]`).getByRole('button',{name:'进入文献阅读',exact:true}).click();
+  await page.getByRole('heading',{name:'文献与知识工作台',exact:true}).waitFor();await page.locator('.dr-documents article').first().waitFor();
+  assert.equal(await page.locator('.dr-documents article').count(),1);assert((await page.locator('.dr-documents').textContent()).includes('方法甲研究.txt'));checks.push('规则回查保留页码，研究资料直接进入该原件的问题阅读');
+  await page.getByRole('tab',{name:'文献书目',exact:true}).click();await page.locator('.reference-row').first().waitFor();assert.equal(await page.locator('.reference-row').count(),1);
+  assert.equal(await page.getByRole('region',{name:'图谱与Wiki知识库',exact:true}).count(),0);assert.equal(await page.getByRole('region',{name:'证据知识库',exact:true}).count(),0);
+  await page.getByRole('button',{name:'查看全部来源',exact:true}).click();await page.waitForFunction(()=>document.querySelectorAll('.reference-row').length===2);
+  await page.getByRole('tab',{name:'文献书目',exact:true}).focus();await page.keyboard.press('ArrowRight');assert.equal(await page.getByRole('tab',{name:'问题阅读',exact:true}).getAttribute('aria-selected'),'true');await page.keyboard.press('Home');
+  await page.screenshot({path:path.join(out,'references-desktop.png')});checks.push('文献默认书目视图，独立工具按需挂载，支持清除来源范围');
+  await page.getByRole('tab',{name:'原文与证据',exact:true}).click();await page.getByRole('heading',{name:'证据知识库',exact:true}).waitFor();
+  await page.getByRole('tab',{name:'统一术语',exact:true}).click();await page.getByText('condition',{exact:true}).waitFor();checks.push('证据与术语各有任务视图，原有能力可达');
+  await page.getByRole('tab',{name:'图谱与Wiki',exact:true}).click();const graph=page.getByRole('region',{name:'图谱与Wiki知识库',exact:true});await graph.getByRole('button',{name:'章节准备',exact:true}).click();
+  await graph.getByLabel('问题或关键词',{exact:true}).fill('单用户');await graph.getByLabel('补充原文检索',{exact:false}).uncheck();await graph.getByRole('button',{name:'检索知识',exact:true}).click();await graph.getByText('任务路线：',{exact:false}).waitFor();
+  assert.equal(await graph.getByRole('button',{name:'维护与迁移',exact:true}).count(),0);checks.push('图谱工作区仅展示知识浏览和章节准备，维护独立入口');
+  await page.getByRole('tab',{name:'处理与维护',exact:true}).click();await page.getByRole('button',{name:'维护与迁移',exact:true}).waitFor();
+  assert.equal(await page.getByRole('button',{name:'主题 Wiki',exact:true}).count(),0);assert(await page.getByRole('button',{name:'重新生成全部文献总结（计费）',exact:true}).isDisabled());checks.push('维护功能与批量更新集中，三页收费入口共用依据状态');
+  await page.setViewportSize({width:390,height:844});
+  for(const label of ['资料中心','论文规则','文献与术语']){
+   await page.getByRole('button',{name:label,exact:true}).first().click();await page.waitForTimeout(200);
+   assert(await page.locator('main').evaluate(el=>el.scrollWidth<=el.clientWidth+2),label+' mobile overflow');
+   await page.locator('main').evaluate(el=>el.scrollTop=0);await page.screenshot({path:path.join(out,'mobile-'+({'资料中心':'materials','论文规则':'rules','文献与术语':'references'}[label])+'.png')});
+  }
+  checks.push('三页390px适配无横向溢出');
+  await page.setViewportSize({width:1440,height:1050});await page.getByRole('button',{name:'资料中心',exact:true}).first().click();await page.getByRole('tab',{name:'资料库',exact:true}).click();
+  await page.locator(`[data-file-id="${fixture.dual_file}"]`).getByRole('button',{name:'资料类型与多用途',exact:true}).click();await page.getByRole('dialog',{name:'资料类型与多用途',exact:true}).waitFor();await page.waitForFunction(fid=>document.querySelector('[aria-label="多用途原件"]')?.value===fid,fixture.dual_file);await page.getByRole('button',{name:'关闭窗口',exact:true}).last().click();checks.push('多用途调整在资料入口可达并预选同一原件');
+  await page.getByLabel('选择当前项目').selectOption(fixture.other_project_id).catch(async()=>{await page.locator('.project-switch select').selectOption(fixture.other_project_id)});
+  await page.getByRole('button',{name:'资料中心',exact:true}).first().click();await page.getByRole('tab',{name:'资料库',exact:true}).click();await page.getByRole('button',{name:'隔离原件.txt',exact:true}).waitFor();
+  assert.equal(await page.locator('.source-focus').count(),0);checks.push('项目切换不泄漏另一项目来源和筛选');
+  assert.deepEqual(errors,[]);assert.deepEqual(writes,[]);
+  const report={passed:true,synthetic:true,checks,errors,writes,paid_model_calls:0};fs.writeFileSync(path.join(out,'browser-report.json'),JSON.stringify(report,null,2));console.log(JSON.stringify(report,null,2));
+ }finally{await browser.close();}
+})().catch(e=>{console.error(e);process.exitCode=1;});

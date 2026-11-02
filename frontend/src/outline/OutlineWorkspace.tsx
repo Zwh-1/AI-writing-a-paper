@@ -13,6 +13,7 @@ import { send } from "../client";
 import WorkspaceDialog from "../workspace/WorkspaceDialog";
 import { useWorkspaceResource } from "../workspace/useWorkspaceResource";
 import "./outlineWorkspace.css";
+import { PaperWritingButton } from "../paper/PaperWriting";
 
 type Section = {
   id: string;
@@ -264,6 +265,7 @@ export default function OutlineWorkspace({ pid, tick, act, onWrite }: Props) {
           <p>明确写作目标、篇幅与前置材料，再从准备充分的章节开始。</p>
         </div>
         <div className="actions" aria-label="提纲操作">
+          <PaperWritingButton pid={pid} act={act} onChanged={() => void load()} />
           <button
             className="btn"
             disabled={!!pending}

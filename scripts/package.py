@@ -1,49 +1,287 @@
-from pathlib import Path
-import json,zipfile,hashlib,os,re
-ROOT=Path(__file__).resolve().parents[1]
-VERSION=json.loads((ROOT/'frontend/package.json').read_text(encoding='utf-8'))['version']
-OUTPUT=ROOT.parent/f'砚台论文工作台_{VERSION}_便携版.zip'
-EXCLUDED={'__pycache__','.pytest_cache','node_modules','tests','test','browser-data'}
-def selected_files():
-    if (ROOT/'docs/生图提示词与段落语义对齐_2026-10-26.md').is_file():yield ROOT/'docs/生图提示词与段落语义对齐_2026-10-26.md'
-    folders=['backend','frontend/src','frontend/dist','prompts','scripts','.runtime/python','.runtime/python-deps','.runtime/advanced-deps','.runtime/browser','.runtime/browsers','.runtime/models/local','.runtime/writing-agent']
-    individual=['runner.py','requirements.lock.txt','README.md','启动论文工作台.ps1','停止论文工作台.ps1','frontend/package.json','frontend/package-lock.json','frontend/tsconfig.json','frontend/vite.config.ts','frontend/index.html','docs/实现与验收说明.md','docs/V2.0目标缺口审计与补齐记录.md','docs/0.2.1设置修复说明.md','docs/0.2.2余额与验收测试说明.md','docs/0.2.3API迁移说明.md','docs/0.3.0六项扩展实现与使用说明.md','docs/0.3.1资料解析修复说明.md','requirements-advanced.lock.txt','准备截图浏览器.ps1','准备隔离执行环境.ps1','部署协作服务.ps1','.dockerignore','deployment/Dockerfile','deployment/compose.yaml','deployment/Caddyfile','deployment/.env.example','deployment/requirements.server.lock.txt','deployment/README.md']
-    for name in individual:
-        p=ROOT/name
-        if p.is_file():yield p
-    if (ROOT/'docs/0.4.0有据写作实现与验收.md').is_file():yield ROOT/'docs/0.4.0有据写作实现与验收.md'
-    if (ROOT/'docs/0.4.1剩余功能与验收说明.md').is_file():yield ROOT/'docs/0.4.1剩余功能与验收说明.md'
-    for name in (f'docs/{VERSION}更新与升级说明.md','docs/0.5.0更新与升级说明.md','docs/0.5.1更新与升级说明.md','docs/0.6.0证据知识库实现与验收.md','docs/0.6.1文献阅读与用途修复.md','docs/有据写作入口与启动检查修复.md','docs/文献库导入与使用说明.md','docs/文献知识库存储与检索.md','docs/英文摘要翻译说明.md','docs/资料与规则页面组件结构.md','docs/资料与规则AI托管说明.md','docs/从源码运行.md','docs/论文图表与三线表.md','docs/GPT生图独立接口配置.md','docs/论文图表功能修复_2026-10-26.md','docs/论文配图规范与章节关联_2026-10-26.md'):
-        if (ROOT/name).is_file():yield ROOT/name
-    if (ROOT/'打开真实验收审阅.ps1').is_file():yield ROOT/'打开真实验收审阅.ps1'
-    for name in folders:
-        folder=ROOT/name
-        for p in folder.rglob('*'):
-            rel=p.relative_to(folder)
-            if p.is_file() and not any(part in (EXCLUDED-{'node_modules'} if name=='.runtime/browser' else EXCLUDED) for part in rel.parts) and p.suffix not in ('.pyc','.pyo','.log','.part','.tmp'):yield p
-    for p in (ROOT/'tests').glob('*.py'):yield p
-    for p in (ROOT/'tests').glob('*.cjs'):yield p
-    for p in (ROOT/'tests').glob('*.ps1'):yield p
+"""Build one integrated application ZIP, including GraphRAG and public resources."""
+from pathlib import Path, PurePosixPath
+from collections import defaultdict
+import argparse
+import hashlib
+import json
+import os
+import re
+import time
+import zipfile
+
+ROOT = Path(__file__).resolve().parents[1]
+VERSION = json.loads((ROOT / 'frontend/package.json').read_text(encoding='utf-8'))['version']
+PROFILES = {'integrated': '完整整合便携版', 'portable': '精简便携版', 'full': '完整便携版', 'offline': '完整离线版',
+            'browser': '截图浏览器组件', 'models': '本地检索模型组件', 'graphrag': '知识图谱计算组件'}
+MAX_PACKAGE_BYTES = 500_000_000
+OUTPUT = ROOT.parent / f'砚台论文工作台_{VERSION}_{PROFILES["integrated"]}.zip'
+EXCLUDED = {'__pycache__', '.pytest_cache', 'node_modules', 'tests', 'test', 'browser-data', '.git'}
+SUFFIXES = {'.pyc', '.pyo', '.log', '.part', '.tmp'}
+DEV_DISTRIBUTIONS = {'pytest', 'pluggy', 'iniconfig'}
+TYPESCRIPT_FILES = {'package.json', 'LICENSE.txt', 'ThirdPartyNoticeText.txt', 'lib/typescript.js'}
+PLAYWRIGHT_API_FILES = {'index.js', 'index.mjs', 'package.json', 'LICENSE', 'NOTICE', 'ThirdPartyNotices.txt'}
+RUNTIME_ASSETS = {'frontend/src/collaboration.html': 'frontend/collaboration.html'}
+SCRIPTS = ('scripts/capture-system.cjs', 'scripts/office-render.ps1', 'scripts/prepare_browser.py',
+           'scripts/writing-agent/parse-typescript.mjs', 'scripts/install_portable_component.py', 'scripts/portable-start.ps1',
+           'scripts/graphrag_worker.py', 'scripts/initialize_graph_wiki.py','scripts/knowledge_transfer_worker.py','scripts/knowledge_load_acceptance.py')
+GUIDES = ('README.md', 'docs/便携版体积与可选组件.md', 'docs/单文件便携版使用说明.md', 'docs/从源码运行.md',
+          'docs/论文图表与三线表.md', 'docs/GPT生图独立接口配置.md',
+          'docs/论文配图规范与章节关联_2026-10-26.md', 'docs/生图提示词与段落语义对齐_2026-10-26.md',
+          'docs/逐章写作与上下文衔接.md', 'docs/独立学术润写.md', 'docs/文献知识库存储与检索.md')
+GUIDES=(*GUIDES,'docs/0.7.0图谱与Wiki知识库使用说明.md')
+GUIDES=(*GUIDES,'docs/0.7.1知识库功能补齐与验收说明_2026-10-28.md')
+GUIDES=(*GUIDES,'docs/0.7.2资料规则文献页面重构与整合_2026-10-28.md')
+GUIDES=(*GUIDES,'docs/0.7.3完整整合便携版使用说明.md','docs/0.7.3首屏加载性能修复_2026-10-31.md','docs/六页文献工作台布局优化_2026-10-31.md','docs/文献页面功能核查与修复_2026-10-31.md')
+GUIDES=(*GUIDES,'docs/API接口整合方案_2026-11-02.md','docs/API接口整合实施记录_2026-11-02.md','docs/DeepSeek接口整合与切换_2026-11-02.md')
+
+
+def _walk(folder, allow_modules=False):
+    excluded = EXCLUDED - {'node_modules'} if allow_modules else EXCLUDED
+    for path in sorted(folder.rglob('*')):
+        relative = path.relative_to(folder)
+        if path.is_file() and not any(p in excluded for p in relative.parts) and path.suffix not in SUFFIXES:
+            if path.is_symlink():
+                raise RuntimeError('Package input must be a regular file: ' + str(path))
+            yield path
+
+
+def _distribution(name):
+    return re.sub(r'[-_.]+', '-', name.rsplit('-', 1)[0]).lower()
+
+
+def _development_file(relative):
+    top = relative.parts[0]
+    return (top in DEV_DISTRIBUTIONS | {'_pytest'}
+            or top.endswith('.dist-info') and _distribution(top[:-10]) in DEV_DISTRIBUTIONS
+            or relative.suffix in ('.pyi', '.map')
+            or top == 'fontTools' and relative.suffix in ('.c', '.h'))
+
+
+def archive_name(path, root=ROOT):
+    relative = path.relative_to(root).as_posix()
+    return RUNTIME_ASSETS.get(relative, relative)
+
+
+def _overridden_base_entries(root):
+    """runner.py loads advanced-deps first. Keep that complete package/version."""
+    base, advanced = root / '.runtime/python-deps', root / '.runtime/advanced-deps'
+    if not advanced.is_dir():
+        return set()
+    names = set()
+    for item in advanced.iterdir():
+        if item.is_file() or (item / '__init__.py').is_file() or item.name.endswith('.libs'):
+            names.add(item.name)
+    distributions = {_distribution(p.name[:-10]) for p in advanced.glob('*.dist-info')}
+    names.update(p.name for p in base.glob('*.dist-info') if _distribution(p.name[:-10]) in distributions)
+    return names
+
+
+def _browser_files(root):
+    metadata = root / '.runtime/browser/node_modules/playwright-core/browsers.json'
+    if not metadata.is_file():
+        raise RuntimeError('Prepare the public Playwright runtime before packaging the browser component')
+    entries = json.loads(metadata.read_text(encoding='utf-8'))['browsers']
+    item = next(e for e in entries if e['name'] == 'chromium-headless-shell')
+    if not re.fullmatch(r'\d+', item['revision']):
+        raise RuntimeError('Invalid Playwright browser revision')
+    folder = root / '.runtime/browsers' / ('chromium_headless_shell-' + item['revision'])
+    if not folder.is_dir():
+        raise RuntimeError('Matching Chromium headless shell is missing: ' + str(folder))
+    yield from _walk(folder)
+
+
+def _model_files(root):
+    manifests = sorted((root / '.runtime/models/local').glob('*/verified-model.json'))
+    if not manifests:
+        raise RuntimeError('No verified local model is installed; download/verify models before making the offline component')
+    for manifest in manifests:
+        content = json.loads(manifest.read_text(encoding='utf-8'))
+        files = content.get('files')
+        if not isinstance(files, dict) or not files:
+            raise RuntimeError('Invalid verified model manifest')
+        yield manifest
+        for relative, expected in files.items():
+            name = PurePosixPath(relative)
+            if name.is_absolute() or any(part in ('..', '.') or ':' in part for part in name.parts) or '\\' in relative:
+                raise RuntimeError('Invalid model file path: ' + relative)
+            file = manifest.parent.joinpath(*name.parts)
+            if not file.is_file() or file.is_symlink() or file.resolve().parent != file.parent.resolve():
+                raise RuntimeError('Missing or redirected model file: ' + relative)
+            with file.open('rb') as source:
+                if hashlib.file_digest(source, 'sha256').hexdigest() != expected:
+                    raise RuntimeError('Model failed its existing SHA256 manifest: ' + relative)
+            yield file
+
+
+def selected_files(profile='full', root=None):
+    root = Path(root or ROOT)
+    if profile not in PROFILES:
+        raise ValueError('Unknown package profile')
+    if profile in ('browser', 'models','graphrag'):
+        yield from (_browser_files(root) if profile == 'browser' else _model_files(root) if profile=='models' else _walk(root/'.runtime/graphrag-deps'))
+        return
+    for name in ('backend', 'frontend/dist', 'prompts', '.runtime/python', '.runtime/python-deps',
+                 '.runtime/advanced-deps', '.runtime/browser', '.runtime/writing-agent/typescript'):
+        overridden = _overridden_base_entries(root) if name == '.runtime/python-deps' else set()
+        for path in _walk(root / name, allow_modules=name == '.runtime/browser'):
+            relative = path.relative_to(root / name)
+            if relative.parts[0] in overridden:
+                continue
+            if name in ('.runtime/python-deps', '.runtime/advanced-deps') and relative.parts[0] in ('bin', 'Scripts', 'share'):
+                continue
+            if name in ('.runtime/python-deps', '.runtime/advanced-deps') and _development_file(relative):
+                continue
+            if name == '.runtime/writing-agent/typescript' and relative.as_posix() not in TYPESCRIPT_FILES:
+                continue
+            if name == '.runtime/browser' and path.suffix in ('.ts', '.map'):
+                continue
+            if (name == '.runtime/browser' and relative.parts[:2] == ('node_modules', 'playwright')
+                    and relative.relative_to('node_modules/playwright').as_posix() not in PLAYWRIGHT_API_FILES):
+                continue
+            # Paddle LAC is not used by the application's jieba.cut tokenizer.
+            if name == '.runtime/python-deps' and relative.parts[:2] == ('jieba', 'lac_small'):
+                continue
+            yield path
+    for name in ('runner.py', '启动论文工作台.ps1', '停止论文工作台.ps1', '安装便携组件.ps1',
+                 '准备截图浏览器.ps1', '准备隔离执行环境.ps1', 'frontend/package.json',
+                 'requirements.lock.txt', 'requirements-advanced.lock.txt','requirements-graphrag.lock.txt', *SCRIPTS, *GUIDES, *RUNTIME_ASSETS):
+        path = root / name
+        if path.is_file():
+            yield path
+    if profile in ('full', 'offline', 'integrated'):
+        yield from _walk(root / '.runtime/powershell')
+        for name in ('启动工作台.cmd', '停止工作台.cmd', '准备便携资源.cmd'):
+            if (root / name).is_file():yield root / name
+    if profile in ('offline', 'integrated'):
+        yield from _browser_files(root)
+        yield from _model_files(root)
+    if profile == 'integrated':
+        yield from _walk(root / '.runtime/graphrag-deps')
+
+
+def _validate_version(root):
+    version = json.loads((root / 'frontend/package.json').read_text(encoding='utf-8'))['version']
+    backend = re.search(r"APP_VERSION\s*=\s*['\"]([^'\"]+)['\"]", (root / 'backend/app/config.py').read_text(encoding='utf-8'))
+    lock = json.loads((root / 'frontend/package-lock.json').read_text(encoding='utf-8'))
+    if not backend or {version, backend[1], lock['version'], lock['packages']['']['version']} != {version}:
+        raise RuntimeError('Frontend, backend and lock file versions do not match')
+    return version
+
+
+def _private(relative):
+    path = PurePosixPath(relative)
+    return (relative.startswith(('data/', '.experimental/')) or path.suffix in ('.dpapi', '.sqlite3')
+            or path.suffix == '.json' and path.name.startswith(('session-', 'processes-')) or path.name in ('session.json', '.env'))
+
+
+def plan(profile='full', root=None):
+    root = Path(root or ROOT)
+    paths = sorted(set(selected_files(profile, root)), key=lambda p: archive_name(p, root))
+    if profile in ('portable', 'full', 'offline', 'integrated'):
+        required = ('runner.py', 'frontend/dist/index.html', '.runtime/python/python.exe',
+                    '.runtime/browser/node.exe', '.runtime/browser/node_modules/playwright/package.json',
+                    '.runtime/browser/node_modules/playwright/index.js', '.runtime/browser/node_modules/playwright-core/cli.js',
+                    '.runtime/writing-agent/typescript/lib/typescript.js', 'scripts/install_portable_component.py',
+                    '启动论文工作台.ps1', '安装便携组件.ps1', 'frontend/collaboration.html')
+        names = {archive_name(p, root) for p in paths}
+        if profile in ('full', 'offline', 'integrated'):
+            required += ('.runtime/powershell/pwsh.exe', '.runtime/powershell/LICENSE.txt',
+                         '.runtime/powershell/ThirdPartyNotices.txt', '启动工作台.cmd', '停止工作台.cmd',
+                         '准备便携资源.cmd', 'scripts/portable-start.ps1', 'backend/app/portable_resources.py')
+        if profile == 'integrated':
+            required += ('.runtime/graphrag-deps/graphrag-3.3.0.dist-info/METADATA',
+                         '.runtime/graphrag-deps/graphrag/api/__init__.py',
+                         'scripts/graphrag_worker.py',
+                         'backend/app/knowledge_api.py', 'backend/app/knowledge_wiki.py')
+        missing = set(required) - names
+        if missing:
+            raise RuntimeError('Portable runtime is incomplete: ' + ', '.join(sorted(missing)))
+    return paths
+
+
+def build(profile='full', root=None, output=None, audit=False, max_bytes=None):
+    root = Path(root or ROOT).resolve()
+    version = _validate_version(root)
+    paths = plan(profile, root)
+    groups = defaultdict(int)
+    for path in paths:
+        relative = archive_name(path, root)
+        if _private(relative):
+            raise RuntimeError('Private data was selected for packaging: ' + relative)
+        group = '/'.join(relative.split('/')[:2]) if relative.startswith(('.runtime/', 'frontend/')) else relative.split('/')[0]
+        groups[group] += path.stat().st_size
+    limit = max_bytes
+    if profile == 'full':
+        limit = min(MAX_PACKAGE_BYTES, max_bytes) if max_bytes is not None else MAX_PACKAGE_BYTES
+    report = {'version': version, 'profile': profile, 'files': len(paths), 'size_limit_bytes': limit,
+              'uncompressed_bytes': sum(groups.values()), 'groups_raw_bytes': dict(groups)}
+    if audit:
+        return report
+    output = Path(output or root.parent / f'砚台论文工作台_{version}_{PROFILES[profile]}.zip').resolve()
+    if output.suffix.lower() != '.zip' or not output.parent.is_dir():
+        raise RuntimeError('The ZIP output parent directory must already exist')
+    if output in {p.resolve() for p in paths}:
+        raise RuntimeError('Output cannot replace a package input')
+    partial = output.with_suffix('.partial.zip')
+    hashes = {}
+    compressed_groups = defaultdict(int)
+    last_notice = time.monotonic()
+    with zipfile.ZipFile(partial, 'w', zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
+        for i, path in enumerate(paths, 1):
+            relative = archive_name(path, root)
+            with path.open('rb') as source:
+                hashes[relative] = hashlib.file_digest(source, 'sha256').hexdigest()
+            archive.write(path, relative)
+            group = '/'.join(relative.split('/')[:2]) if relative.startswith(('.runtime/', 'frontend/')) else relative.split('/')[0]
+            compressed_groups[group] += archive.getinfo(relative).compress_size
+            if time.monotonic() - last_notice > 20:
+                print(json.dumps({'phase': 'compressing', 'profile': profile, 'done': i, 'total': len(paths)}), flush=True)
+                last_notice = time.monotonic()
+        manifest = {'version': version, 'profile': profile, 'package_kind': 'component' if profile in ('browser', 'models','graphrag') else 'application',
+                    'files': hashes, 'user_data_included': False, 'api_key_included': False,
+                    'optional_components': ['browser', 'models','graphrag'] if profile == 'portable' else ['graphrag'] if profile in ('full','offline') else [],
+                    'automatic_resource_download': profile == 'full',
+                    'download_models': ['BAAI/bge-small-zh-v1.5', 'BAAI/bge-reranker-base'] if profile == 'full' else [],
+                    'bundled_powershell': '7.6.5 Core' if profile in ('full', 'offline', 'integrated') else None,
+                    'bundled_models_and_browser': profile in ('offline', 'integrated'),
+                    'bundled_graphrag': profile == 'integrated',
+                    'deduplication': 'advanced-deps precedence retained; one shared Node runtime',
+                    'browser': 'headless shell only' if profile in ('offline', 'browser', 'integrated') else 'automatic download' if profile == 'full' else 'optional offline component'}
+        archive.writestr('便携包清单.json', json.dumps(manifest, ensure_ascii=False, indent=2))
+    if limit is not None and partial.stat().st_size >= limit:
+        size = partial.stat().st_size
+        partial.unlink()
+        raise RuntimeError(f'Package size {size} bytes must be below {limit} bytes; existing release was retained')
+    with zipfile.ZipFile(partial) as archive:
+        for relative, expected in hashes.items():
+            with archive.open(relative) as source:
+                if hashlib.file_digest(source, 'sha256').hexdigest() != expected:
+                    raise RuntimeError('Package integrity verification failed: ' + relative)
+    os.replace(partial, output)
+    with output.open('rb') as source:
+        digest = hashlib.file_digest(source, 'sha256').hexdigest()
+    return {**report, 'package': str(output), 'package_bytes': output.stat().st_size,
+            'package_mb': round(output.stat().st_size / 1_000_000, 2),
+            'package_mib': round(output.stat().st_size / 2**20, 2),
+            'groups_compressed_bytes': dict(compressed_groups), 'sha256': digest,
+            'manifest_hashes_verified': True, 'user_data_included': False, 'api_key_included': False}
+
 
 def main():
-    assert OUTPUT.parent.resolve()==ROOT.parent.resolve()
-    backend_version=re.search(r"APP_VERSION\s*=\s*['\"]([^'\"]+)['\"]",(ROOT/'backend/app/config.py').read_text(encoding='utf-8'))
-    lock=json.loads((ROOT/'frontend/package-lock.json').read_text(encoding='utf-8'))
-    if not backend_version or {VERSION,backend_version[1],lock['version'],lock['packages']['']['version']}!={VERSION}:raise RuntimeError('Frontend, backend and lock file versions do not match')
-    files=sorted(set(selected_files()),key=lambda p:str(p));manifest={};size=0
-    partial=OUTPUT.with_suffix('.partial.zip')
-    with zipfile.ZipFile(partial,'w',zipfile.ZIP_DEFLATED,compresslevel=5) as archive:
-        for p in files:
-            rel=p.relative_to(ROOT).as_posix()
-            if rel.startswith(('data/','.experimental/')) or p.suffix=='.dpapi' or p.name=='workbench.sqlite3' or rel.endswith('session.json') or (p.name.startswith('session-') and p.suffix=='.json'):raise RuntimeError('Private data was selected for packaging')
-            with p.open('rb') as source:manifest[rel]=hashlib.file_digest(source,'sha256').hexdigest()
-            size+=p.stat().st_size;archive.write(p,rel)
-        archive.writestr('便携包清单.json',json.dumps({'version':VERSION,'files':manifest,'user_data_included':False,'api_key_included':False},ensure_ascii=False,indent=2))
-    with zipfile.ZipFile(partial) as archive:
-        for relative,expected in manifest.items():
-            with archive.open(relative) as source:actual=hashlib.file_digest(source,'sha256').hexdigest()
-            if actual!=expected:raise RuntimeError('Package integrity verification failed: '+relative)
-    os.replace(partial,OUTPUT)
-    with OUTPUT.open('rb') as source:digest=hashlib.file_digest(source,'sha256').hexdigest()
-    print(json.dumps({'package':str(OUTPUT),'version':VERSION,'files':len(files),'uncompressed_bytes':size,'package_bytes':OUTPUT.stat().st_size,'sha256':digest,'manifest_hashes_verified':True,'user_data_included':False,'api_key_included':False},ensure_ascii=False,indent=2))
-if __name__=='__main__':main()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--profile', choices=(*PROFILES, 'all'), default='integrated', help='Default: one ZIP containing the application, GraphRAG, models, browser and PowerShell. Legacy smaller profiles remain explicit options.')
+    parser.add_argument('--audit', action='store_true', help='Report selected files and raw size without writing a ZIP')
+    parser.add_argument('--output', type=Path)
+    parser.add_argument('--max-mb', type=float, help='Reject packages at or above this decimal MB limit (default full: 500 MB)')
+    args = parser.parse_args()
+    if args.profile == 'all' and args.output:
+        parser.error('--output requires one profile')
+    if args.max_mb is not None and (not 0 < args.max_mb < float('inf')):
+        parser.error('--max-mb must be a positive finite number')
+    for profile in ('portable', 'browser', 'models') if args.profile == 'all' else (args.profile,):
+        print(json.dumps(build(profile, output=args.output, audit=args.audit,
+                               max_bytes=int(args.max_mb * 1_000_000) if args.max_mb is not None else None), ensure_ascii=False, indent=2), flush=True)
+
+
+if __name__ == '__main__':
+    main()

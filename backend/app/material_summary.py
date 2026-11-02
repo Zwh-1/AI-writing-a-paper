@@ -34,13 +34,25 @@ def validate_config(c):
     c['base_url']=c['base_url'].rstrip('/')
     return c
 
-def config():return validate_config({**DEFAULT,**db.setting('material_summary_provider',{})})
+def config():
+    from . import deepseek_profiles
+    if deepseek_profiles.enabled():
+        active=deepseek_profiles.selected()
+        if not active:raise HTTPException(422,'请在 DeepSeek 接口列表中选择接口')
+        c=deepseek_profiles.pool._endpoint_to_provider(active)
+        return {**c,'streaming':False,'max_attempts':1,'json_mode':True,'max_output_tokens':min(8192,int(c['max_output_tokens']))}
+    return validate_config({**DEFAULT,**db.setting('material_summary_provider',{})})
 
 def configuration_hash(c):return digest({k:c[k] for k in ('base_url','model','max_output_tokens','context_limit')}|{'prompt_version':PROMPT_VERSION})
 
 def current_summary(row,fingerprint,signature=None):
     if not row or row['input_hash']!=fingerprint:return False
     data=db.loads(row['data'],{});review=data.get('source_review',{})
+    reading=data.get('reading_profile',{})
+    if reading.get('method')=='literature-full-reading-v1':
+        from .literature_refresh import signature as reading_signature
+        head=db.one('SELECT parse_id FROM knowledge_heads WHERE file_id=?',(row['file_id'],))
+        return bool(head and head['parse_id']==reading.get('parse_id') and reading.get('source_hash')==fingerprint and row['provider_hash']==reading_signature(fingerprint,configuration_hash(config()),head['parse_id']))
     if review.get('method')==REVIEW_METHOD:
         return review.get('source_hash')==fingerprint and row['provider_hash']==digest([REVIEW_METHOD,fingerprint,data])
     return row['provider_hash']==(signature or configuration_hash(config()))
@@ -50,6 +62,10 @@ def settings():return {'provider':config(),'credential':security.key_status(PROF
 
 @provider.settings_atomic
 def save_settings(body):
+    from . import deepseek_profiles
+    if deepseek_profiles.enabled():
+        deepseek_profiles.save_active(body)
+        return settings()
     allowed=('base_url','model','max_output_tokens','context_limit','timeout_seconds','max_request_cost','input_price','output_price','currency','thinking_enabled')
     c=validate_config({**config(),**{k:v for k,v in body.get('provider',{}).items() if k in allowed}})
     if 'api_key' in body:
@@ -62,11 +78,11 @@ def save_settings(body):
 def scope(autopilot=False):
     with provider.settings_lock():
         c=config();key=security.get_key(PROFILE)
-    if not key:raise HTTPException(422,'请先在“DeepSeek 资料总结设置”填写 x5m5x 的 API key')
+    if not key:raise HTTPException(422,'请先在“接口与设置”的 DeepSeek 接口列表保存 API key')
     if autopilot:
         from .ai_autopilot import priced_config
         c=priced_config(c,key)
-    with provider.request_scope(c,key):yield c
+    with provider.request_scope(c,key,route='material-summary'):yield c
 
 def models():
     with scope() as c:
@@ -84,15 +100,18 @@ def source(fid):
     pages=db.rows('SELECT id,page_number,title,text,notes FROM pages WHERE file_id=? ORDER BY page_number',(fid,))
     return f,pages,digest({'sha256':f['sha256'],'pages':pages})
 
-def status(fid):
+def status(fid, budget_snapshot=None):
     f,pages,fingerprint=source(fid)
     row=db.one('SELECT * FROM material_summaries WHERE file_id=?',(fid,))
-    job=db.one("SELECT id,status,phase,progress,error FROM tasks WHERE kind='material_summary' AND project_id=? AND json_extract(payload,'$.file_id')=? ORDER BY created_at DESC LIMIT 1",(f['project_id'],fid))
+    job=db.one("SELECT id,kind,payload,status,phase,progress,error FROM tasks WHERE project_id=? AND ((kind='material_summary' AND json_extract(payload,'$.file_id')=?) OR (kind='literature_refresh' AND EXISTS(SELECT 1 FROM json_each(payload,'$.file_ids') item WHERE item.value=?))) ORDER BY created_at DESC LIMIT 1",(f['project_id'],fid,fid))
     from .summary_billing import budget
     if job and job['status']=='queued':
         ahead=db.one("SELECT COUNT(*) n FROM tasks WHERE status='running' OR (status='queued' AND created_at<(SELECT created_at FROM tasks WHERE id=?))",(job['id'],))['n'];job['queue_ahead']=ahead
-    result={'summary':None,'task':job,'stale':False,'budget':budget(f['project_id'],config()['max_request_cost'])}
+    result={'summary':None,'task':job,'stale':False,'budget':budget_snapshot if budget_snapshot is not None else budget(f['project_id'],config()['max_request_cost'])}
     if row:result.update(summary={**db.loads(row['data'],{}),'model':row['model'],'created_at':row['created_at']},stale=not current_summary(row,fingerprint))
+    if job:
+        if job['kind']=='literature_refresh' and row and db.loads(row['data'],{}).get('reading_profile',{}).get('generation_id')!=db.loads(job['payload'],{}).get('generation_id'):result['stale']=True
+        job.pop('payload',None)
     return result
 
 def preflight(fid):
@@ -100,7 +119,7 @@ def preflight(fid):
     if f['status']!='ready':raise HTTPException(422,'请先完成本地资料解析，再生成总结')
     if not security.file_allows_remote(fid,f['project_id']):raise HTTPException(422,'该资料或其来源设置为仅限本地，不能发送到 DeepSeek')
     if not any((p['text']+p['notes']).strip() for p in pages):raise HTTPException(422,'资料没有可总结的文字，请先补充 OCR 或人工转录')
-    if not security.key_status(PROFILE)['configured']:raise HTTPException(422,'请先在“DeepSeek 资料总结设置”填写 x5m5x 的 API key')
+    if not security.key_status(PROFILE)['configured']:raise HTTPException(422,'请先在“接口与设置”的 DeepSeek 接口列表保存 API key')
     config()
     return f
 
@@ -234,17 +253,20 @@ def generate(task,payload):
         return {'file_id':fid,'model':actual_model,'covered_pages':len(covered),'cached':False}
 
 
+@db.read_session()
 def batch_status(pid):
     from .summary_billing import budget
     security.require_project(pid);rows=[]
-    for f in db.rows('SELECT * FROM files WHERE project_id=? AND active=1 ORDER BY created_at DESC',(pid,)):
-        state=status(f['id']);job=state['task'];done=state['summary'] is not None and not state['stale']
+    files=db.rows('SELECT * FROM files WHERE project_id=? AND active=1 ORDER BY created_at DESC',(pid,))
+    budget_snapshot=budget(pid,config()['max_request_cost'])
+    for f in files:
+        state=status(f['id'],budget_snapshot=budget_snapshot);job=state['task'];done=state['summary'] is not None and not state['stale']
         kind='completed' if done else job['status'] if job else 'not_started'
         if kind=='succeeded' and not done:kind='stale'
         if kind=='failed' and '项目预算不足' in (job.get('error') or ''):kind='budget_blocked'
         rows.append({'file_id':f['id'],'name':f['name'],'state':kind,'task':job,'stale':state['stale'],'has_summary':state['summary'] is not None})
     totals={name:sum(1 for r in rows if r['state']==name) for name in ('completed','queued','running','budget_blocked','failed','outcome_unknown','incomplete','not_started','stale','cancelled')}
-    return {'files':rows,'totals':totals,'total':len(rows),'budget':budget(pid,config()['max_request_cost']),'account_usage':db.setting('material_summary_account_usage')}
+    return {'files':rows,'totals':totals,'total':len(rows),'budget':budget_snapshot,'account_usage':db.setting('material_summary_account_usage')}
 
 def resume_budget(pid):
     from . import tasks

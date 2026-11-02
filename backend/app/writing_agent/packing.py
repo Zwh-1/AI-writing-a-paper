@@ -9,7 +9,7 @@ VERSION='whole_source_retrieval.v1'
 def frame(payload,manifest,system,cfg):
     if manifest.get('stage')=='investigate':
         from .tools import schemas
-        catalog=schemas()
+        catalog=schemas(include_knowledge=bool(manifest.get('knowledge_refs')))
         return system,{'messages':[{'role':'user','content':db.dumps({'context':payload,'available_tools':catalog})}],'tools':catalog if cfg.get('tool_mode')=='native' else []}
     from .identifiers import encode
     from .provider_adapter import ALIAS_NOTE

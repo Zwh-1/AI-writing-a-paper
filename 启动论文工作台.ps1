@@ -55,6 +55,20 @@ if ($taskReady -and (Test-Path -LiteralPath $taskProcessState)) {
             $taskWorkerValid=[Math]::Abs(($taskFallbackWorker.StartTime-$taskExpectedStart).TotalSeconds) -lt 30
         }
     }
+    # A worker started before the newest backend source change runs stale code
+    # and would keep executing tasks with the old logic; replace it.
+    if ($taskWorkerValid) {
+        $taskNewestSource=Get-ChildItem -LiteralPath (Join-Path $taskRoot 'backend\app') -Filter '*.py' -Recurse -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+        if ($taskNewestSource) {
+            $taskWorkerLive=Get-Process -Id $taskRegistered.worker_pid -ErrorAction SilentlyContinue
+            if ($taskWorkerLive -and $taskWorkerLive.StartTime -lt $taskNewestSource.LastWriteTime) {
+                Write-Output ('Worker ' + $taskRegistered.worker_pid + ' was started before backend code changed (' + $taskNewestSource.Name + '); restarting it with current code.')
+                Stop-Process -Id $taskRegistered.worker_pid -Force -ErrorAction SilentlyContinue
+                Start-Sleep -Milliseconds 500
+                $taskWorkerValid=$false
+            }
+        }
+    }
     if (-not $taskWorkerValid) {
         $taskRecoveredWorker=Start-Process -FilePath $taskPython -ArgumentList @('-X','utf8',('"'+$taskRunner+'"'),'worker') -WorkingDirectory $taskRoot -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $taskRuntime ('worker-'+$Port+'.out.log')) -RedirectStandardError (Join-Path $taskRuntime ('worker-'+$Port+'.error.log'))
         $taskRegistered.worker_pid=$taskRecoveredWorker.Id

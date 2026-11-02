@@ -1,8 +1,11 @@
 """Local neural/keyword retrieval with explicit candidate and rerank evaluation."""
 import hashlib, math, os, threading, time
+from collections import OrderedDict
 from . import db
 from .config import ROOT
 _LOCK=threading.RLock();_MODELS={}
+_QUERY_VECTORS=OrderedDict()
+_RERANK_SCORES=OrderedDict()
 DEFAULT_MODEL='BAAI/bge-small-zh-v1.5'
 
 def config(pid):return {'enabled':False,'model':DEFAULT_MODEL,'candidate_k':40,'rerank':'fusion','cross_encoder':'BAAI/bge-reranker-base',**db.setting('retrieval:'+pid,{})}
@@ -29,12 +32,28 @@ def embed(texts,name):
         if v.ndim!=1 or not np.isfinite(v).all() or not float(np.linalg.norm(v)):raise ValueError('语义模型返回无效向量')
     return values
 
+def query_embedding(query,name):
+    """Cache only local query vectors, never hits, evidence or permissions.
+
+    The verified model fingerprint is part of the key. Replaced/unavailable
+    models cannot reuse an old vector; returned arrays cannot mutate the cache.
+    """
+    key=(model_key(name),query)
+    with _LOCK:
+        if key not in _QUERY_VECTORS:
+            _QUERY_VECTORS[key]=embed([query],name)[0].copy()
+            while len(_QUERY_VECTORS)>128:_QUERY_VECTORS.popitem(last=False)
+        _QUERY_VECTORS.move_to_end(key)
+        return _QUERY_VECTORS[key].copy()
+
 def embedding_text(source):
     ext=source.get('extension','');location='段落组' if ext=='.docx' else '资料块/工作表' if ext in ('.txt','.md','.csv','.xlsx') else '原页'
     return '资料：'+str(source.get('name',''))+'\n位置：'+location+str(source.get('page_number',''))+' '+str(source.get('page_title',''))+'\n内容：'+source['text']
 
 def build_index(pid,progress=None,knowledge=False):
+    from .document_observations import current_source_sql
     scope=__import__('app.reference_knowledge',fromlist=['scope_sql']).scope_sql() if knowledge else ''
+    scope+=' AND '+current_source_sql()
     cfg=config(pid);namespace=model_key(cfg['model']);sources=db.rows('SELECT s.*,f.name,f.extension,p.page_number,p.title AS page_title FROM sources s JOIN files f ON f.id=s.file_id LEFT JOIN pages p ON p.id=s.page_id WHERE f.project_id=? AND f.active=1 '+scope,(pid,));changed=[s for s in sources if not db.one('SELECT source_id FROM neural_vectors WHERE source_id=? AND model=? AND text_hash=?',(s['id'],namespace,hashlib.sha256(embedding_text(s).encode()).hexdigest()))]
     for start in range(0,len(changed),16):
         if progress:progress(start,len(changed))
@@ -63,17 +82,28 @@ def reciprocal_rank_fusion(keyword,semantic,limit,rank_constant=60):
 
 
 def cross_encoder_rerank(query,candidates,model):
-    scorer=model_instance(model,cross=True)
-    values=list(scorer.rerank(query,[embedding_text(item) for item in candidates],batch_size=8))
-    if len(values)!=len(candidates):raise ValueError('重排模型返回的分数数量与候选数量不一致')
-    scores=[float(value) for value in values]
-    if any(not math.isfinite(score) for score in scores):raise ValueError('重排模型返回了无效相关性分数')
-    ranked=[{**item,'rerank_score':score,'rank':-score} for item,score in zip(candidates,scores)]
+    fingerprint=model_key(model)
+    texts=[embedding_text(item) for item in candidates]
+    keys=[(fingerprint,query,hashlib.sha256(text.encode()).hexdigest()) for text in texts]
+    with _LOCK:
+        hits=[key in _RERANK_SCORES for key in keys]
+        missing={key:text for key,text in zip(keys,texts) if key not in _RERANK_SCORES}
+        if missing:
+            scorer=model_instance(model,cross=True)
+            values=list(scorer.rerank(query,list(missing.values()),batch_size=8))
+            if len(values)!=len(missing):raise ValueError('重排模型返回的分数数量与候选数量不一致')
+            scores=[float(value) for value in values]
+            if any(not math.isfinite(score) for score in scores):raise ValueError('重排模型返回了无效相关性分数')
+            for key,score in zip(missing,scores):_RERANK_SCORES[key]=score
+        scores=[_RERANK_SCORES[key] for key in keys]
+        for key in keys:_RERANK_SCORES.move_to_end(key)
+        while len(_RERANK_SCORES)>2048:_RERANK_SCORES.popitem(last=False)
+    ranked=[{**item,'rerank_score':score,'rank':-score,'rerank_cache_hit':hit} for item,score,hit in zip(candidates,scores,hits)]
     ranked.sort(key=lambda item:(-item['rerank_score'],item['fusion_rank']))
     return [{**item,'rerank_rank':position} for position,item in enumerate(ranked,1)]
 
 
-def hybrid(pid,query,kind='research',limit=12,remote=False,force=False,knowledge=False,rerank_override=None):
+def hybrid(pid,query,kind='research',limit=12,remote=False,force=False,knowledge=False,rerank_override=None,file_ids=None):
     from .parsers import keyword_search
     from .security import file_allows_remote
     started=time.perf_counter();cfg=config(pid);limit=min(100,max(1,int(limit)))
@@ -84,12 +114,14 @@ def hybrid(pid,query,kind='research',limit=12,remote=False,force=False,knowledge
         if rerank_override not in ('fusion','cross_encoder'):raise ValueError('重排覆盖策略无效')
         cfg={**cfg,'rerank':rerank_override}
     pool=min(100,max(int(cfg['candidate_k']),limit));stage_start=time.perf_counter()
-    keyword=keyword_search(pid,query,kind,pool,remote,**({'knowledge':True} if knowledge else {}))
+    keyword=keyword_search(pid,query,kind,pool,remote,**({'file_ids':file_ids} if file_ids else {}),**({'knowledge':True} if knowledge else {}))
     timings={'bm25':round((time.perf_counter()-stage_start)*1000,3)}
     pipeline={'bm25':{'status':'completed','candidates':len(keyword),'limit':pool},'dense':{'status':'skipped','candidates':0},'rrf':{'status':'skipped','candidates':0,'rank_constant':60},'rerank':{'status':'skipped','type':None,'scored':0}}
     if not cfg['enabled'] and not force:
         return {'items':keyword[:limit],'candidates':keyword,'mode':'keyword','warnings':[],'pipeline':pipeline,'timings_ms':timings}
+    from .document_observations import current_source_sql
     scope=__import__('app.reference_knowledge',fromlist=['scope_sql']).scope_sql() if knowledge else ''
+    scope+=' AND '+current_source_sql()
     permissions={}
     def eligible_source(source):
         if kind=='research' and not knowledge and source['kind']!='evidence':return False
@@ -100,14 +132,15 @@ def hybrid(pid,query,kind='research',limit=12,remote=False,force=False,knowledge
             if not permissions[fid]:return False
         return True
     eligible=db.rows('SELECT s.id,s.file_id,s.kind,f.egress FROM sources s JOIN files f ON f.id=s.file_id LEFT JOIN pages p ON p.id=s.page_id WHERE f.project_id=? AND f.active=1 '+scope,(pid,))
-    eligible=[source for source in eligible if eligible_source(source)]
+    eligible=[source for source in eligible if eligible_source(source) and (not file_ids or source['file_id'] in file_ids)]
     if not eligible:
         return {'items':[],'candidates':[],'mode':'no_eligible_materials','warnings':['没有当前范围内可用的资料，需补充材料或核对外发权限'],'coverage':{'indexed':0,'eligible':0},'pipeline':pipeline,'timings_ms':timings}
     import numpy as np
-    stage_start=time.perf_counter();query_vector=embed([query],cfg['model'])[0]
+    stage_start=time.perf_counter();query_vector=query_embedding(query,cfg['model'])
     vector_rows=db.rows('SELECT s.*,f.name,f.role,f.egress,f.extension,f.active,p.page_number,p.title AS page_title,p.review_state,v.vector,v.dimension,v.text_hash FROM neural_vectors v JOIN sources s ON s.id=v.source_id JOIN files f ON f.id=s.file_id LEFT JOIN pages p ON p.id=s.page_id WHERE f.project_id=? AND f.active=1 AND v.model=? '+scope,(pid,model_key(cfg['model'])))
     semantic=[]
     for row in vector_rows:
+        if file_ids and row['file_id'] not in file_ids:continue
         if not eligible_source(row):continue
         if row['text_hash']!=hashlib.sha256(embedding_text(row).encode()).hexdigest():continue
         vector=np.frombuffer(row.pop('vector'),dtype=np.float32)
@@ -127,7 +160,7 @@ def hybrid(pid,query,kind='research',limit=12,remote=False,force=False,knowledge
         try:
             ranked=cross_encoder_rerank(query,merged,cfg['cross_encoder'])
             reranker='cross_encoder';reranker_model=cfg['cross_encoder']
-            pipeline['rerank']={'status':'completed','type':'cross_encoder','model':reranker_model,'scored':len(ranked)}
+            pipeline['rerank']={'status':'completed','type':'cross_encoder','model':reranker_model,'scored':len(ranked),'cache_hits':sum(bool(r.get('rerank_cache_hit')) for r in ranked)}
         except Exception as error:
             degraded=True
             pipeline['rerank']={'status':'failed','type':'cross_encoder','model':cfg['cross_encoder'],'scored':0}

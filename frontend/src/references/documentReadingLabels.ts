@@ -26,6 +26,8 @@ export const extractionLabel = (value: string) =>
       native_extraction: "原生文字",
       ocr: "识别转录候选",
       windows_ocr: "识别转录候选",
+      unverified_image_transcript: "完整OCR观察（未校对）",
+      assistant_visual_excerpt: "并列校对摘录",
       manual: "人工转录候选",
     }) as Record<string, string>
   )[value] || "原文转录候选";

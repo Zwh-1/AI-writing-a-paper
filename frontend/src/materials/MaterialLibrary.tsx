@@ -14,6 +14,8 @@ import { summaryStateLabels } from "../MaterialSummary";
 import { materialRoles, type Row } from "../workspace/types";
 import { WorkspaceEmpty } from "../workspace/WorkspaceChrome";
 import MaterialSearchResults from "./MaterialSearchResults";
+import { navigateSources } from "../workspace/sourceNavigation";
+import { useSourceMetadata } from "../workspace/SourceWorkspace";
 
 type Props = {
   pid: string;
@@ -22,6 +24,8 @@ type Props = {
   onOpen: (id: string, page?: number) => void;
   onPatch: (file: Row, field: string, value: string) => Promise<any>;
   onUpload: () => void;
+  fileId?: string;
+  onUsages?: (fileId: string) => void;
 };
 export default function MaterialLibrary({
   pid,
@@ -30,7 +34,10 @@ export default function MaterialLibrary({
   onOpen,
   onPatch,
   onUpload,
+  fileId,
+  onUsages,
 }: Props) {
+  const metadata = useSourceMetadata();
   const [query, setQuery] = useState(""),
     [role, setRole] = useState("all"),
     [state, setState] = useState("all"),
@@ -77,6 +84,7 @@ export default function MaterialLibrary({
         .filter(
           (file) =>
             (includeInactive || file.active) &&
+            (!fileId || file.id === fileId) &&
             (role === "all" || file.role === role) &&
             (state === "all" ||
               (state === "summarized"
@@ -96,7 +104,7 @@ export default function MaterialLibrary({
               ? (b.pages ?? 0) - (a.pages ?? 0)
               : b.created_at.localeCompare(a.created_at),
         ),
-    [files, includeInactive, role, state, query, sort],
+    [files, includeInactive, role, state, query, sort, fileId],
   );
   const pages = Math.max(1, Math.ceil(current.length / pageSize)),
     currentPage = Math.min(page, pages);
@@ -298,6 +306,46 @@ export default function MaterialLibrary({
                     </label>
                   </div>
                   <div className="material-row-status">
+                    <div className="material-source-actions">
+                      {onUsages && (
+                        <button
+                          className="text-button"
+                          onClick={() => onUsages(file.id)}
+                        >
+                          资料类型与多用途
+                        </button>
+                      )}
+                      {(file.role === "rules" ||
+                        metadata?.files.find((f: Row) => f.id === file.id)
+                          ?.rules.total) && (
+                        <button
+                          className="text-button"
+                          onClick={() =>
+                            navigateSources(pid, "rules", {
+                              view: "catalog",
+                              fileId: file.id,
+                            })
+                          }
+                        >
+                          查看关联规则
+                        </button>
+                      )}
+                      {(file.role === "research" ||
+                        metadata?.files.find((f: Row) => f.id === file.id)
+                          ?.research_eligible) && (
+                        <button
+                          className="text-button"
+                          onClick={() =>
+                            navigateSources(pid, "references", {
+                              view: "reading",
+                              fileId: file.id,
+                            })
+                          }
+                        >
+                          进入文献阅读
+                        </button>
+                      )}
+                    </div>
                     <span
                       className={`summary-file-state summary-state-${file.summary_state}`}
                     >

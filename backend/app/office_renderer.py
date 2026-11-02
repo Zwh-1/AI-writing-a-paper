@@ -14,7 +14,7 @@ def capabilities():
             except OSError:pass
     return {'registered_com':available,'powershell':shutil.which('pwsh.exe'),'libreoffice':shutil.which('soffice'),'registration_is_not_a_render_test':True}
 
-def render_path(source,destination,kind):
+def render_path(source,destination,kind,updated_docx=None):
     with zipfile.ZipFile(source) as z:
         if any('vbaproject' in name.lower() for name in z.namelist()):raise ValueError('含宏文档不进入自动版式渲染')
         from lxml import etree as E
@@ -29,14 +29,19 @@ def render_path(source,destination,kind):
     if not pwsh:raise ValueError('未找到必需的PowerShell 7.6.5')
     flags={'creationflags':subprocess.CREATE_NO_WINDOW} if os.name=='nt' else {}
     pending=destination.with_name(destination.stem+'.pending.pdf')
+    arguments=[pwsh,'-NoLogo','-NoProfile','-File',str(ROOT/'scripts/office-render.ps1'),'-Source',str(source),'-Output',str(pending),'-Kind',kind]
+    if updated_docx is not None:
+        if kind!='docx' or Path(updated_docx).resolve()==Path(source).resolve():raise ValueError('更新域缓存必须写入独立DOCX文件')
+        arguments.extend(['-UpdatedDocx',str(updated_docx)])
     with _LOCK:
-        result=subprocess.run([pwsh,'-NoLogo','-NoProfile','-File',str(ROOT/'scripts/office-render.ps1'),'-Source',str(source),'-Output',str(pending),'-Kind',kind],capture_output=True,timeout=150,**flags)
+        result=subprocess.run(arguments,capture_output=True,timeout=150,**flags)
     if result.returncode or not pending.exists():raise ValueError('本地Office渲染失败：'+result.stderr.decode('utf-8',errors='replace')[-700:])
     try:receipt=json.loads(result.stdout.decode('utf-8-sig').strip())
     except ValueError:receipt={'engine':'Office COM','diagnostic':'进程已完成，未返回引擎元数据'}
     import pypdfium2 as pdfium
     pdf=pdfium.PdfDocument(str(pending));receipt['actual_pdf_pages']=len(pdf);pdf.close()
     if kind=='pptx' and receipt.get('pages') and receipt['pages']!=receipt['actual_pdf_pages']:raise ValueError('渲染页数与源幻灯片不一致，拒绝错误页码映射')
+    if updated_docx is not None and not Path(updated_docx).is_file():raise ValueError('已渲染PDF，但Word字段缓存未写回独立导出副本')
     os.replace(pending,destination);receipt['visual_acceptance']='pending';return receipt
 
 def render_file(file):

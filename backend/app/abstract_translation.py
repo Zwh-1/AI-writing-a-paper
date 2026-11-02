@@ -152,7 +152,7 @@ def translate(task, project, section, payload, package):
             'validation_error': '译文不符合JSON契约，请查看后手工整理',
         }
     paragraphs = data['paragraphs']
-    if any(item.get('source_ids') or item.get('reference_ids') or item.get('fact_ids') or item.get('preserve_node_id') for item in paragraphs):
+    if data.get('visuals') or any(item.get('source_ids') or item.get('reference_ids') or item.get('fact_ids') or item.get('evidence_ids') or item.get('visual_ids') or item.get('preserve_node_id') for item in paragraphs):
         raise ValueError('英文摘要翻译不能添加新来源、文献、事实或引用其他正文块')
     if not any(item['text'].strip() for item in paragraphs):
         raise ValueError('模型未返回有效英文译文')

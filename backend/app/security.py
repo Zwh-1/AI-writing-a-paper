@@ -51,6 +51,11 @@ def save_key(value,profile=""):
 
 def get_key(profile=""):
     if profile not in ("","material-summary","gpt-fallback","image-generation"):raise ValueError("未知凭据类型")
+    if profile in ('','material-summary'):
+        cfg=db.setting('deepseek_pool',{})
+        if cfg.get('unified'):
+            from .deepseek_pool import _read_keys
+            return _read_keys().get(cfg.get('active_endpoint_id'),'')
     if profile:
         variable={'gpt-fallback':'PAPER_GPT_API_KEY','material-summary':'PAPER_SUMMARY_API_KEY','image-generation':'PAPER_IMAGE_API_KEY'}[profile]
         value=os.environ.get(variable, "")

@@ -23,6 +23,9 @@ def revision_permissions(pid,rid,_visited=None):
             if not security.file_allows_remote(meta['source_file_id'],pid):fail('SOURCE_ACCESS_REVOKED','研究产物原件禁止外发',403)
             files.add(meta['source_file_id'])
         for sid in meta.get('source_ids',[]):source(sid)
+        for eid in meta.get('evidence_ids',[]):
+            if not allowed_remote(pid,eid):fail('SOURCE_ACCESS_REVOKED','图表的项目证据来源禁止外发',403)
+            stamps.append(permission_stamp(pid,eid))
         for source_revision in meta.get('source_revision_ids',[]):
             stamps.append(revision_permissions(pid,source_revision,visited))
     for dep in db.rows('SELECT * FROM dependencies WHERE revision_id=?',(rid,)):

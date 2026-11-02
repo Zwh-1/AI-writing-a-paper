@@ -77,7 +77,8 @@ def style_three_line(table):
                 paragraph.paragraph_format.space_after = Pt(4)
                 paragraph.paragraph_format.line_spacing = 1.15
                 for run in paragraph.runs:
-                    run.bold = i == 0
+                    if i==0:run.bold=True
+                    elif run.bold is None:run.bold=False
 
 
 def table_document(spec):

@@ -7,7 +7,9 @@ import {
   ScanText,
   Settings2,
   Sparkles,
+  GitBranch,
 } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { send } from "../client";
 import AIAutopilot from "../AIAutopilot";
 import { AIAutopilotProvider } from "../ai/useAIAutopilot";
@@ -28,6 +30,13 @@ import MaterialLibrary from "./MaterialLibrary";
 import MaterialUploadDialog from "./MaterialUploadDialog";
 import { MaterialSummaryTools, MaterialAdvancedTools } from "./MaterialTools";
 import "./materialsWorkspace.css";
+import {
+  SourceWorkspaceNavigation,
+  SourceFocus,
+  SourceFlowPanel,
+  SourceWorkspaceData,
+} from "../workspace/SourceWorkspace";
+import MaterialUsagesDialog from "../references/MaterialUsagesDialog";
 
 type Props = {
   pid: string;
@@ -40,6 +49,7 @@ type Props = {
 };
 const tabs = [
   { key: "library", label: "资料库", icon: BookOpen },
+  { key: "flow", label: "用途与流向", icon: GitBranch },
   { key: "automation", label: "AI 处理", icon: Sparkles },
   { key: "originals", label: "原文核对", icon: ScanText },
   { key: "advanced", label: "高级工具", icon: Settings2 },
@@ -54,6 +64,23 @@ function Workspace({
   renderSource,
 }: Props) {
   const c = useMaterialsWorkspace(pid, tick, act);
+  const [usageFile, setUsageFile] = useState<string | null>(null);
+  const openedRoute = useRef(0);
+  useEffect(() => {
+    if (
+      !c.route.location.fileId ||
+      !c.route.location.pageNumber ||
+      !c.data ||
+      openedRoute.current === c.route.location.revision
+    )
+      return;
+    const file = c.files.find((f) => f.id === c.route.location.fileId);
+    if (file) {
+      c.setSelected({ ...file, initialPage: c.route.location.pageNumber });
+      openedRoute.current = c.route.location.revision;
+      c.route.update({ pageNumber: undefined });
+    }
+  }, [c.data, c.route.location.revision]);
   const open = (id: string, page?: number) => {
     const file = c.files.find((item) => item.id === id);
     if (file)
@@ -66,7 +93,7 @@ function Workspace({
       <WorkspaceHeader
         section="MATERIALS / 资料"
         title="资料中心"
-        description="原件、AI 总结与研究依据集中管理，让资料自动进入写作流程。"
+        description="统一管理原件、用途与解析，再进入规则整理或文献研究。"
         actions={
           <>
             <button
@@ -90,47 +117,51 @@ function Workspace({
           </>
         }
       />
-      <AutopilotOverview
-        domain="materials"
-        onManage={() => {
-          c.setView("automation");
-          showWorkspacePanel("materials-panel-automation");
-        }}
+      <SourceWorkspaceNavigation pid={pid} tick={tick} current="materials" />
+      <SourceFocus
+        pid={pid}
+        tick={tick}
+        fileId={c.route.location.fileId}
+        onClear={() =>
+          c.route.update({ fileId: undefined, pageNumber: undefined })
+        }
       />
-      <div className="material-workspace-stats" aria-label="资料概况">
-        <button onClick={() => c.setView("library")}>
-          <span>在用资料</span>
-          <strong>
-            {c.data ? s.active : "—"}
-            <small>份</small>
-          </strong>
-          <p>保留原件与出处</p>
-        </button>
-        <button onClick={() => c.setView("library")}>
-          <span>已有 AI 总结</span>
-          <strong>
-            {c.data ? s.completed : "—"}
-            <small>份</small>
-          </strong>
-          <p>概括、分点与主题</p>
-        </button>
-        <button onClick={() => c.setView("originals")}>
-          <span>原文范围</span>
-          <strong>
-            {c.data ? s.pages.toLocaleString() : "—"}
-            <small>页 / 片段</small>
-          </strong>
-          <p>随时回到原件核对</p>
-        </button>
-        <button onClick={() => c.setView("automation")}>
-          <span>解析或总结异常</span>
-          <strong>
-            {c.data ? s.needsAttention : "—"}
-            <small>份</small>
-          </strong>
-          <p>查看处理原因</p>
-        </button>
-      </div>
+      {c.view === "library" && (
+        <div className="material-workspace-stats" aria-label="资料概况">
+          <button onClick={() => c.setView("library")}>
+            <span>在用资料</span>
+            <strong>
+              {c.data ? s.active : "—"}
+              <small>份</small>
+            </strong>
+            <p>保留原件与出处</p>
+          </button>
+          <button onClick={() => c.setView("library")}>
+            <span>已有 AI 总结</span>
+            <strong>
+              {c.data ? s.completed : "—"}
+              <small>份</small>
+            </strong>
+            <p>概括、分点与主题</p>
+          </button>
+          <button onClick={() => c.setView("originals")}>
+            <span>原文范围</span>
+            <strong>
+              {c.data ? s.pages.toLocaleString() : "—"}
+              <small>页 / 片段</small>
+            </strong>
+            <p>随时回到原件核对</p>
+          </button>
+          <button onClick={() => c.setView("automation")}>
+            <span>解析或总结异常</span>
+            <strong>
+              {c.data ? s.needsAttention : "—"}
+              <small>份</small>
+            </strong>
+            <p>查看处理原因</p>
+          </button>
+        </div>
+      )}
       <WorkspaceTabs<MaterialsView>
         id="materials"
         label="资料工作区"
@@ -157,10 +188,24 @@ function Workspace({
             onOpen={open}
             onPatch={c.patch}
             onUpload={() => c.setUpload(true)}
+            fileId={c.route.location.fileId}
+            onUsages={setUsageFile}
+          />
+        )}
+        {c.view === "flow" && (
+          <SourceFlowPanel
+            pid={pid}
+            tick={tick}
+            fileId={c.route.location.fileId}
+            onOpen={open}
           />
         )}
         {c.view === "automation" && (
-          <>
+          <AIAutopilotProvider pid={pid} tick={tick} onUpdated={refresh}>
+            <AutopilotOverview
+              domain="materials"
+              onManage={() => showWorkspacePanel("materials-panel-automation")}
+            />
             <AIAutopilot
               pid={pid}
               tick={tick}
@@ -175,7 +220,7 @@ function Workspace({
               refresh={refresh}
               onOpen={open}
             />
-          </>
+          </AIAutopilotProvider>
         )}
         {c.view === "originals" && (
           <section
@@ -238,18 +283,23 @@ function Workspace({
         />
       )}
       {c.selected && renderSource(c.selected, () => c.setSelected(null))}
+      {usageFile !== null && (
+        <MaterialUsagesDialog
+          pid={pid}
+          initialFileId={usageFile}
+          onClose={() => {
+            setUsageFile(null);
+            refresh();
+          }}
+        />
+      )}
     </div>
   );
 }
 export default function MaterialsWorkspace(props: Props) {
   return (
-    <AIAutopilotProvider
-      key={props.pid}
-      pid={props.pid}
-      tick={props.tick}
-      onUpdated={props.refresh}
-    >
-      <Workspace {...props} />
-    </AIAutopilotProvider>
+    <SourceWorkspaceData pid={props.pid} tick={props.tick}>
+      <Workspace key={props.pid} {...props} />
+    </SourceWorkspaceData>
   );
 }

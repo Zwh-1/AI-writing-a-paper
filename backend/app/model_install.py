@@ -18,6 +18,12 @@ def status(model):
     fingerprint=hashlib.sha256(json.dumps(manifest.get('files',{}),sort_keys=True).encode()).hexdigest()[:20] if manifest else None
     return {'ready':ready,'model':model,'path':str(folder),'fingerprint':fingerprint,'manifest':manifest}
 def download(model,endpoint='https://hf-mirror.com'):
+    from filelock import FileLock
+    folder=directory(model);folder.mkdir(parents=True,exist_ok=True)
+    with FileLock(folder/'download.lock',timeout=1800):
+        return _download(model,endpoint)
+
+def _download(model,endpoint):
     if model not in SPECS:raise ValueError('当前下载器仅支持已登记的模型')
     if endpoint not in ('https://hf-mirror.com','https://huggingface.co'):raise ValueError('模型下载地址未登记')
     spec=SPECS[model];repo,model_file=spec[:2];local_file=spec[2] if len(spec)>2 else model_file;folder=directory(model);folder.mkdir(parents=True,exist_ok=True)
@@ -36,6 +42,10 @@ def download(model,endpoint='https://hf-mirror.com'):
         name=item['rfilename'];target=folder/(local_file if name==model_file else name);target.parent.mkdir(parents=True,exist_ok=True);part=target.with_suffix(target.suffix+'.part');expected=int(item.get('size',0))
         if not 0<expected<=600*1024*1024:raise ValueError('模型文件大小无效或超出下载上限')
         if target.exists() and verify(target,item):return target.relative_to(folder).as_posix(),hashlib.sha256(target.read_bytes()).hexdigest()
+        if part.exists() and part.stat().st_size>=expected:
+            if part.stat().st_size==expected and verify(part,item):
+                os.replace(part,target);return target.relative_to(folder).as_posix(),hashlib.sha256(target.read_bytes()).hexdigest()
+            part.unlink()
         from .network import proxy_for
         url=endpoint+'/'+repo+'/resolve/'+info['sha']+'/'+urllib.parse.quote(name,safe='/')
         failures=0
@@ -62,7 +72,9 @@ def download(model,endpoint='https://hf-mirror.com'):
                 failures+=1
                 if failures>=3:raise
                 time.sleep(1)
-        if not verify(part,item):raise ValueError('模型文件Git/LFS哈希校验失败：'+name)
+        if not verify(part,item):
+            part.unlink(missing_ok=True)
+            raise ValueError('模型文件Git/LFS哈希校验失败：'+name)
         os.replace(part,target);return target.relative_to(folder).as_posix(),hashlib.sha256(target.read_bytes()).hexdigest()
     with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:hashes=dict(pool.map(fetch,entries))
     manifest={'model':model,'repository':repo,'repository_revision':info['sha'],'download_endpoint':endpoint,'license':info.get('cardData',{}).get('license'),'model_file':local_file,'remote_model_file':model_file,'files':hashes,'paper_content_sent':False,'api_key_used':False}

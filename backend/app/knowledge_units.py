@@ -2,16 +2,54 @@
 import hashlib
 import math
 import re
+from contextvars import ContextVar
+from contextlib import contextmanager
+from copy import deepcopy
 from fastapi import APIRouter, HTTPException
 from . import db, security
 from . import document_structure as structure
 from .material_policy import research_sql,is_research,source_context,markers
 
 router = APIRouter(prefix='/projects/{pid}/evidence-knowledge')
+_INPUT_CACHE=ContextVar('knowledge_input_snapshot_cache',default=None)
+_READ_CACHE=ContextVar('knowledge_read_snapshot_cache',default=None)
+
+@contextmanager
+def cache_reads(fresh=False):
+    if _READ_CACHE.get() is not None and not fresh:yield;return
+    token=_READ_CACHE.set({})
+    try:
+        with cache_inputs(fresh=fresh):yield
+    finally:_READ_CACHE.reset(token)
+
+@contextmanager
+def cache_inputs(fresh=False):
+    if _INPUT_CACHE.get() is not None and not fresh:
+        yield
+        return
+    token=_INPUT_CACHE.set({})
+    try:yield
+    finally:_INPUT_CACHE.reset(token)
 
 
 def digest(value):
     return hashlib.sha256(db.dumps(value).encode('utf-8')).hexdigest()
+
+
+def observation_scope(locator):
+    """A complete read of an excerpt must never mean complete image coverage."""
+    observed=locator.get('observation_locator',{})
+    scope=locator.get('transcription_scope') or observed.get('transcription_scope')
+    source_issues=locator.get('source_issues') or observed.get('source_issues',[])
+    if locator.get('evidence_role')=='unverified_full_observation':
+        return {'transcription_scope':'full_saved_ocr_observation','entire_original_image_transcribed':False,'literal_scope':'unverified_observation_only',
+            'requires_original_comparison':True,'cannot_support_claims':True,'human_approval':False,'semantic_support':'not_verified'}
+    if not scope:return None
+    return {'transcription_scope':scope,'entire_original_image_transcribed':scope=='complete_image_text',
+        'literal_scope':'listed_passages_only' if scope!='complete_image_text' else 'all_visible_image_text',
+        'untranscribed_image_content_retained':scope!='complete_image_text','human_approval':False,
+        'source_issues':source_issues,'original_content_complete':False if 'cropped_original' in source_issues else None,
+        'semantic_support':'claim_specific_check_required'}
 
 
 def integer(body,key,default,minimum,maximum):
@@ -37,8 +75,21 @@ def file_record(pid, fid, allow_material=False):
 
 
 def input_stamp(original):
-    return digest([original['sha256'], db.rows('SELECT id,text,notes FROM pages WHERE file_id=? ORDER BY page_number', (original['id'],)),
-                   db.rows('SELECT id,text,method FROM sources WHERE file_id=? ORDER BY id', (original['id'],))])
+    cache=_INPUT_CACHE.get();key=(original['id'],original['sha256'])
+    if cache is not None and key in cache:return cache[key]
+    from .document_observations import VERSION
+    sources=db.rows("SELECT id,text,method,locator FROM sources WHERE file_id=? AND method!='document_rule_context' ORDER BY id", (original['id'],))
+    mapping=db.setting('document_observation_supersessions',{})
+    source_ids={s['id'] for s in sources}
+    related={key:value for key,value in mapping.items() if key in source_ids}
+    base=[original['sha256'],db.rows('SELECT id,text,notes FROM pages WHERE file_id=? ORDER BY page_number',(original['id'],)),
+          [{key:s[key] for key in ('id','text','method')} for s in sources]]
+    # Rule contexts and any document with observation replacements depend on
+    # coverage metadata too. Unrelated literature readings keep their versions.
+    value=digest(base) if original['role']!='rules' and not related else digest([VERSION,base,[(s['id'],s['locator']) for s in sources],related,
+                   db.rows('SELECT id,images FROM pages WHERE file_id=? ORDER BY page_number',(original['id'],))])
+    if cache is not None:cache[key]=value
+    return value
 
 
 def parse_current(parse, original=None):
@@ -47,6 +98,14 @@ def parse_current(parse, original=None):
 
 
 def get(pid, uid, remote=False, intent='research'):
+    cache=_READ_CACHE.get();key=('unit',pid,uid,remote,intent)
+    if cache is not None and key in cache:return deepcopy(cache[key])
+    result=_get_uncached(pid,uid,remote,intent)
+    if cache is not None:cache[key]=deepcopy(result)
+    return result
+
+
+def _get_uncached(pid, uid, remote=False, intent='research'):
     row = db.one('SELECT u.*,p.project_id,p.file_id,p.file_hash,p.input_hash,p.engine,p.strategy,p.created_at,f.name,f.extension,f.role,h.parse_id AS head_id FROM knowledge_units u JOIN knowledge_parses p ON p.id=u.parse_id JOIN files f ON f.id=p.file_id LEFT JOIN knowledge_heads h ON h.file_id=f.id WHERE u.id=? AND p.project_id=?', (uid, pid))
     if not row:
         raise HTTPException(404, '证据单元不属于当前项目')
@@ -74,6 +133,9 @@ def get(pid, uid, remote=False, intent='research'):
 
 
 def changed(pid, ids, note):
+    ids=list(ids)
+    from .knowledge_lineage import changed as knowledge_changed
+    for uid in ids:knowledge_changed(pid,'unit',uid,note)
     from .writing_agent.impact import changed as propagate
     for uid in ids:
         db.execute("UPDATE citations SET support='unknown' WHERE id IN (SELECT citation_id FROM citation_knowledge_links WHERE unit_id=?)",(uid,))
@@ -82,6 +144,8 @@ def changed(pid, ids, note):
 
 
 def invalidate_file(pid,fid,note):
+    from .knowledge_lineage import changed as knowledge_changed
+    knowledge_changed(pid,'file',fid,note)
     db.execute("UPDATE evidence_items SET validity='stale' WHERE project_id=? AND origin_type='knowledge_unit' AND origin_id IN (SELECT u.id FROM knowledge_units u JOIN knowledge_parses p ON p.id=u.parse_id WHERE p.file_id=?)",(pid,fid))
     db.execute("UPDATE citations SET support='unknown' WHERE id IN (SELECT l.citation_id FROM citation_knowledge_links l JOIN knowledge_units u ON u.id=l.unit_id JOIN knowledge_parses p ON p.id=u.parse_id WHERE p.file_id=?)",(fid,))
     from .writing_agent.impact import changed as propagate
@@ -172,10 +236,22 @@ def list_units(pid, state='all', fid='', query='', offset=0, limit=20, _all=Fals
 
 
 def read(pid, uid, remote=False, before=1, after=1, max_chars=16000, start=None, end=None,intent='research'):
+    cache=_READ_CACHE.get();key=('read',pid,uid,remote,before,after,max_chars,start,end,intent)
+    if cache is not None and key in cache:return deepcopy(cache[key])
+    result=_read_uncached(pid,uid,remote,before,after,max_chars,start,end,intent)
+    if cache is not None:cache[key]=deepcopy(result)
+    return result
+
+
+def _read_uncached(pid, uid, remote=False, before=1, after=1, max_chars=16000, start=None, end=None,intent='research'):
     item = get(pid, uid, remote,intent)
     if not 0 <= before <= 3 or not 0 <= after <= 3 or not 200 <= max_chars <= 40000:
         raise HTTPException(422, '上下文范围或读取预算无效')
-    all_rows = db.rows('SELECT id,ordinal,text,content_hash,locator,kind,origin,review_state FROM knowledge_units WHERE parse_id=? ORDER BY ordinal', (item['parse_id'],))
+    cache=_READ_CACHE.get();rows_key=('parse_rows',item['parse_id'])
+    all_rows=cache.get(rows_key) if cache is not None else None
+    if all_rows is None:
+        all_rows = db.rows('SELECT id,ordinal,text,content_hash,locator,kind,origin,review_state FROM knowledge_units WHERE parse_id=? ORDER BY ordinal', (item['parse_id'],))
+        if cache is not None:cache[rows_key]=all_rows
     stream=item['locator'].get('context_stream',item['origin'])
     all_rows=[r for r in all_rows if db.loads(r['locator'],{}).get('context_stream',r['origin'])==stream]
     position=next(i for i,r in enumerate(all_rows) if r['id']==uid)
@@ -196,6 +272,7 @@ def read(pid, uid, remote=False, before=1, after=1, max_chars=16000, start=None,
     base = {'unit_id': uid, 'unit_hash': item['content_hash'], 'parse_id': item['parse_id'], 'file_id': item['file_id'], 'file_hash': item['file_hash'],
             'locator': item['locator'], 'current': item['current'], 'review_state': item['review_state'], 'issues': item['issues'],
             'disputes': item['disputes'], 'semantic_support': 'claim_specific_check_required', 'requested_characters': total}
+    if observation_scope(item['locator']):base['observation_scope']=observation_scope(item['locator'])
     base.update(requested_scope_complete=not omitted,semantic_context_status='unassessed',semantic_context_complete=None,
                 material_use=item['material_use'],content_roles=item['content_roles'],omitted_context_ids=omitted,
                 reading_scope_note='完整只指所请求文本已读出，不表示语义上下文充分；需按具体问题查阅方法、条件、结果与局限')

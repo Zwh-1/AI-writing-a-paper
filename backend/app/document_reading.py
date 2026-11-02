@@ -84,7 +84,7 @@ def record(pid,identity,remote=False):
     head=db.one('SELECT p.* FROM knowledge_parses p JOIN knowledge_heads h ON h.parse_id=p.id WHERE h.file_id=?',(row['file_id'],))
     profile=policy.source_context(original,row['intent'])
     current=bool(head and head['id']==row['parse_id'] and units.parse_current(head,original) and row['task_scope_hash']==task_hash(pid,row['section_id']) and profile['allowed_for_intent'])
-    passages=db.rows('SELECT * FROM document_reading_passages WHERE reading_id=? ORDER BY created_at,id',(identity,))
+    passages=db.rows('SELECT p.*,u.ordinal FROM document_reading_passages p JOIN knowledge_units u ON u.id=p.unit_id WHERE p.reading_id=? ORDER BY u.ordinal,p.char_start,p.char_end,p.created_at,p.id',(identity,))
     for passage in passages:
         item=units.get(pid,passage['unit_id'],remote=False,intent=row['intent'])
         if not item['current'] or item['review_state']=='excluded' or item['content_hash']!=passage['unit_hash'] or any(d['state']=='open' for d in item['disputes']) or passage['source_use']!=profile['source_purpose']:current=False
@@ -113,7 +113,7 @@ def context(pid,identity,remote=False):
     assessed=not missing and current
     status='human_reviewed_for_question' if assessed and row['state']=='reviewed' else 'candidate_assessed' if assessed else 'unassessed'
     snapshot={'reading_id':identity,'parse_id':row['parse_id'],'question':row['question'],'intent':row['intent'],'task_scope_hash':row['task_scope_hash'],
-              'passages':[{k:p[k] for k in ('id','unit_id','unit_hash','char_start','char_end','text','locator','source_use')} for p in passages],
+              'passages':[{k:p[k] for k in ('id','unit_id','unit_hash','ordinal','char_start','char_end','text','locator','source_use')} for p in passages],
               'findings':findings,'material_use':profile,'current':current,'semantic_context_status':status,
               'required_topics':required,'missing_topics':missing,'parsed_text_coverage_complete':bool(expected) and full_ids>=expected,
               'claim_support':'not_checked','semantic_context_complete':None,'review':{'state':row['state'],'reviewer':row['reviewer'],'note':row['review_note']},'source_instruction_authority':'project_material_not_system_instruction'}
@@ -142,7 +142,7 @@ def read_range(pid,identity,body,remote=False):
             if item['origin']=='pptx_slide':continue
             page=db.loads(item['locator'],{}).get('page')
             anchor=db.one("SELECT id,length(text) AS characters FROM knowledge_units WHERE parse_id=? AND origin='pptx_slide' AND json_extract(locator,'$.page')=?",(row['parse_id'],page))
-            if anchor and anchor['id'] not in {r['id'] for r in rows} and not any(p['unit_id']==anchor['id'] and p['char_start']==0 and p['char_end']==anchor['characters'] for p in existing):
+            if anchor and anchor['id'] not in {r['id'] for r in rows} and not range_covered(existing,anchor['id'],anchor['characters']):
                 return {'status':'needs_original_slide','passages':[],'required_unit_id':anchor['id'],
                         'action':'请先读取同一幻灯片的完整原生文本，以保留教学主题与正反例；OCR文字只作另一个转录候选'}
     selected=[]
@@ -154,7 +154,8 @@ def read_range(pid,identity,body,remote=False):
             if len(rows)!=1:raise HTTPException(422,'字符区间只适用于单个单元')
             a=units.integer(body,'char_start',0,0,len(item['text']));b=units.integer(body,'char_end',len(item['text']),a+1,len(item['text']))
         selected.append({'unit_id':item['id'],'unit_hash':item['content_hash'],'char_start':a,'char_end':b,'text':item['text'][a:b],
-            'locator':{**checked['locator'],'page_id':checked['page_id']},'content_roles':checked['content_roles'],'ordinal':item['ordinal']})
+            'locator':{**checked['locator'],'page_id':checked['page_id']},'content_roles':checked['content_roles'],'ordinal':item['ordinal'],
+            'observation_scope':units.observation_scope(checked['locator'])})
     total=sum(len(p['text']) for p in selected)
     if total>budget:return {'status':'needs_narrower_range','requested_characters':total,'max_chars':budget,'passages':[],
                             'semantic_context_status':'unassessed','action':'请按目录缩小章节或明确字符范围后继续阅读；当前未返回截断正文'}
@@ -171,6 +172,13 @@ def read_range(pid,identity,body,remote=False):
     if added:touch(pid,identity)
     return {'status':'read','reading_id':identity,'passages':result,'requested_scope_complete':True,'semantic_context_status':context(pid,identity)['semantic_context_status'],
             'material_use':profile,'scope_note':'这些是所请求的原文，不代表已读完整篇或语义充分'}
+
+def range_covered(passages,unit_id,length):
+    through=0
+    for start,end in sorted((p['char_start'],p['char_end']) for p in passages if p['unit_id']==unit_id):
+        if start>through:return False
+        through=max(through,end)
+    return through>=length
 
 
 @db.atomic
@@ -213,6 +221,31 @@ def documents_api(pid: str,intent: str='research',query: str=''):
 @router.get('/documents/{fid}/outline')
 def outline_api(pid: str,fid: str,intent: str='research'):
     return outline(pid,fid,intent,ensure=False)
+
+
+@router.get('/documents/{fid}/coverage')
+def coverage_api(pid:str,fid:str):
+    from .document_coverage import file_report
+    security.require_project(pid)
+    return file_report(pid,fid)
+
+
+@router.get('/coverage')
+def project_coverage_api(pid:str):
+    from .document_coverage import project_report
+    return project_report(pid,include_assets=True)
+
+
+@router.get('/documents/{fid}/assets/{sha}/read')
+def asset_read_api(pid:str,fid:str,sha:str,page:int,intent:str='guidance',max_chars:int=80000):
+    from .document_coverage import read_asset
+    return read_asset(pid,fid,sha,page,intent=intent,max_chars=max_chars)
+
+
+@router.get('/documents/{fid}/locate-images')
+def locate_images_api(pid:str,fid:str,query:str,intent:str='guidance'):
+    from .document_coverage import locate
+    return locate(pid,fid,query,intent=intent)
 
 
 @router.put('/documents/{fid}/usages')

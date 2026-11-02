@@ -1,7 +1,7 @@
 """Regression coverage for complete rule review and source-bound extraction."""
 import pytest
 from test_workbench import client,project,file,section,save
-from app import db,rules,tasks,reviews,rule_ai
+from app import db,rules,tasks,reviews,rule_ai,rule_workspace
 
 def add(c,p,**changes):
     response=c.post(f'/api/v1/projects/{p}/rules',json={'statement':'对研究内容进行核对',**changes})
@@ -11,6 +11,23 @@ def add(c,p,**changes):
 def workspace(c,p):
     response=c.get(f'/api/v1/projects/{p}/rules');assert response.status_code==200,response.text
     return response.json()
+
+
+def test_initial_rule_workspace_reuses_one_read_connection(client,monkeypatch):
+    p=project(client)
+    original=file(client,p,'摘要必须说明研究方法。',role='rules')
+    source=db.one('SELECT id FROM sources WHERE file_id=?',(original['id'],))
+    for index in range(20):
+        add(client,p,statement=f'论文要求记录第{index}项测试方法。',source_id=source['id'])
+    opened=[]
+    connect=db.connect
+    def counted_connect():
+        opened.append(1)
+        return connect()
+    monkeypatch.setattr(db,'connect',counted_connect)
+    result=rule_workspace.workspace(p)
+    assert len(result['rules'])==20
+    assert len(opened)==1
 
 @pytest.mark.parametrize('state',['candidate','confirmed','rejected'])
 def test_new_rule_preserves_selected_state(client,state):

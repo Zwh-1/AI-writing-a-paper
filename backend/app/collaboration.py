@@ -73,7 +73,9 @@ async def boundaries(request,call_next):
     response=await call_next(request);response.headers['X-Content-Type-Options']='nosniff';response.headers['Content-Security-Policy']="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'";response.headers['Cache-Control']='no-store';return response
 
 @app.get('/')
-def page():return FileResponse(ROOT/'frontend/src/collaboration.html')
+def page():
+    bundled=ROOT/'frontend/collaboration.html'
+    return FileResponse(bundled if bundled.is_file() else ROOT/'frontend/src/collaboration.html')
 @app.post('/collab/v1/login')
 def login(request:Request,body:dict):
     username=body.get('username','');password=body.get('password','');key=(request.client.host,username);now=time.time()
@@ -283,3 +285,7 @@ def project_file(pid,fid,request:Request):
 @app.post('/collab/v1/projects/{pid}/conflicts/{cid}/restore')
 def restore_conflict(pid,cid,request:Request,body:dict):
     user=principal(request);membership(pid,user,edit=True);return sync.restore_branch(pid,user['id'],cid,body)
+
+
+from .api.v2 import install as install_api_v2
+install_api_v2(app,service='collaboration',legacy_prefix='/collab/v1')

@@ -8,6 +8,14 @@ import app.main as main
 
 @pytest.fixture
 def client(tmp_path,monkeypatch):
+    from app import retrieval
+    from collections import OrderedDict
+    monkeypatch.setattr(retrieval,'_QUERY_VECTORS',OrderedDict())
+    monkeypatch.setattr(retrieval,'_RERANK_SCORES',OrderedDict())
+    # Legacy suites exercise synthetic transports and reservation-only mode.
+    # The expense governance suite explicitly restores the production defaults.
+    from app import expense_evidence
+    monkeypatch.setattr(expense_evidence,'DEFAULT_POLICY',{'require_pricing_basis':False,'block_on_unresolved':False})
     for name in ('objects','previews','exports','backups','tmp','logs'): (tmp_path/name).mkdir()
     monkeypatch.setattr(db,'DB_PATH',tmp_path/'workbench.sqlite3')
     for mod in (config,security,exports,main): monkeypatch.setattr(mod,'DATA',tmp_path)
@@ -145,7 +153,28 @@ def test_zip_traversal_restore_rejected(client):
 def test_statistical_analysis_is_executed(client):
     p=project(client);r=client.post(f'/api/v1/projects/{p}/files',files={'file':('数据.csv','value,group\n1,a\n3,b\n5,c\n'.encode(),'text/csv')},data={'role':'data'});fid=r.json()['file']['id'];out=client.post(f'/api/v1/projects/{p}/analysis',json={'file_id':fid});assert out.status_code==200,out.text;assert out.json()['actual_execution'];assert out.json()['statistics']['value']['mean']==3
 
-def test_model_json_contract():assert provider.parse_json('```json\n{"paragraphs":[]}\n```')['paragraphs']==[]
+def test_model_json_contract():
+    assert provider.parse_json('```json\n{"paragraphs":[]}\n```')['paragraphs']==[]
+    # 标准 JSON
+    assert provider.parse_json('{"a":1}')=={'a':1}
+    # BOM 前缀
+    assert provider.parse_json('\ufeff{"a":1}')=={'a':1}
+    # 代码围栏大写
+    assert provider.parse_json('```JSON\n{"a":1}\n```')=={'a':1}
+    # ~~~ 围栏
+    assert provider.parse_json('~~~json\n{"a":1}\n~~~')=={'a':1}
+    # 尾逗号
+    assert provider.parse_json('{"a":1,"b":[2,3,],}')=={'a':1,'b':[2,3]}
+    # 单引号
+    assert provider.parse_json("{'a':1,'b':'x'}")=={'a':1,'b':'x'}
+    # 散文包裹
+    assert provider.parse_json('以下是结果：\n{"a":1}\n以上。')=={'a':1}
+    # 纯散文必须失败
+    try:
+        provider.parse_json('模型只返回了说明，没有符合契约的JSON。')
+        assert False, '纯散文应该抛错'
+    except provider.ProviderError as e:
+        assert 'JSON' in str(e) or 'json' in str(e)
 
 def test_provider_endpoint_normalization():assert provider.endpoint('https://relay.example/v1','/v1/models')=='https://relay.example/v1/models'
 
@@ -229,7 +258,7 @@ def test_changed_facts_prevent_accepting_old_candidate(client,monkeypatch):
     p=project(client);manual_package(client,p);s=section(client,p);fact=client.post(f'/api/v1/projects/{p}/facts',json={'label':'样本','statement':'样本量为10','status':'measured'}).json();cfg=provider.config();cfg['model']='test';db.set_setting('provider',cfg);monkeypatch.setattr(provider,'generate',lambda *a,**kw:{'text':db.dumps({'paragraphs':[{'text':'样本量为10','fact_ids':[fact['id']]}]}),'usage':{},'cost':0,'remote_id':'test','request_hash':'h'});t=tasks.enqueue(p,'write',{'section_id':s,'base_revision_id':None,'operation':'generate'});tasks.run_one();client.patch('/api/v1/facts/'+fact['id'],json={'statement':'样本量为20'});r=client.post(f'/api/v1/sections/{s}/accept',json={'task_id':t['id'],'base_revision_id':None});assert r.status_code==409
 
 def test_export_uses_original_bibliography_snapshot(client):
-    p=project(client);manual_package(client,p);f=file(client,p);s=section(client,p);ref=client.post(f'/api/v1/projects/{p}/references',json={'metadata':{'title':'原文献题名','authors':'甲','year':'2024'},'file_id':f['id']}).json();doc=documents.text_document('正文论断');doc['content'][0]['content'].append({'type':'citation','attrs':{'citationId':ref['id']}});documents.save(security.require_section(s),doc,None);client.patch('/api/v1/references/'+ref['id'],json={'metadata':{'title':'尚未采用的新题名','authors':'甲','year':'2025'}});out=exports.export_project(p,{});from docx import Document
+    p=project(client);manual_package(client,p);f=file(client,p);s=section(client,p);ref=client.post(f'/api/v1/projects/{p}/references',json={'metadata':{'title':'原文献题名','authors':'甲','year':'2024'},'file_id':f['id']}).json();doc=documents.text_document('正文论断');doc['content'][0]['content'].append({'type':'citation','attrs':{'citationId':ref['id']}});documents.save(security.require_section(s),doc,None);client.patch('/api/v1/references/'+ref['id'],json={'metadata':{'title':'尚未采用的新题名','authors':'甲','year':'2025'}});out=exports.export_project(p,{'reference_metadata':'adopted'});from docx import Document
     text='\n'.join(x.text for x in Document(exports.DATA/'exports'/out['export_id']/'论文.docx').paragraphs);assert '原文献题名' in text;assert '尚未采用的新题名' not in text
 
 def test_model_schema_rejects_nonarray_missing_materials(client,monkeypatch):
@@ -268,3 +297,27 @@ def test_completed_paid_call_is_not_automatically_regenerated_on_recovery(client
 
 def test_archived_projects_are_hidden_and_recoverable(client):
     p=project(client);client.patch('/api/v1/projects/'+p,json={'archived':1});assert client.get('/api/v1/projects').json()==[];assert client.get('/api/v1/projects?include_archived=true').json()[0]['id']==p;client.patch('/api/v1/projects/'+p,json={'archived':0});assert client.get('/api/v1/projects').json()[0]['id']==p
+
+
+def test_worker_survives_a_transient_database_error(client, monkeypatch):
+    """存储短暂只读或加锁不能终止唯一的工作线程，否则任务会一直停在排队。"""
+    monkeypatch.setenv('PAPER_TASK_WATCHDOG', '0')
+    calls = []
+
+    def flaky():
+        calls.append(1)
+        if len(calls) == 1:
+            raise sqlite3.OperationalError('attempt to write a readonly database')
+        tasks.STOP.set()
+        return True
+
+    monkeypatch.setattr(tasks, 'run_one', flaky)
+    monkeypatch.setattr(tasks, 'recover', lambda: None)
+    monkeypatch.setattr(tasks, 'wake_rule_jobs', lambda: None)
+    monkeypatch.setattr(tasks.STOP, 'wait', lambda timeout=None: False)
+    tasks.STOP.clear()
+    try:
+        tasks.run_forever()
+    finally:
+        tasks.STOP.clear()
+    assert len(calls) >= 2

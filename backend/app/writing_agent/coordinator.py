@@ -113,7 +113,7 @@ def current_investigation_evidence(pid,identities):
 
 
 def investigate(task,step,session,profile,payload,manifest):
-    config=profile['configuration'];native=config.get('tool_mode','json')=='native';catalog=tools.schemas();messages=[{'role':'user','content':db.dumps({'context':payload,'available_tools':catalog})}];items=None;ids=[];count=0
+    config=profile['configuration'];native=config.get('tool_mode','json')=='native';catalog=tools.schemas(include_knowledge=bool(manifest.get('knowledge_refs')));messages=[{'role':'user','content':db.dumps({'context':payload,'available_tools':catalog})}];items=None;ids=[];count=0
     ids.extend(e['id'] for e in payload.get('evidence',[]) if e['id'] in manifest.get('source_evidence',{}))
     for turn in range(config.get('max_turns',6)):
         assert_lease(step['id'],manifest['lease_epoch'])
@@ -176,7 +176,7 @@ def process_step(task,payload):
                 data['revision_scope']={'requested_problem':policy.get('revision_instructions',''),'other_prior_findings_are_not_assumed_resolved':True}
         if st['stage'] in ('investigate','judgment','judgment_check'):
             data.pop('existing_document',None)
-            data.pop('current_section_context',None);data.pop('paper_context',None)
+            data.pop('current_section_context',None);data.pop('paper_context',None);data.pop('continuity',None)
             data['related_sections']=[r for r in data.get('related_sections',[]) if r.get('scope')=='full_required_dependency']
             required={r['section_id'] for r in data['related_sections']};manifest['related_revisions']={sid:rid for sid,rid in manifest.get('related_revisions',{}).items() if sid in required}
             if policy.get('revision_baseline_blob'):

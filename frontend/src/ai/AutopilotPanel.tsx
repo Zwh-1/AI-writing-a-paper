@@ -16,6 +16,7 @@ type Props = {
   tick: number;
   onUpdated: () => void;
   onRule?: (id: string) => void;
+  onRuleSource?: (id: string) => void;
   onMaterial?: (id: string) => void;
   scope?: AIDomain;
   onOtherDomain?: () => void;
@@ -62,6 +63,7 @@ function Panel(props: Props) {
           <AutopilotExceptions
             scope={props.scope}
             onRule={props.onRule}
+            onRuleSource={props.onRuleSource}
             onMaterial={props.onMaterial}
             onOtherDomain={props.onOtherDomain}
           />

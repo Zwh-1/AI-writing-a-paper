@@ -5,7 +5,10 @@ import {
   Plus,
   ShieldCheck,
   Sparkles,
+  FileText,
+  BookOpen,
 } from "lucide-react";
+import { lazy, Suspense } from "react";
 import { send } from "../client";
 import { RuleExecutionPanel } from "../Completion";
 import { AIAutopilotProvider } from "../ai/useAIAutopilot";
@@ -26,7 +29,18 @@ import { useRulesWorkspace, type RulesView } from "./useRulesWorkspace";
 import RulesOverview from "./RulesOverview";
 import RuleAutomationPanel from "./RuleAutomationPanel";
 import RuleSourceDialog from "./RuleSourceDialog";
+import RuleRebuildPanel from "./RuleRebuildPanel";
 import "../rulesWorkspace.css";
+import {
+  SourceWorkspaceNavigation,
+  SourceFocus,
+  SourceFlowPanel,
+  SourceWorkspaceData,
+} from "../workspace/SourceWorkspace";
+import { navigateSources } from "../workspace/sourceNavigation";
+const GuidanceKnowledge = lazy(
+  () => import("../references/GraphWikiWorkspace"),
+);
 
 type Props = {
   pid: string;
@@ -39,9 +53,11 @@ type Props = {
 };
 const tabs = [
   { key: "catalog", label: "条款管理", icon: ListChecks },
+  { key: "sources", label: "来源材料", icon: FileText },
   { key: "automation", label: "整理与审核", icon: Sparkles },
   { key: "issues", label: "重复与冲突", icon: CopyCheck },
   { key: "publication", label: "发布与设置", icon: ShieldCheck },
+  { key: "knowledge", label: "指导与示例知识", icon: BookOpen },
 ] as const;
 function Workspace(p: Props) {
   const c = useRulesWorkspace(p.pid, p.tick, p.act),
@@ -91,19 +107,36 @@ function Workspace(p: Props) {
           </>
         }
       />
-      <AutopilotOverview
-        domain="rules"
-        onManage={() => {
-          c.setView("automation");
-          showWorkspacePanel("rules-panel-automation");
-        }}
-      />
-      <RulesOverview
-        data={c.data}
-        navigate={c.setView}
-        onRecords={c.showRecords}
-        onSnapshot={() => c.setSource({ package: c.data?.package })}
-      />
+      <SourceWorkspaceNavigation pid={p.pid} tick={p.tick} current="rules" />
+      <SourceFocus
+        pid={p.pid}
+        tick={p.tick}
+        fileId={c.route.location.fileId}
+        onClear={() => c.route.update({ fileId: undefined })}
+      >
+        <button
+          className="btn"
+          onClick={() =>
+            navigateSources(p.pid, "materials", {
+              view: "library",
+              fileId: c.route.location.fileId,
+            })
+          }
+        >
+          管理原件与用途
+        </button>
+      </SourceFocus>
+      {c.view === "catalog" && (
+        <details className="source-compact-overview">
+          <summary>规则覆盖、审核统计与来源说明</summary>
+          <RulesOverview
+            data={c.data}
+            navigate={c.setView}
+            onRecords={c.showRecords}
+            onSnapshot={() => c.setSource({ package: c.data?.package })}
+          />
+        </details>
+      )}
       <WorkspaceTabs<RulesView>
         id="rules"
         label="规则工作区"
@@ -137,6 +170,15 @@ function Workspace(p: Props) {
           onFilter={c.setFilter}
           busy={!!c.busy}
           sourceBusy={c.sourceBusy}
+          initialFileId={
+            c.route.location.fileId || c.route.location.sourceFilter
+          }
+          onFileChange={(fileId) =>
+            c.route.update({
+              fileId: fileId && fileId !== "manual" ? fileId : undefined,
+              sourceFilter: fileId === "manual" ? "manual" : undefined,
+            })
+          }
           onEdit={c.setEditing}
           onSource={c.openSource}
           onAutomation={() => c.setView("automation")}
@@ -165,24 +207,86 @@ function Workspace(p: Props) {
           }
         />
       </section>
+      {c.view === "sources" && (
+        <section
+          id="rules-panel-sources"
+          role="tabpanel"
+          aria-labelledby="rules-tab-sources"
+        >
+          <SourceFlowPanel
+            pid={p.pid}
+            tick={p.tick}
+            scope="rules"
+            fileId={c.route.location.fileId}
+            onOpen={(fileId, pageNumber) =>
+              navigateSources(p.pid, "materials", {
+                view: "library",
+                fileId,
+                pageNumber: pageNumber || 1,
+              })
+            }
+            onChoose={(fileId) => c.route.update({ view: "catalog", fileId })}
+          />
+        </section>
+      )}
+      {c.view === "knowledge" && (
+        <section
+          id="rules-panel-knowledge"
+          role="tabpanel"
+          aria-labelledby="rules-tab-knowledge"
+        >
+          <p className="workspace-notice">
+            指导与示例知识用于理解要求和语境；纳入写作的约束仍以已发布规则包为准。
+          </p>
+          <Suspense fallback={<p role="status">正在读取指导知识…</p>}>
+            <GuidanceKnowledge
+              pid={p.pid}
+              tick={p.tick}
+              initialNamespace="guidance"
+              namespaceOptions={["guidance"]}
+              initialQuery={c.route.location.query || ""}
+              focusFileId={c.route.location.fileId}
+              onSource={(fileId, pageNumber) =>
+                navigateSources(p.pid, "materials", {
+                  view: "library",
+                  fileId,
+                  pageNumber: pageNumber || 1,
+                })
+              }
+            />
+          </Suspense>
+        </section>
+      )}
       {c.view === "automation" && (
         <section
           id="rules-panel-automation"
           role="tabpanel"
           aria-labelledby="rules-tab-automation"
         >
-          <RuleAutomationPanel
-            pid={p.pid}
-            tick={p.tick}
-            data={c.data}
-            busy={c.busy}
-            refresh={p.refresh}
-            act={p.act}
-            run={c.run}
-            onRule={onRule}
-            onSource={c.openSource}
-            onMaterials={p.onMaterials}
-          />
+          <AIAutopilotProvider pid={p.pid} tick={p.tick} onUpdated={p.refresh}>
+            <AutopilotOverview
+              domain="rules"
+              onManage={() => showWorkspacePanel("rules-panel-automation")}
+            />
+            <RuleRebuildPanel
+              pid={p.pid}
+              tick={p.tick}
+              onCompleted={p.refresh}
+              onSnapshot={(value) => c.setSource({ package: value })}
+            />
+            <RuleAutomationPanel
+              pid={p.pid}
+              tick={p.tick}
+              data={c.data}
+              busy={c.busy}
+              refresh={p.refresh}
+              act={p.act}
+              run={c.run}
+              onRule={onRule}
+              onSource={c.openSource}
+              onMaterials={p.onMaterials}
+            />
+          </AIAutopilotProvider>
         </section>
       )}
       {c.view === "issues" && (
@@ -280,13 +384,8 @@ function Workspace(p: Props) {
 }
 export default function RulesWorkspacePage(p: Props) {
   return (
-    <AIAutopilotProvider
-      key={p.pid}
-      pid={p.pid}
-      tick={p.tick}
-      onUpdated={p.refresh}
-    >
-      <Workspace {...p} />
-    </AIAutopilotProvider>
+    <SourceWorkspaceData pid={p.pid} tick={p.tick}>
+      <Workspace key={p.pid} {...p} />
+    </SourceWorkspaceData>
   );
 }

@@ -3,7 +3,7 @@ import io
 import re
 from . import db, security
 
-ENGINE = 'native-structure-v3-document'
+ENGINE = 'native-structure-v5-complete-views'
 STRATEGIES = {'paragraphs', 'page'}
 
 
@@ -88,11 +88,17 @@ def extract(original, engine=ENGINE):
                       'origin': 'pptx_slide' if original['extension']=='.pptx' else 'native_extraction','unit_kind':'slide_topic' if original['extension']=='.pptx' else None,
                       'title':p.get('title',''),'document_title':original['name'],'physical_page': False} for p in native]
     # OCR/manual observations remain separate from native extraction, never silently blended.
+    from .document_observations import observations
+    superseded=db.setting('document_observation_supersessions',{})
     for page in pages:
-        for source in db.rows("SELECT * FROM sources WHERE page_id=? AND method NOT IN ('native','native_supplement') ORDER BY id", (page['id'],)):
-            if source['text'].strip():
-                extracted.append({'number': page['page_number'], 'text': source['text'], 'blocks': [],
-                                  'origin': source['method'], 'source_id': source['id'], 'physical_page': original['extension'] == '.pdf', 'transcript_verified': bool(source['verified'])})
+        sources=db.rows("SELECT * FROM sources WHERE page_id=? AND method NOT IN ('native','native_supplement','document_rule_context') ORDER BY id", (page['id'],))
+        for observation in observations(sources,superseded,preserve_unverified=True):
+            if observation['text'].strip():
+                extracted.append({'number':page['page_number'],'text':observation['text'],'blocks':[],
+                                  'origin':observation['origin'],'source_id':observation['source_ids'][0],
+                                  'observation_locator':observation['locator'],'observation_issues':observation['issues'],
+                                  'unit_kind':'image_observation' if observation['origin'] in ('windows_ocr','assistant_visual_excerpt','unverified_image_transcript') else None,
+                                  'physical_page':original['extension']=='.pdf','transcript_verified':False})
     return extracted
 
 
@@ -100,11 +106,12 @@ def candidates(page, strategy):
     text = page['text']; native_blocks = page.get('blocks', [])
     ranges = [(b['start'], b['end'], b) for b in native_blocks] if strategy == 'paragraphs' and native_blocks else [(a, b, {}) for a, b in spans(text, strategy)]
     if page.get('unit_kind')=='slide_topic':ranges=[(0,len(text),{'kind':'slide_topic','heading_path':[page.get('document_title',''),page.get('title','')]})]
+    if page.get('unit_kind')=='image_observation':ranges=[(0,len(text),{'kind':'image_observation'})]
     for a, b, block in ranges:
         value = text[a:b]
         if not value.strip():
             continue
-        issues = []
+        issues = list(page.get('observation_issues',[]))
         if page['origin'] in ('pdfium_text_order','pptx_slide'):
             issues.append('reading_order_needs_review')
         if page['origin']=='pptx_slide':issues.append('teaching_scope_needs_review')
@@ -119,8 +126,19 @@ def candidates(page, strategy):
             issues.append('table_header_and_notes_need_review')
         if page['origin'] not in ('ooxml_structure', 'native_extraction', 'pdfium_text_order', 'legacy_extraction','pptx_slide'):
             issues.append('transcript_needs_original_comparison')
+        if page['origin']=='assistant_visual_excerpt':
+            issues=[issue for issue in issues if issue!='transcript_needs_original_comparison']
+            if (page.get('observation_locator') or {}).get('observation_locator',{}).get('transcription_scope')!='complete_image_text':issues.append('selected_visual_excerpts_not_complete_image')
         locator = {'page': page['number'], 'char_start': a, 'char_end': b, 'physical_page': page.get('physical_page', False),
                    'coordinate_system': page.get('coordinate_system'), 'bbox': block.get('bbox'), 'paragraph': block.get('paragraph'),
                    'source_id': page.get('source_id'), 'extraction_origin': page['origin'], 'page_size': page.get('page_size')}
         if page['origin']=='pptx_slide':locator.update(slide_number=page['number'],slide_title=page.get('title',''),boundary_basis='whole_original_slide_not_semantic_closure')
+        if page.get('observation_locator'):locator.update(page['observation_locator'])
+        if locator.get('context_stream'):locator['context_stream']+=':page:'+str(page['number'])
+        if page['origin']=='assistant_visual_excerpt':
+            observed=(page.get('observation_locator') or {}).get('observation_locator',{})
+            if observed.get('source_issues'):
+                locator['source_issues']=observed['source_issues'];issues.extend(observed['source_issues'])
+            locator.update(transcription_scope=observed.get('transcription_scope'),read_scope='inspected_visual_excerpts',
+                evidence_asset_sha256=observed.get('evidence_asset_sha256'),entire_original_image_transcribed=observed.get('transcription_scope')=='complete_image_text')
         yield {'text': value, 'kind': kind, 'locator': locator, 'origin': page['origin'], 'issues': issues, 'heading_path': block.get('heading_path', [])}

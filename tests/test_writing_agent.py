@@ -21,6 +21,9 @@ def env(tmp_path,monkeypatch):
     with TestClient(main.app) as c:
         c.headers['X-CSRF-Token']=c.post('/api/v1/session',json={'token':security.BOOTSTRAP_TOKEN}).json()['csrf']
         pid=c.post('/api/v1/projects',json={'title':'证据写作测试','budget':20}).json()['id']
+        # This isolated project uses only the synthetic transport below. The
+        # production invoice gate is exercised by test_expense_evidence.py.
+        db.set_setting('expense_policy:'+pid,{'require_pricing_basis':False,'block_on_unresolved':False})
         c.post(f'/api/v1/projects/{pid}/rules',json={'statement':'保留条件和证据范围，不得编造测试结果。','modality':'mandatory','scope':'global'})
         response=c.post(f'/api/v1/projects/{pid}/rule-packages');assert response.status_code==200,response.text
         sid=c.post(f'/api/v1/projects/{pid}/sections',json={'title':'功能约束','kind':'system_design'}).json()['id']
@@ -62,11 +65,12 @@ def reviewed_candidate(e,monkeypatch):
     return cid,a
 
 def test_migrations_atomic_and_repeatable(env):
+    from app.writing_agent import migrations
     db.init();db.init()
     with db.connect() as c:
-        assert c.execute('PRAGMA user_version').fetchone()[0]==9
+        assert c.execute('PRAGMA user_version').fetchone()[0]==migrations.CURRENT
         assert not c.execute('PRAGMA foreign_key_check').fetchall()
-        assert c.execute('SELECT count(*) FROM schema_migrations').fetchone()[0]==6
+        assert c.execute('SELECT count(*) FROM schema_migrations').fetchone()[0]==len(migrations.FILES)
 
 def test_migration_refuses_future_database(env):
     with db.connect() as c:c.execute('PRAGMA user_version=99')

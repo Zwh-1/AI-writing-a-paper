@@ -25,13 +25,28 @@ export const scopeLabels: Record<string, string> = {
   abstract_en: "英文摘要",
   introduction: "绪论",
   literature: "文献综述",
+  literature_review: "文献综述",
   system_design: "系统设计",
   implementation: "系统实现",
   results: "结果 / 测试",
+  testing: "结果 / 测试",
   conclusion: "结论",
   methods: "研究方法",
+  methodology: "研究方法",
+  reference: "参考文献",
   body: "正文",
 };
+export function ruleScopeLabel(rule: Row): string {
+  const condition = rule.conditions;
+  const scopes = condition?.field === "section_kind"
+    ? condition.op === "in" && Array.isArray(condition.value)
+      ? condition.value
+      : condition.op === "eq" ? [condition.value] : []
+    : [];
+  return scopes.length
+    ? [...new Set(scopes as string[])].map((scope) => scopeLabels[scope] ?? scope).join(" / ")
+    : scopeLabels[rule.scope] ?? rule.scope;
+}
 export const stateLabels: Record<string, string> = {
   mandatory: "强制要求",
   recommended: "建议",
@@ -289,7 +304,7 @@ export default function RuleEditor({
                   onChange={(e) => update("scope", e.target.value)}
                 />
                 <datalist id="rule-scopes">
-                  {Object.entries(scopeLabels).map(([k, v]) => (
+                  {Object.entries(scopeLabels).filter(([k]) => !["literature", "results", "methods"].includes(k) || draft.scope === k).map(([k, v]) => (
                     <option key={k} value={k}>
                       {v}
                     </option>

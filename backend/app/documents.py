@@ -33,7 +33,9 @@ def normalize(doc,depth=0):
         if not attrs.get('nodeId'): attrs['nodeId']=db.uid()
         if 'knowledgeUnitIds' in doc.get('attrs',{}):attrs['knowledgeUnitIds']=doc['attrs']['knowledgeUnitIds']
         if 'documentReadingIds' in doc.get('attrs',{}):attrs['documentReadingIds']=doc['attrs']['documentReadingIds']
-        for key in ('sourceIds','factIds','knowledgeUnitIds','relatedSectionIds','documentReadingIds'):
+        for extra_key in ('evidenceIds','knowledgeClaimIds','wikiVersionIds','wikiBlockIds'):
+            if extra_key in doc.get('attrs',{}):attrs[extra_key]=doc['attrs'][extra_key]
+        for key in ('sourceIds','factIds','evidenceIds','knowledgeUnitIds','relatedSectionIds','documentReadingIds','knowledgeClaimIds','wikiVersionIds','wikiBlockIds'):
             if key in attrs:
                 if not isinstance(attrs[key],list) or len(attrs[key])>60 or any(not isinstance(x,str) for x in attrs[key]):raise HTTPException(422,'段落依据关联格式无效')
                 if not attrs[key]:attrs.pop(key)
@@ -80,8 +82,22 @@ def save(s,doc,base,kind='manual',task_id=None,citation_proposals=None,clear_sta
         c.execute('INSERT INTO revisions VALUES(?,?,?,?,?,?,?,?)',(rid,s['id'],base,db.dumps(doc),plain(doc),kind,task_id,db.now()))
         if base:
             for dep in c.execute('SELECT * FROM dependencies WHERE revision_id=?',(base,)).fetchall():
+                if dep['upstream_type'].startswith('knowledge:'):continue
                 c.execute('INSERT INTO dependencies VALUES(?,?,?,?,?,?,?)',(db.uid(),pid,dep['upstream_type'],dep['upstream_id'],dep['upstream_version'],s['id'],rid))
         for n in nodes(doc):
+            for eid in n.get('attrs',{}).get('evidenceIds',[]):
+                from .writing_agent.evidence import get as get_evidence
+                from .writing_agent.common import dependency
+                observed=get_evidence(pid,eid)
+                c.execute('INSERT INTO dependencies VALUES(?,?,?,?,?,?,?)',(db.uid(),pid,'evidence',eid,observed['origin_version'],s['id'],rid))
+                dependency(pid,'evidence',eid,observed['origin_version'],'revision',rid,rid)
+            for field,typ in (('knowledgeClaimIds','assertion'),('wikiVersionIds','wiki_version'),('wikiBlockIds','wiki_block')):
+                for identity in n.get('attrs',{}).get(field,[]):
+                    from .knowledge_lineage import owned
+                    knowledge=owned(pid,typ,identity)
+                    from .knowledge_lineage import block_hash
+                    version=block_hash(pid,knowledge) if typ=='wiki_block' else knowledge['content_hash']
+                    c.execute('INSERT INTO dependencies VALUES(?,?,?,?,?,?,?)',(db.uid(),pid,'knowledge:'+typ,identity,version,s['id'],rid))
             for identity in n.get('attrs',{}).get('documentReadingIds',[]):
                 from .document_reading import context as reading_context
                 reading=reading_context(pid,identity)
@@ -103,6 +119,9 @@ def save(s,doc,base,kind='manual',task_id=None,citation_proposals=None,clear_sta
             if n['type']=='citation':
                 refid=n['attrs'].get('citationId');ref=c.execute('SELECT * FROM bibliography WHERE id=? AND project_id=?',(refid,pid)).fetchone()
                 if not ref: raise HTTPException(422,'引用不存在或不属于当前项目')
+                c.execute('INSERT INTO dependencies VALUES(?,?,?,?,?,?,?)',(db.uid(),pid,'reference',refid,str(ref['revision']),s['id'],rid))
+                from .writing_agent.common import dependency
+                dependency(pid,'reference',refid,str(ref['revision']),'revision',rid,rid)
                 prop=next((x for x in proposals if x.get('node_id')==n['attrs']['nodeId']),None) or next((x for x in proposals if x.get('reference_id')==refid and not x.get('node_id')),{})
                 prev=c.execute('SELECT * FROM citations WHERE revision_id=? AND node_id=?',(base,n['attrs']['nodeId'])).fetchone() if base else None
                 source_ids=prop.get('source_ids',paragraph_sources.get(n['attrs']['nodeId']) or (db.loads(prev['source_ids'],[]) if prev else []))
@@ -148,6 +167,12 @@ def mark_downstream(pid,sid,reason):
 def fact_changed(pid,fid):
     from .writing_agent.impact import changed
     kind='brief' if fid=='brief' else 'file' if db.one('SELECT id FROM files WHERE id=? AND project_id=?',(fid,pid)) else 'reference' if db.one('SELECT id FROM bibliography WHERE id=? AND project_id=?',(fid,pid)) else 'fact'
+    if kind=='reference':
+        from .writing_agent.impact import retain_existing,add_reason
+        version=db.one('SELECT revision FROM bibliography WHERE id=?',(fid,))['revision']
+        for row in db.rows('SELECT DISTINCT s.id FROM sections s JOIN citations c ON c.revision_id=s.current_revision_id WHERE s.project_id=? AND c.reference_id=?',(pid,fid)):
+            retain_existing(pid,row['id']);add_reason(pid,row['id'],'reference',fid,str(version),'引用文献信息或原件已更新，请核对正文与来源是否仍对应')
+        db.execute("UPDATE citations SET support='unknown' WHERE reference_id=? AND revision_id IN (SELECT current_revision_id FROM sections WHERE project_id=?)",(fid,pid))
     changed(pid,kind,fid,'研究事实或有关资料已变化，请复查')
 def counts(text):
     zh=len(re.findall(r'[\u4e00-\u9fff]',text));en=len(re.findall(r'\b[A-Za-z]+(?:[-\'][A-Za-z]+)*\b',text));return {'chinese':zh,'english':en,'characters':len(text),'total':zh+en}

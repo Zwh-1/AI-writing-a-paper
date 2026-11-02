@@ -7,8 +7,10 @@ from docx.oxml.ns import qn
 from . import db,documents,reviews
 from .config import DATA,DB_PATH
 from .security import safe_object,require_project
-DEFAULT_FORMAT={'font':'宋体','latin_font':'Times New Roman','font_size':12,'line_spacing':1.5,'first_line_chars':2,'margin_top':25,'margin_bottom':25,'margin_left':30,'margin_right':25,'heading_font':'黑体','reference_superscript':True}
-def format_config(pid): return {**DEFAULT_FORMAT,**db.setting('format:'+pid,{})}
+DEFAULT_FORMAT={'font':'宋体','latin_font':'Times New Roman','font_size':12,'line_spacing':1.5,'line_spacing_points':None,'alignment':'justify','first_line_chars':2,'margin_top':25,'margin_bottom':25,'margin_left':30,'margin_right':25,'heading_font':'黑体','reference_superscript':True}
+def format_config(pid):
+    from .paper_format import resolve
+    return resolve(pid)['config']
 def bibliography_text(meta):
     if meta.get('citation_raw'):return str(meta['citation_raw']).strip()
     authors=meta.get('authors','')
@@ -39,6 +41,12 @@ def export_project(pid,options,tid=None):
             from .writing_agent.paper_review import export_report
             writing_report=export_report(pid,options.get('mode')=='strict' or options.get('writing_policy')=='strict')
     p=frozen['project'];fmt={**DEFAULT_FORMAT,**(frozen['settings'].get('format:'+pid) or {})};sections=frozen['sections'];valid_revisions={x['id'] for x in frozen['revisions'].values()};report_findings=[x for x in frozen['findings'] if not x['revision_id'] or x['revision_id'] in valid_revisions];findings={'findings':report_findings,'summary':{state:sum(x['result']==state for x in report_findings) for state in ('pass','fail','unknown')}}
+    from .paper_format import resolve as resolve_format
+    format_resolution=resolve_format(pid,package=frozen['package'],settings=frozen['settings'].get('format:'+pid) or {},project=p)
+    fmt=format_resolution['config']
+    if options.get('mode')=='strict' and format_resolution['conflicts']:raise ValueError('已发布排版规则存在冲突，请先处理后正式导出')
+    section_formats={s['id']:resolve_format(pid,package=frozen['package'],settings=frozen['settings'].get('format:'+pid) or {},section=s,project=p)['config'] for s in sections}
+    component_styles=format_resolution.get('components',{})
     snapshots=[];refs={};artifacts=frozen['artifacts'];numbering={};md=['# '+p['title'],''];package=frozen['package']
     for s in sections:
         rev=frozen['revisions'].get(s['id'])
@@ -51,17 +59,19 @@ def export_project(pid,options,tid=None):
                         bib=dict(frozen['references'][rid]) if rid in frozen['references'] else None
                         if not bib: raise ValueError('导出存在悬空引用')
                         snapshot=next((c for c in frozen['citations'] if c['revision_id']==rev['id'] and c['node_id']==n.get('attrs',{}).get('nodeId')),None)
-                        if snapshot: bib['metadata']=snapshot['reference_snapshot']
+                        if snapshot and options.get('reference_metadata','current')=='adopted': bib['metadata']=snapshot['reference_snapshot']
                         refs[rid]=bib;numbering[rid]=len(numbering)+1
     from .figure_standards import DEFAULT as FIGURE_DEFAULT,inventory,resolve_reference,evaluate as evaluate_figures
     figure_policy={**FIGURE_DEFAULT,**(frozen['settings'].get('figure_policy:'+pid) or {})}
     figure_policy['_format_hash']=hashlib.sha256(db.dumps({'format':frozen['settings'].get('format:'+pid) or {},'template':frozen['settings'].get('template:'+pid)}).encode()).hexdigest()
-    figure_rows=inventory(pid,figure_policy,snapshots,artifacts)
+    figure_rows=inventory(pid,figure_policy,snapshots,artifacts,section_plan=sections)
     figure_lookup={(r['section_id'],r['node_id']):r for r in figure_rows}
     figure_report=evaluate_figures(pid,snapshots,artifacts,figure_policy)
     if options.get('mode')=='strict' and any(x['result'] in ('fail','unknown') for x in figure_report['items']):
         raise ValueError('正式导出前需完成图文说明、配图政策、真实来源和交叉引用核对；请查看论文图表规范检查')
     export_id=db.uid();folder=DATA/'exports'/export_id;folder.mkdir(parents=True)
+    if frozen.get('graph_wiki',{}).get('objects'):
+        (folder/'图谱与Wiki知识使用追溯.json').write_text(db.dumps(frozen['graph_wiki']),encoding='utf-8')
     linked={row['unit_id'] for row in frozen.get('knowledge_links',[])}
     for revision in frozen['revisions'].values():
         for node in documents.nodes(db.loads(revision['document'],{})):linked.update(node.get('attrs',{}).get('knowledgeUnitIds',[]))
@@ -90,25 +100,104 @@ def export_project(pid,options,tid=None):
     section=doc.sections[0];section.page_height=Mm(297);section.page_width=Mm(210)
     for side in ('top','bottom','left','right'): setattr(section,side+'_margin',Mm(float(fmt['margin_'+side])))
     normal=doc.styles['Normal'];set_font(normal,fmt['font'],fmt['latin_font'],float(fmt['font_size']));normal.paragraph_format.line_spacing=float(fmt['line_spacing']);normal.paragraph_format.space_after=Pt(0)
+    if fmt.get('line_spacing_points'):normal.paragraph_format.line_spacing=Pt(fmt['line_spacing_points'])
     ind=normal.element.get_or_add_pPr().find(qn('w:ind'))
     if ind is None: ind=OxmlElement('w:ind');normal.element.get_or_add_pPr().append(ind)
     ind.set(qn('w:firstLineChars'),str(int(float(fmt['first_line_chars'])*100)))
     for level,size in ((1,16),(2,14),(3,12)):
         set_font(doc.styles[f'Heading {level}'],fmt['heading_font'],fmt['latin_font'],size)
+        from docx.shared import RGBColor
+        doc.styles[f'Heading {level}'].font.color.rgb=RGBColor(0,0,0)
+    doc.styles['Title'].font.color.rgb=RGBColor(0,0,0)
+    if not template:
+        title_style=doc.styles['Title'];set_font(title_style,fmt['heading_font'],fmt['latin_font'],18)
+        title_style.font.bold=True;title_style.font.underline=False
+        title_style.paragraph_format.alignment=1;title_style.paragraph_format.first_line_indent=Pt(0)
+        title_style.paragraph_format.space_before=Pt(30);title_style.paragraph_format.space_after=Pt(20)
+        title_props=title_style.element.get_or_add_pPr()
+        for old in list(title_props.findall(qn('w:pBdr'))):title_props.remove(old)
+        title_ind=title_props.find(qn('w:ind'))
+        if title_ind is None:title_ind=OxmlElement('w:ind');title_props.append(title_ind)
+        title_ind.set(qn('w:firstLineChars'),'0')
+    def apply_component(paragraph,component,style=False,runs=None):
+        values=dict(component_styles.get(component,{}))
+        if not values:return
+        if component.startswith(('heading_','toc_')) or component.endswith('_heading'):values.setdefault('first_line_chars',0)
+        paragraph_format=paragraph.paragraph_format
+        if 'alignment' in values:paragraph_format.alignment={'left':0,'center':1,'right':2,'justify':3}[values['alignment']]
+        if values.get('line_spacing_points'):paragraph_format.line_spacing=Pt(values['line_spacing_points'])
+        if values.get('page_break_before'):paragraph_format.page_break_before=True
+        size=values.get('font_size',fmt['font_size'])
+        if 'left_indent_chars' in values:paragraph_format.left_indent=Pt(size*values['left_indent_chars'])
+        if 'first_line_chars' in values:
+            props=paragraph._element.get_or_add_pPr() if not style else paragraph.element.get_or_add_pPr()
+            ind=props.find(qn('w:ind'))
+            if ind is None:ind=OxmlElement('w:ind');props.append(ind)
+            ind.set(qn('w:firstLineChars'),str(int(values['first_line_chars']*100)))
+        line=values.get('line_spacing_points',size*float(fmt['line_spacing']))
+        for key in ('space_before','space_after'):
+            if key+'_lines' in values:setattr(paragraph_format,key,Pt(line*values[key+'_lines']))
+        selected_runs=[] if style else paragraph.runs if runs is None else runs
+        fonts=[paragraph.font] if style else [run.font for run in selected_runs]
+        for font in fonts:
+            if 'font_size' in values:font.size=Pt(values['font_size'])
+            if 'bold' in values:font.bold=values['bold']
+            if 'latin_font' in values:font.name=values['latin_font']
+        if 'font' in values:
+            elements=[paragraph.element] if style else [run._r for run in selected_runs]
+            for element in elements:element.get_or_add_rPr().get_or_add_rFonts().set(qn('w:eastAsia'),values['font'])
+    for level in (1,2,3):apply_component(doc.styles[f'Heading {level}'],'heading_'+str(level),style=True)
+    for level in (1,2,3):
+        if f'TOC {level}' not in doc.styles:
+            from docx.enum.style import WD_STYLE_TYPE
+            doc.styles.add_style(f'TOC {level}',WD_STYLE_TYPE.PARAGRAPH)
+        apply_component(doc.styles[f'TOC {level}'],'toc_'+str(level),style=True)
+    apply_component(doc.styles['TOC Heading'],'toc_title',style=True)
+    if not template:apply_component(doc.styles['Title'],'title',style=True)
     if not preserve:
-        doc.add_heading(p['title'],0);brief=db.loads(p['brief'],{})
+        title_paragraph=doc.add_heading(p['title'],0)
+        for old in list(title_paragraph._p.get_or_add_pPr().findall(qn('w:pBdr'))):title_paragraph._p.get_or_add_pPr().remove(old)
+        brief=db.loads(p['brief'],{})
         for label,key in [('作者','author'),('学校','school'),('专业','major'),('指导教师','supervisor')]:
-            if brief.get(key): doc.add_paragraph(label+'：'+str(brief[key]))
-        doc.add_paragraph('稿件用途：'+options.get('mode','draft')+'；未决事项请查看随附报告。');doc.add_page_break();doc.add_paragraph('目录',style='TOC Heading');field(doc.add_paragraph(),' TOC \\o "1-3" \\h \\z \\u ');doc.add_page_break()
-    elif options.get('include_toc',True):
-        doc.add_paragraph('目录',style='TOC Heading');field(doc.add_paragraph(),' TOC \\o "1-3" \\h \\z \\u ');doc.add_page_break()
-    if figure_policy['include_directory']:
-        for node_kind,title_text,sequence_name in (('figure','插图目录','Figure'),('table','表格目录','Table')):
-            entries=[r for r in figure_rows if r['kind']==node_kind]
-            if not entries:continue
-            doc.add_paragraph(title_text,style='TOC Heading')
-            field(doc.add_paragraph(),' TOC \\h \\z \\c "'+sequence_name+'" ', '\n'.join(r['label']+' '+(r['caption'] or '【题名待补】')+'　页码待更新' for r in entries))
-            doc.add_page_break()
+            if brief.get(key):apply_component(doc.add_paragraph(label+'：'+str(brief[key])),'cover_fields')
+        doc.add_paragraph('稿件用途：'+options.get('mode','draft')+'；未决事项请查看随附报告。')
+    document_policy=component_styles.get('document',{})
+    chapter_style='Heading 1'
+    if document_policy.get('chapter_headers') and not preserve:
+        chapter_style='Paper Chapter Heading'
+        if chapter_style not in doc.styles:
+            from docx.enum.style import WD_STYLE_TYPE
+            style=doc.styles.add_style(chapter_style,WD_STYLE_TYPE.PARAGRAPH);style.base_style=doc.styles['Heading 1']
+            outline=OxmlElement('w:outlineLvl');outline.set(qn('w:val'),'0');style.element.get_or_add_pPr().append(outline)
+    separate_frontmatter=not preserve and bool(document_policy.get('frontmatter_numbering'))
+    if not preserve:
+        if separate_frontmatter:
+            from docx.enum.section import WD_SECTION
+            from .format_sections import numbering as set_numbering,new_numbered_section
+            front_section=new_numbered_section(doc)
+            set_numbering(front_section,document_policy['frontmatter_numbering'])
+        else:doc.add_page_break()
+    def display_title(section):
+        title=section['title']
+        if document_policy.get('heading_numbering')=='arabic_space' and section['kind'] not in ('abstract','abstract_en'):
+            from .figure_standards import _chinese_number
+            match=re.match(r'^\s*第([一二两三四五六七八九十零\d]+)章\s*[、.．]?\s*(.*)$',title)
+            if match:return str(_chinese_number(match[1]))+' '+match[2]
+        return title
+    def directories():
+        has_directory=False
+        if options.get('include_toc',True):
+            doc.add_paragraph('目录',style='TOC Heading')
+            entries=[display_title(x['section'])+'　页码待更新' for x in snapshots if not(component_styles.get('toc',{}).get('exclude_abstract') and x['section']['kind'] in ('abstract','abstract_en'))]
+            field(doc.add_paragraph(),' TOC \\o "1-3" \\h \\z \\u ','\n'.join(entries));has_directory=True
+        if figure_policy['include_directory']:
+            for node_kind,title_text,sequence_name in (('figure','插图目录','Figure'),('table','表格目录','Table')):
+                entries=[r for r in figure_rows if r['kind']==node_kind]
+                if not entries:continue
+                if has_directory:doc.add_page_break()
+                doc.add_paragraph(title_text,style='TOC Heading')
+                field(doc.add_paragraph(),' TOC \\h \\z \\c "'+sequence_name+'" ','\n'.join(r['label']+' '+(r['caption'] or '【题名待补】')+'　页码待更新' for r in entries));has_directory=True
+        return has_directory
     from .ooxml_preserve import author_year_labels,add_footnotes,omml
     citation_style=options.get("citation_style","numeric")
     if citation_style not in ("numeric","author_year"):raise ValueError("引用样式无效")
@@ -129,11 +218,16 @@ def export_project(pid,options,tid=None):
         field(paragraph,' SEQ '+name+reset+' \\* ARABIC ',row['index']);sequences.add(key)
         end=OxmlElement('w:bookmarkEnd');end.set(qn('w:id'),str(bookmark_count));paragraph._p.append(end)
         paragraph.add_run(' '+(attrs.get('caption') or default or '【题名待补】'))
+        apply_component(paragraph,'caption')
         return paragraph
     def inline(par,n):
         typ=n.get('type');attrs=n.get('attrs',{})
         if typ=='text':
             run=par.add_run(n.get('text',''));marks={m['type'] for m in n.get('marks',[])};run.bold='bold' in marks;run.italic='italic' in marks;run.font.strike='strike' in marks
+            run.underline='underline' in marks
+            if 'superscript' in marks:run.font.superscript=True
+            if 'subscript' in marks:run.font.subscript=True
+            if 'code' in marks:run.font.name='Consolas'
         elif typ=='citation':
             run=par.add_run(('（'+year_labels.get(attrs.get('citationId'),'?')+'）') if citation_style=='author_year' else ('['+str(numbering.get(attrs.get('citationId'),'?'))+']'));run.font.superscript=citation_style=='numeric' and bool(fmt['reference_superscript'])
         elif typ=='footnote':
@@ -145,20 +239,76 @@ def export_project(pid,options,tid=None):
             else:par.add_run('【图表引用失效】')
         else:
             for ch in n.get('content',[]): inline(par,ch)
-    def block(node):
+    def format_paragraph(paragraph,heading=False,cell=False):
+        current=section_formats.get(active_sid,fmt)
+        paragraph.paragraph_format.line_spacing=Pt(current['line_spacing_points']) if current.get('line_spacing_points') else float(current['line_spacing'])
+        if not heading and current.get('alignment'):paragraph.paragraph_format.alignment={'left':0,'center':1,'right':2,'justify':3}[current['alignment']]
+        if not heading:
+            ind=paragraph._p.get_or_add_pPr().find(qn('w:ind'))
+            if ind is None:ind=OxmlElement('w:ind');paragraph._p.get_or_add_pPr().append(ind)
+            ind.set(qn('w:firstLineChars'),str(0 if cell else int(float(current['first_line_chars'])*100)))
+            for run in paragraph.runs:
+                run.font.size=Pt(float(current['font_size']))
+                if run.font.name!='Consolas':run.font.name=current['latin_font']
+                run._r.get_or_add_rPr().get_or_add_rFonts().set(qn('w:eastAsia'),current['font'])
+            section_kind=next((s['kind'] for s in sections if s['id']==active_sid),None)
+            key='abstract_keywords' if section_kind=='abstract' else 'abstract_en_keywords' if section_kind=='abstract_en' else None
+            if key and component_styles.get(key) and paragraph.runs:
+                first=paragraph.runs[0];match=re.match(r'\s*(?:【?关键词】?|Keywords|Key words)[:：]?',first.text,re.I)
+                if match:
+                    if match.end()<len(first.text):
+                        from copy import deepcopy
+                        from docx.text.run import Run
+                        remainder=Run(deepcopy(first._r),paragraph);remainder.text=first.text[match.end():];first._r.addnext(remainder._r)
+                    first.text='【关键词】' if component_styles[key].get('label_brackets') else match[0]
+                    apply_component(paragraph,key,runs=[first])
+    def block(node,list_style=None,keep_next=False):
         nonlocal fig_count,table_count
         typ=node['type'];attrs=node.get('attrs',{})
-        if typ in ('paragraph','heading','blockquote','listItem'):
-            para=doc.add_paragraph(style=f"Heading {min(max(int(attrs.get('level',2)),1),3)}" if typ=='heading' else None)
+        if typ in ('bulletList','orderedList'):
+            children=node.get('content',[])
+            for index,child in enumerate(children):block(child,'List Number' if typ=='orderedList' else 'List Bullet',index<len(children)-1)
+        elif typ=='listItem':
+            for child in node.get('content',[]):block(child,list_style,keep_next)
+        elif typ=='blockquote':
+            for child in node.get('content',[]):
+                if child['type']=='paragraph':
+                    para=doc.add_paragraph(style='Quote');inline(para,child);format_paragraph(para)
+                else:block(child,list_style,keep_next)
+        elif typ in ('paragraph','heading'):
+            para=doc.add_paragraph(style=f"Heading {min(max(int(attrs.get('level',2)),1),3)}" if typ=='heading' else list_style)
             inline(para,node)
+            format_paragraph(para,typ=='heading')
+            if list_style:para.paragraph_format.keep_with_next=keep_next
         elif typ=='table':
             from .paper_tables import style_three_line,add_caption,unindent
             table_count+=1
             figure_caption(node,'【表题待补】')
-            rows=node.get('content',[]);cols=max((len(r.get('content',[])) for r in rows),default=1);table=doc.add_table(rows=len(rows),cols=cols);table.style='Table Grid'
+            rows=node.get('content',[]);cols=max((sum(max(1,int(c.get('attrs',{}).get('colspan',1))) for c in r.get('content',[])) for r in rows),default=1);table=doc.add_table(rows=len(rows),cols=cols);table.style='Table Grid'
+            from docx.enum.table import WD_TABLE_ALIGNMENT,WD_CELL_VERTICAL_ALIGNMENT
+            table.alignment=WD_TABLE_ALIGNMENT.CENTER;table.autofit=False
+            width=Mm(210-float(fmt['margin_left'])-float(fmt['margin_right']))
+            for col in table.columns:col.width=int(width/max(cols,1))
+            occupied=set()
             for i,row in enumerate(rows):
-                for j,cell in enumerate(row.get('content',[])):
-                    table.cell(i,j).text=documents.plain(cell)
+                j=0
+                for source_cell in row.get('content',[]):
+                    while (i,j) in occupied:j+=1
+                    cell_attrs=source_cell.get('attrs',{});cs=max(1,int(cell_attrs.get('colspan',1)));rs=max(1,int(cell_attrs.get('rowspan',1)))
+                    if j+cs>cols or i+rs>len(rows):raise ValueError('表格合并范围超出实际行列')
+                    target=table.cell(i,j)
+                    if cs>1 or rs>1:target=target.merge(table.cell(i+rs-1,j+cs-1))
+                    occupied.update((r,c) for r in range(i,i+rs) for c in range(j,j+cs))
+                    target.text='';target.vertical_alignment=WD_CELL_VERTICAL_ALIGNMENT.CENTER
+                    blocks=source_cell.get('content',[])
+                    for k,part in enumerate(blocks):
+                        paragraph=target.paragraphs[0] if k==0 else target.add_paragraph()
+                        inline(paragraph,part);format_paragraph(paragraph,cell=True)
+                        if source_cell['type']=='tableHeader':
+                            for run in paragraph.runs:run.bold=True
+                    j+=cs
+                if any(c['type']=='tableHeader' for c in row.get('content',[])):
+                    header=OxmlElement('w:tblHeader');header.set(qn('w:val'),'true');table.rows[i]._tr.get_or_add_trPr().append(header)
             if attrs.get('tableStyle')=='three-line':style_three_line(table)
             if attrs.get('note'):
                 from .paper_tables import keep_note_with_table
@@ -174,6 +324,7 @@ def export_project(pid,options,tid=None):
                 doc.add_picture(str(safe_object(artifact['sha256'])),width=Mm(width))
                 from .paper_tables import unindent
                 picture=doc.paragraphs[-1];picture.alignment=1;unindent(picture);picture.paragraph_format.keep_with_next=True
+                picture.paragraph_format.line_spacing=1
             except Exception as e: raise ValueError('图片格式不能导出，请使用PNG/JPEG') from e
             fig_count+=1
             from .paper_tables import add_caption
@@ -185,17 +336,50 @@ def export_project(pid,options,tid=None):
                 math=OxmlElement('m:oMath');run=OxmlElement('m:r');t=OxmlElement('m:t');t.text=attrs.get('expression','');run.append(t);math.append(run);para._p.append(math)
         else:
             for ch in node.get('content',[]): block(ch)
-    for item in snapshots:
+    def render_section(item):
+        nonlocal active_sid
         active_sid=item['section']['id']
         s=item['section'];parents={x['id']:x.get('parent_id') for x in sections};level=1;parent=parents.get(s['id']);seen=set()
         while parent and parent not in seen:seen.add(parent);level+=1;parent=parents.get(parent)
-        doc.add_heading(s['title'],min(level,3));md.extend(['#'*min(level+1,6)+' '+s['title'],'',markdown_document(item['document'],figure_rows,s['id']),''])
+        heading_name='abstract_heading' if s['kind']=='abstract' else 'abstract_en_heading' if s['kind']=='abstract_en' else 'heading_'+str(min(level,3))
+        if s['kind'] in ('abstract','abstract_en') and component_styles.get('toc',{}).get('exclude_abstract'):
+            if 'Abstract Heading' not in doc.styles:
+                from docx.enum.style import WD_STYLE_TYPE
+                style=doc.styles.add_style('Abstract Heading',WD_STYLE_TYPE.PARAGRAPH);style.base_style=doc.styles['Heading 1'];style.paragraph_format.page_break_before=False
+                outline=OxmlElement('w:outlineLvl');outline.set(qn('w:val'),'9');style.element.get_or_add_pPr().append(outline)
+            heading=doc.add_paragraph(display_title(s),style='Abstract Heading')
+        else:heading=doc.add_heading(display_title(s),min(level,3))
+        if s['kind'] not in ('abstract','abstract_en') and level==1:heading.style=doc.styles[chapter_style]
+        apply_component(heading,heading_name)
+        if body_items and s['id']==body_items[0]['section']['id'] and (not preserve or separate_frontmatter or has_directory):heading.paragraph_format.page_break_before=False
+        md.extend(['#'*min(level+1,6)+' '+display_title(s),'',markdown_document(item['document'],figure_rows,s['id']),''])
         for node in item['document'].get('content',[]): block(node)
-    doc.add_heading('参考文献',1);md.extend(['## 参考文献',''])
+    front=[item for item in snapshots if item['section']['kind'] in ('abstract','abstract_en')]
+    body_items=[item for item in snapshots if item['section']['kind'] not in ('abstract','abstract_en')]
+    for item in front:render_section(item)
+    if front:doc.add_page_break()
+    has_directory=directories()
+    if separate_frontmatter:
+        body_section=new_numbered_section(doc);set_numbering(body_section,document_policy.get('body_numbering','decimal'))
+        from .format_sections import body_headers
+        body_headers(doc,body_section,document_policy,p['title'],field,display_title(body_items[0]['section']) if body_items else '')
+    elif has_directory:doc.add_page_break()
+    for item in body_items:render_section(item)
+    bibliography_heading=doc.add_heading('参考文献',1);bibliography_heading.style=doc.styles[chapter_style];md.extend(['## 参考文献',''])
     for rid,bib in sorted(refs.items(),key=lambda item:year_labels[item[0]]) if citation_style=='author_year' else refs.items():
-        line=('' if citation_style=='author_year' else f'[{numbering[rid]}] ')+bibliography_text(db.loads(bib['metadata'],{}));doc.add_paragraph(line);md.append(line)
-    for sec in doc.sections:
-        footer=sec.footer.paragraphs[0];footer.alignment=1;field(footer,' PAGE ')
+        line=('' if citation_style=='author_year' else f'[{numbering[rid]}] ')+bibliography_text(db.loads(bib['metadata'],{}));paragraph=doc.add_paragraph(line)
+        from .paper_tables import unindent
+        unindent(paragraph);apply_component(paragraph,'references_body');md.append(line)
+    for index,sec in enumerate(doc.sections):
+        if separate_frontmatter and index==0:continue
+        footers=[sec.footer]
+        if document_policy.get('chapter_headers') and not preserve:
+            sec.even_page_footer.is_linked_to_previous=False;footers.append(sec.even_page_footer)
+        for item in footers:
+            footer=item.paragraphs[0];footer.alignment=1
+            from .paper_tables import unindent
+            unindent(footer);footer.paragraph_format.line_spacing=1
+            if not re.search(r'\bPAGE\b',' '.join(e.text or '' for e in item._element.iter(qn('w:instrText')))):field(footer,' PAGE ')
     update=OxmlElement('w:updateFields');update.set(qn('w:val'),'true');doc.settings.element.append(update)
     filename='论文.docx';doc.save(folder/filename);add_footnotes(folder/filename,footnotes)
     preservation=None
@@ -206,14 +390,20 @@ def export_project(pid,options,tid=None):
     for rid,num in numbering.items(): markdown=markdown.replace('[cite:'+rid+']','（'+year_labels[rid]+'）' if citation_style=='author_year' else f'[{num}]')
     (folder/'论文.md').write_text(markdown,encoding='utf-8')
     report={'project_title':p['title'],'created_at':db.now(),'findings':findings,'visual_check':'not_run','template_preservation':preservation,'citation_style':citation_style,'footnotes':len(footnotes),'field_update':'请在目标Word软件更新目录、图表目录、交叉引用和页码','format_profile':fmt,'figure_checks':figure_report,'figure_numbering':figure_policy['numbering']}
+    report['format_resolution']=format_resolution
     pdf=False;tool=renderer()
-    if options.get('pdf') and (preserve or citation_style=='author_year' or footnotes or any(n.get('attrs',{}).get('omml') for item in snapshots for n in documents.nodes(item['document']))) and not tool:
+    if options.get('pdf') and (preserve or citation_style=='author_year' or footnotes or document_policy.get('frontmatter_numbering') or document_policy.get('chapter_headers') or any(n.get('attrs',{}).get('omml') for item in snapshots for n in documents.nodes(item['document']))) and not tool:
         report['pdf_status']='requires_office_renderer_for_advanced_content'
     elif options.get('pdf') and tool:
         try:
             if tool=='office-com':
                 from .office_renderer import render_path
-                report['office_render']=render_path(folder/filename,folder/'论文.pdf','docx')
+                import tempfile,os
+                with tempfile.TemporaryDirectory(prefix='export-fields-',dir=DATA/'tmp') as temporary:
+                    updated=Path(temporary)/'updated.docx'
+                    report['office_render']=render_path(folder/filename,folder/'论文.pdf','docx',updated_docx=updated)
+                    os.replace(updated,folder/filename)
+                report['field_update']='目录、图表目录、交叉引用与页码已在本次Office渲染中更新，并保存到导出的Word副本'
             else:
                 r=subprocess.run([tool,'--headless','--convert-to','pdf','--outdir',str(folder),str(folder/filename)],capture_output=True,timeout=120)
             pdf=(folder/'论文.pdf').exists();report['pdf_status']='generated' if pdf else 'conversion_failed'
@@ -231,8 +421,13 @@ def export_project(pid,options,tid=None):
     (folder/'检查报告.json').write_text(db.dumps(report),encoding='utf-8');(folder/'检查报告.md').write_text('# 论文检查报告\n\n视觉检查：未人工验收。\n\n'+'\n'.join(f"- [{f['result']}] {f['message']}" for f in findings['findings']),encoding='utf-8')
     manifest={'project':p,'rule_package':package,'sections':[{'id':x['section']['id'],'revision_id':x['revision']['id']} for x in snapshots],'references':refs,'format':fmt,'template_sha256':template,'created_at':db.now(),'mode':options.get('mode','draft'),'visual_check':'not_run','pdf':pdf,'research_facts':frozen['facts'],'file_versions':frozen['file_versions'],'docx_property_checks':report['docx_property_checks'],'snapshot_at':frozen['created_at']}
     (folder/'版本清单.json').write_text(db.dumps(manifest),encoding='utf-8')
-    evidence_mapping=[{'section_id':x['section']['id'],'revision_id':x['revision']['id'],'node_id':n.get('attrs',{}).get('nodeId'),'text':documents.plain(n),'source_ids':n.get('attrs',{}).get('sourceIds',[]),'fact_ids':n.get('attrs',{}).get('factIds',[])} for x in snapshots for n in x['document'].get('content',[]) if n.get('attrs',{}).get('sourceIds') or n.get('attrs',{}).get('factIds')]
+    evidence_mapping=[{'section_id':x['section']['id'],'revision_id':x['revision']['id'],'node_id':n.get('attrs',{}).get('nodeId'),'text':documents.plain(n),'source_ids':n.get('attrs',{}).get('sourceIds',[]),'fact_ids':n.get('attrs',{}).get('factIds',[]),'evidence_ids':n.get('attrs',{}).get('evidenceIds',[]),'knowledge_unit_ids':n.get('attrs',{}).get('knowledgeUnitIds',[]),'reading_ids':n.get('attrs',{}).get('documentReadingIds',[])} for x in snapshots for n in documents.nodes(x['document']) if any(n.get('attrs',{}).get(key) for key in ('sourceIds','factIds','evidenceIds','knowledgeUnitIds','documentReadingIds'))]
     (folder/'段落证据映射.json').write_text(db.dumps(evidence_mapping),encoding='utf-8')
+    if frozen['citations']:
+        (folder/'引用采用时与当前书目信息.json').write_text(db.dumps([{'reference_id':c['reference_id'],'revision_id':c['revision_id'],'node_id':c['node_id'],'adopted_metadata':db.loads(c['reference_snapshot'],{}),'current_metadata':db.loads(frozen['references'].get(c['reference_id'],{}).get('metadata'),{}),'support':c['support']} for c in frozen['citations']]),encoding='utf-8')
+    if frozen.get('project_evidence'):
+        from .writing_agent.common import unblob
+        (folder/'项目代码与证据关联.json').write_text(db.dumps({identity:{**row,'payload':unblob(row['payload_hash'])} for identity,row in frozen['project_evidence'].items()}),encoding='utf-8')
     from PIL import Image
     for item in snapshots:
         for node in documents.nodes(item['document']):
@@ -260,7 +455,18 @@ def backup():
         portable.commit()
     finally:portable.close()
     entries={'workbench.sqlite3':tmp};entries.update({'objects/'+p.name:p for p in (DATA/'objects').iterdir() if p.is_file()})
-    manifest={'version':1,'created_at':db.now(),'files':{name:hashlib.sha256(path.read_bytes()).hexdigest() for name,path in entries.items()},'credentials_included':False}
+    resource_roots={}
+    check=sqlite3.connect(tmp);check.row_factory=sqlite3.Row
+    try:
+        if check.execute("SELECT 1 FROM sqlite_master WHERE name='knowledge_artifacts'").fetchone():
+            for artifact in check.execute("SELECT id,path,kind FROM knowledge_artifacts WHERE kind!='knowledge_bundle'"):
+                original=Path(artifact['path']).resolve()
+                if not original.exists() or not original.is_relative_to(DATA.resolve()):continue
+                root='knowledge-resources/'+artifact['id'];resource_roots[artifact['id']]={'root':root,'directory':original.is_dir(),'old_path':artifact['path']}
+                for resource in original.rglob('*') if original.is_dir() else [original]:
+                    if resource.is_file() and not resource.is_symlink():entries[root+'/'+(resource.relative_to(original).as_posix() if original.is_dir() else resource.name)]=resource
+    finally:check.close()
+    manifest={'version':2,'created_at':db.now(),'files':{name:hashlib.sha256(path.read_bytes()).hexdigest() for name,path in entries.items()},'knowledge_resources':resource_roots,'credentials_included':False}
     path=DATA/'backups'/f'{bid}.zip'
     with zipfile.ZipFile(path,'w',zipfile.ZIP_DEFLATED) as z:
         for name,source in entries.items(): z.write(source,name)
@@ -281,5 +487,16 @@ def restore_backup(data):
             if hashlib.sha256(raw).hexdigest()!=expected: raise ValueError('备份哈希校验失败')
             checked.append((dest,raw))
         for dest,raw in checked: dest.parent.mkdir(parents=True,exist_ok=True);dest.write_bytes(raw)
+    if manifest.get('knowledge_resources'):
+        restored=sqlite3.connect(target/'workbench.sqlite3')
+        try:
+            for identity,entry in manifest['knowledge_resources'].items():
+                resource=target/entry['root'];new=resource if entry['directory'] else next(resource.iterdir())
+                row=restored.execute('SELECT manifest_json FROM knowledge_artifacts WHERE id=?',(identity,)).fetchone()
+                if row:
+                    meta=db.loads(row[0],{});meta.get('packet',{}).update(folder=str(new))
+                    restored.execute('UPDATE knowledge_artifacts SET path=?,manifest_json=? WHERE id=?',(str(new),db.dumps(meta),identity))
+            restored.commit()
+        finally:restored.close()
     # Preserve database layout expected by the launcher.
     return {'restored_data_directory':str(target),'files_verified':len(checked),'message':'已恢复隔离副本。使用启动脚本 -DataDirectory 指向此目录，不覆盖当前项目。'}

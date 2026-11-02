@@ -1,0 +1,16 @@
+.document-preview { line-height:1.9;overflow-wrap:anywhere; }
+.candidate-paragraph > .document-preview { flex:1;min-width:0; }
+.document-preview p { margin:0 0 1em;white-space:pre-wrap; }
+.document-preview table { border-collapse:collapse;width:100%;font-size:.95em; }
+.document-preview caption,.document-preview figcaption { text-align:center;padding:8px;line-height:1.6; }
+.document-preview td,.document-preview th { border:1px solid #cfd8d1;padding:8px;vertical-align:middle; }
+.document-preview td p,.document-preview th p { margin:0; }
+.document-preview table[data-table-style="three-line"] td,.document-preview table[data-table-style="three-line"] th { border:0; }
+.document-preview table[data-table-style="three-line"] { border-top:2px solid #344a3b;border-bottom:2px solid #344a3b; }
+.document-preview table[data-table-style="three-line"] tr:first-child { border-bottom:1px solid #344a3b; }
+.document-preview .preview-table { max-width:100%;overflow-x:auto;margin:16px 0; }
+.document-preview .preview-note { font-size:.9em;color:#68796d; }
+.document-preview figure { margin:20px 0;text-align:center; }
+.document-preview img { max-width:100%;height:auto;max-height:650px;object-fit:contain; }
+.document-preview .preview-crossref { color:#32634a; }
+.document-preview .preview-formula { text-align:center;margin:14px 0; }

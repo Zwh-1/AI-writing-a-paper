@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { api, send } from "./client";
+import { apiUrl, api, send } from "./client";
+import { useSourceBillingGate } from './workspace/SourceWorkspace';
 type Row = Record<string, any>;
 
 export function MaterialSummarySettings({
@@ -128,7 +129,7 @@ export function MaterialSummarySettings({
         <summary>总结速度与预算设置</summary>
         <div className="summary-settings-fields">
           <label>
-            每次调用的未知费用预留
+            每次调用费用上限
             <input
               type="number"
               min="0.000001"
@@ -244,6 +245,7 @@ export function MaterialSummary({
   tick: number;
   onPage: (page: number) => void;
 }) {
+  const gate=useSourceBillingGate();
   const [data, setData] = useState<Row | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -290,14 +292,17 @@ export function MaterialSummary({
         <div>
           <h3>资料概括与分点</h3>
           <p className="muted">
-            {summary?.source_review
-              ? "Codex 结合原文与已保存分段复核整理 · 来源记录已保留"
-              : "DeepSeek 根据提取文字生成 · 全篇概括、重点整理、主题归纳"}
+            {summary?.reading_profile
+              ? "文献原文重新阅读 · 研究问题、方法、条件、结果与局限"
+              : summary?.source_review
+                ? "Codex 结合原文与已保存分段复核整理 · 来源记录已保留"
+                : "DeepSeek 根据提取文字生成 · 全篇概括、重点整理、主题归纳"}
           </p>
         </div>
         <button
           className="btn primary"
           disabled={
+            gate.blocked ||
             busy ||
             pending ||
             (!!summary && !data?.stale) ||
@@ -377,25 +382,46 @@ export function MaterialSummary({
       )}
       {data?.stale && (
         <p className="summary-warning">
-          资料内容或总结配置已变化，以下为旧版总结，请更新后核对。
+          {data?.task?.kind === "literature_refresh"
+            ? "文献正在按新版流程重新生成，以下为旧版总结。"
+            : "资料内容或总结配置已变化，以下为旧版总结，请更新后核对。"}
         </p>
       )}
       {summary ? (
         <div className="summary-result">
           <a
             className="btn summary-download"
-            href={"/api/v1/files/" + file.id + "/summary/markdown"}
+            href={apiUrl("/files/" + file.id + "/summary/markdown")}
           >
             下载总结 Markdown
           </a>
           <h4>整体概括</h4>
           <p>{summary.overview}</p>
+          {!!summary.reading_gaps?.length && (
+            <details className="summary-warning">
+              <summary>阅读中待核对的事项（不作为已核实结论）</summary>
+              {summary.reading_gaps.map((gap: Row, i: number) => (
+                <p key={i}>
+                  {gap.text} · {gap.reason}
+                </p>
+              ))}
+            </details>
+          )}
           <h4>核心要点</h4>
           <ol>
             {summary.key_points.map((point: Row, i: number) => (
               <li key={i}>
                 {point.text}
                 {refs(point.pages)}
+                {point.evidence_status === "needs_review" && (
+                  <small className="summary-warning">原文引句待核对</small>
+                )}
+                {point.quote && (
+                  <details>
+                    <summary>查看对应原文引句</summary>
+                    <blockquote>{point.quote}</blockquote>
+                  </details>
+                )}
               </li>
             ))}
           </ol>
@@ -409,6 +435,17 @@ export function MaterialSummary({
                     <li key={j}>
                       {point.text}
                       {refs(point.pages)}
+                      {point.evidence_status === "needs_review" && (
+                        <small className="summary-warning">
+                          原文引句待核对
+                        </small>
+                      )}
+                      {point.quote && (
+                        <details>
+                          <summary>查看对应原文引句</summary>
+                          <blockquote>{point.quote}</blockquote>
+                        </details>
+                      )}
                     </li>
                   ))}
                 </ul>
@@ -428,8 +465,11 @@ export function MaterialSummary({
           )}
           {!!summary.excluded_pages?.length && (
             <p className="muted">
-              未纳入正文归纳：{summary.excluded_pages.map((p: Row) =>
-                `第 ${p.page} 页（${p.reason}）`).join("；")}。
+              未纳入正文归纳：
+              {summary.excluded_pages
+                .map((p: Row) => `第 ${p.page} 页（${p.reason}）`)
+                .join("；")}
+              。
             </p>
           )}
           <p className="muted">
@@ -472,6 +512,7 @@ export function MaterialSummaryBatch({
   onOpen: (fileId: string) => void;
   onUpdated: () => void;
 }) {
+  const gate=useSourceBillingGate();
   const [data, setData] = useState<Row | null>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
@@ -550,7 +591,7 @@ export function MaterialSummaryBatch({
         <div className="summary-actions">
           <button
             className="btn primary"
-            disabled={busy || !!pending || !data?.total}
+            disabled={busy || gate.blocked || !!pending || !data?.total}
             onClick={() => action("summarize")}
           >
             {pending ? "批量整理进行中" : "DeepSeek 批量总结"}
@@ -607,7 +648,7 @@ export function MaterialSummaryBatch({
             ? "服务商余额 " +
               data.account_usage.remaining_exact +
               " " +
-              data.account_usage.unit +
+              (data.account_usage.unit_source === "response" ? data.account_usage.unit : "（币种未报告）") +
               "（查询于 " +
               new Date(data.account_usage.fetched_at).toLocaleTimeString(
                 "zh-CN",

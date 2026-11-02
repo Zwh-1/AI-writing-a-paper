@@ -10,30 +10,43 @@ const states: Record<string, string> = {
   blocked: "等待补充依据",
   stale: "内容已变化",
   pending: "等待 AI 处理",
+  needs_full_source: "原图文字待核对",
+};
+const purposes: Record<string, string> = {
+  conditional: "条件参考",
+  knowledge: "知识讲解",
+  example: "教学示例",
+  counterexample: "教学反例",
+  heading: "标题",
+  noise: "界面或装饰信息",
 };
 export default function AutopilotExceptions({
   scope,
   onRule,
+  onRuleSource,
   onMaterial,
   onOtherDomain,
 }: {
   scope?: AIDomain;
   onRule?: (id: string) => void;
+  onRuleSource?: (id: string) => void;
   onMaterial?: (id: string) => void;
   onOtherDomain?: () => void;
 }) {
   const { data } = useAIAutopilot();
-  const [kind, setKind] = useState(
-      scope === "materials" ? "material" : scope === "rules" ? "rule" : "all",
-    ),
+  const [kind, setKind] = useState(scope === "materials" ? "material" : "all"),
     [query, setQuery] = useState(""),
     [page, setPage] = useState(1);
   const matches = useMemo(
     () =>
       (data?.exceptions ?? []).filter(
         (item) =>
-          (kind === "all" || item.kind === kind) &&
-          `${item.label} ${item.reason}`
+          (kind === "all" ||
+            (kind === "material"
+              ? item.kind === "material"
+              : item.kind === "rule" &&
+                (item.issue_kind || "rule_decision") === kind)) &&
+          `${item.label} ${item.reason} ${item.source_file || ""} ${purposes[item.purpose_hint || ""] || ""}`
             .toLowerCase()
             .includes(query.trim().toLowerCase()),
       ),
@@ -46,7 +59,7 @@ export default function AutopilotExceptions({
     <details className="autopilot-exceptions">
       <summary>
         处理例外（{data.exception_count} 项）
-        <span>查看原因与原文，人工仅处理必要例外</span>
+        <span>文字识别与规则判断分别核对，未核验内容继续保留</span>
       </summary>
       <div className="autopilot-exception-toolbar">
         <div
@@ -55,8 +68,9 @@ export default function AutopilotExceptions({
         >
           {[
             ["all", "全部"],
-            ["material", "资料"],
-            ["rule", "规则"],
+            ["material", "资料归类"],
+            ["source_text", "文字识别"],
+            ["rule_decision", "规则判断"],
           ].map(([key, label]) => (
             <button
               key={key}
@@ -70,7 +84,12 @@ export default function AutopilotExceptions({
               <small>
                 {key === "all"
                   ? data.exception_count
-                  : data.exceptions.filter((item) => item.kind === key).length}
+                  : data.exceptions.filter((item) =>
+                      key === "material"
+                        ? item.kind === "material"
+                        : item.kind === "rule" &&
+                          (item.issue_kind || "rule_decision") === key,
+                    ).length}
               </small>
             </button>
           ))}
@@ -91,19 +110,63 @@ export default function AutopilotExceptions({
       {matches.length ? (
         <>
           {matches.slice((current - 1) * 10, current * 10).map((item) => {
-            const open = item.kind === "rule" ? onRule : onMaterial;
+            const reading = item.issue_kind === "source_text";
+            const open =
+              item.kind === "rule"
+                ? reading
+                  ? onRuleSource || onRule
+                  : onRule
+                : onMaterial;
             return (
-              <article key={`${item.kind}:${item.id}`}>
+              <article
+                key={`${item.kind}:${item.id}`}
+                data-exception-id={item.id}
+              >
                 <div>
                   <span className="autopilot-exception-state">
-                    {states[item.state] ?? "需要核对"}
+                    {item.content_status === "source_cropped"
+                      ? "原件图片裁断"
+                      : (states[item.state] ?? "需要核对")}
                   </span>
-                  <strong>{item.label}</strong>
+                  {item.purpose_hint && (
+                    <small className="autopilot-purpose-hint">
+                      历史用途提示：
+                      {purposes[item.purpose_hint] || item.purpose_hint} ·
+                      内容仍待核验
+                    </small>
+                  )}
+                  <strong>
+                    {reading && item.source_file
+                      ? `${item.source_file} · 第${item.source_page || "?"}页`
+                      : item.label}
+                  </strong>
                   <p>{item.reason || "请打开条目核对当前原文与处理记录。"}</p>
+                  {reading && (
+                    <>
+                      <details>
+                        <summary>查看本条未核验OCR原文</summary>
+                        <pre className="autopilot-reading-text">
+                          {item.label}
+                        </pre>
+                      </details>
+                      {item.supporting_excerpt && (
+                        <details>
+                          <summary>查看并列校对摘录（未覆盖整条候选）</summary>
+                          <pre className="autopilot-reading-text">
+                            {item.supporting_excerpt.text}
+                          </pre>
+                        </details>
+                      )}
+                    </>
+                  )}
                 </div>
                 {open ? (
                   <button className="btn" onClick={() => open(item.id)}>
-                    {item.kind === "rule" ? "核对条款" : "打开资料"}
+                    {item.kind === "rule"
+                      ? reading && onRuleSource
+                        ? "查看原图与识别内容"
+                        : "核对条款"
+                      : "打开资料"}
                     <ArrowUpRight size={12} />
                   </button>
                 ) : (
@@ -147,7 +210,7 @@ export default function AutopilotExceptions({
           description={
             query
               ? "试试其他关键词，或切换例外类型。"
-              : "AI 会继续处理可完成的内容，必要例外会显示在这里。"
+              : "当前没有此类待处理项；其他分类和原图识别覆盖情况仍需分别查看。"
           }
         >
           <CheckCircle2 size={24} />

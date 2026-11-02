@@ -1,5 +1,5 @@
 import { ArrowUpRight, FileText } from "lucide-react";
-import { scopeLabels, stateLabels } from "../RuleEditor";
+import { ruleScopeLabel, stateLabels } from "../RuleEditor";
 import { send } from "../client";
 import type { Row } from "../workspace/types";
 
@@ -60,7 +60,7 @@ export default function RuleListRow({
           </span>
           <span className="badge">{stateLabels[rule.state] ?? rule.state}</span>
           <small>
-            {scopeLabels[rule.scope] ?? rule.scope} · {category}
+            {ruleScopeLabel(rule)} · {category}
           </small>
         </div>
         <button
@@ -71,6 +71,9 @@ export default function RuleListRow({
         >
           {rule.statement}
         </button>
+        {rule.conditions?.scope_note && (
+          <p className="muted" style={{ overflowWrap: "anywhere" }}>{rule.conditions.scope_note}</p>
+        )}
         {rule.source_id ? (
           <button
             className="text-button rule-source-link"
@@ -106,6 +109,25 @@ export default function RuleListRow({
               </div>
             ))}
           </details>
+        )}
+        {rule.supporting_excerpt && (
+          <details className="rules-decision-details">
+            <summary>并列校对摘录（保留本条独立提取范围）</summary>
+            <p>{rule.supporting_excerpt.text}</p>
+            <small>摘录范围：{rule.supporting_excerpt.scope_limited ? "部分图像文字" : "完整图像文字"}。完整观察可在原文窗口查看。</small>
+          </details>
+        )}
+        {rule.source_observation && (
+          <div className="rule-purpose-next">
+            <strong>{rule.source_observation.label}</strong>
+            <p>{rule.source_observation.note}</p>
+          </div>
+        )}
+        {rule.candidate_issue && (
+          <div className="rule-purpose-next">
+            <strong>{rule.candidate_issue.label}</strong>
+            <p>{rule.candidate_issue.reason}</p>
+          </div>
         )}
         {rule.decision_note && (
           <details className="rules-decision-details">

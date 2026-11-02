@@ -121,6 +121,11 @@ def bootstrap_project(pid):
                 if artifact_id:artifact_ids.add(artifact_id)
             source_ids.update(x['upstream_id'] for x in db.rows("SELECT upstream_id FROM dependencies WHERE revision_id=? AND upstream_type='source'",(rev['id'],)))
         query=s['title']+' '+s['goal']
+        knowledge_reading_ids=[]
+        if db.setting('graph_wiki_enabled:'+pid,False) and query.strip():
+            from ..knowledge_router import query as graph_wiki_query,prepare_readings
+            knowledge=graph_wiki_query(pid,{'query':query,'namespace':'literature','include_originals':False},remote=True)
+            knowledge_reading_ids=prepare_readings(pid,query,s['id'],knowledge['reading_plan'])['reading_ids']
         from ..knowledge_service import search as knowledge_search
         hits=knowledge_search(pid,query,limit=6,remote=True)['items'] if query.strip() else []
         unit_ids=set(r['unit_id'] for r in db.rows('SELECT unit_id FROM knowledge_selections WHERE section_id=?',(s['id'],)))
@@ -129,6 +134,7 @@ def bootstrap_project(pid):
             else:source_ids.add(hit['id'])
         evidence_ids=[evidence.sync_source(pid,sid,'material_observation')['id'] for sid in sorted(source_ids)]
         evidence_ids.extend(evidence.sync_unit(pid,uid)['id'] for uid in sorted(unit_ids))
+        evidence_ids.extend(evidence.sync_reading(pid,rid)['id'] for rid in knowledge_reading_ids)
         merged={**existing_content,'goal':existing_content.get('goal') or s['goal'] or f'围绕“{s["title"]}”完成有依据的章节论证。','evidence_ids':sorted(set([*existing_content.get('evidence_ids',[]),*evidence_ids])),'fact_ids':sorted(set([*existing_content.get('fact_ids',[]),*fact_ids])),'artifact_ids':sorted(set([*existing_content.get('artifact_ids',[]),*artifact_ids])),'depends_on_sections':sorted(set([*existing_content.get('depends_on_sections',[]),*db.loads(s['dependencies'],[])]))}
         if merged!=existing_content:
             contract=save_contract(pid,s['id'],merged,current['revision']);created.append(contract['id'])

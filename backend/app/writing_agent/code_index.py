@@ -9,7 +9,7 @@ PATTERNS=(('contract',r'\b(?:contract|interface|library|template|class)\s+(\w+)'
 def index_snapshot(pid,sid):
     owned('snapshot',sid,pid);counts={'files':0,'units':0,'unresolved':0};ast={};ast_version=''
     files=db.rows('SELECT * FROM repository_snapshot_files WHERE snapshot_id=?',(sid,))
-    base=Path(__file__).resolve().parents[3];bundled_node=base/'.runtime'/'writing-agent'/'node.exe';node=str(bundled_node) if bundled_node.is_file() else shutil.which('node.exe') or shutil.which('node');helper=base/'scripts'/'writing-agent'/'parse-typescript.mjs'
+    base=Path(__file__).resolve().parents[3];bundled_node=next((p for p in (base/'.runtime/browser/node.exe',base/'.runtime/writing-agent/node.exe') if p.is_file()),None);node=str(bundled_node) if bundled_node else shutil.which('node.exe') or shutil.which('node');helper=base/'scripts'/'writing-agent'/'parse-typescript.mjs'
     batches=[];batch=[];size=0
     for f in files:
         if Path(f['relative_path']).suffix not in ('.ts','.tsx','.js','.jsx','.mjs','.cjs'):continue

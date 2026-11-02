@@ -18,7 +18,8 @@ def capabilities():
                 r=subprocess.run([cli,'info','--format','{{.ServerVersion}}'],capture_output=True,timeout=3,**({'creationflags':subprocess.CREATE_NO_WINDOW} if os.name=='nt' else {}));ready=r.returncode==0;diagnostic=r.stdout.decode(errors='replace').strip() if ready else r.stderr.decode(errors='replace')[-300:]
             except subprocess.TimeoutExpired:diagnostic='Docker引擎尚未响应'
         _ENGINE_CACHE.update(time=now,ready=ready,diagnostic=diagnostic)
-    return {'docker_cli':bool(cli),'docker_engine':_ENGINE_CACHE['ready'],'docker_diagnostic':_ENGINE_CACHE['diagnostic'],'arbitrary_code_requires_docker':True,'unsafe_host_fallback':False,'screenshot_runtime':bool(node_runtime()[0]),'isolation':'Docker network=none read-only capabilities=none non-root resource limits'}
+    browser=browser_status()
+    return {'docker_cli':bool(cli),'docker_engine':_ENGINE_CACHE['ready'],'docker_diagnostic':_ENGINE_CACHE['diagnostic'],'arbitrary_code_requires_docker':True,'unsafe_host_fallback':False,'screenshot_runtime':browser['ready'],'screenshot_component':browser,'isolation':'Docker network=none read-only capabilities=none non-root resource limits'}
 def install_sandbox():
     cli=docker_cli()
     if not capabilities()['docker_engine']:raise ValueError('Docker引擎未运行，请在本机完成Docker启动后准备镜像')
@@ -34,6 +35,19 @@ def node_runtime():
     base=Path(os.environ.get('USERPROFILE',''))/'.cache/codex-runtimes/codex-primary-runtime/dependencies'
     local=ROOT/'.runtime/browser';node=os.environ.get('PAPER_NODE') or (str(local/'node.exe') if (local/'ready.json').exists() and (local/'node.exe').exists() else str(base/'node/bin/node.exe'));module=os.environ.get('PAPER_PLAYWRIGHT') or (str(local/'node_modules/playwright') if (local/'ready.json').exists() and (local/'node_modules/playwright').exists() else str(base/'node/node_modules/playwright'))
     return (node if Path(node).exists() else shutil.which('node'),module)
+
+def browser_status():
+    node,module=node_runtime();metadata=Path(module).parent/'playwright-core/browsers.json'
+    executable=None
+    if node and metadata.is_file():
+        try:
+            entries=json.loads(metadata.read_text(encoding='utf-8'))['browsers']
+            item=next(e for e in entries if e['name']=='chromium-headless-shell')
+            base=Path(os.environ.get('PLAYWRIGHT_BROWSERS_PATH') or ROOT/'.runtime/browsers')
+            executable=base/('chromium_headless_shell-'+item['revision'])/'chrome-headless-shell-win64/chrome-headless-shell.exe'
+        except (ValueError,KeyError,StopIteration):pass
+    ready=bool(executable and executable.is_file() and (Path(module)/'package.json').is_file())
+    return {'ready':ready,'node_ready':bool(node),'message':'截图浏览器已就绪' if ready else '首次启动会自动下载截图浏览器；也可双击“准备便携资源.cmd”重试。写作、生图和文档导出可继续使用。'}
 
 def execute(pid,body):
     cli=docker_cli()
@@ -81,7 +95,7 @@ def capture(pid,body):
     url=body['url'];origin=allowed_target(pid,url);width=int(body.get('width',1440));height=int(body.get('height',1000))
     if not 320<=width<=3840 or not 240<=height<=2160:raise ValueError('截图尺寸超出范围')
     node,module=node_runtime()
-    if not node:raise ValueError('没有可用Node/Playwright运行时')
+    if not browser_status()['ready']:raise ValueError(browser_status()['message'])
     folder=Path(tempfile.mkdtemp(prefix='capture-',dir=security.DATA/'tmp'));png=folder/'capture.png';request={'module':module,'url':url,'origin':origin,'width':width,'height':height,'output':str(png),'wait_selector':str(body.get('wait_selector','body'))[:300],'allowed_origins':db.setting('capture_origins:'+pid,[]),'storage_state':load_capture_profile(pid)}
     environment={k:v for k,v in os.environ.items() if k not in ('PAPER_API_KEY','PAPER_API_KEY_FILE','PAPER_GATEWAY_TOKEN')};browser_path=ROOT/'.runtime/browsers'
     if browser_path.exists():environment['PLAYWRIGHT_BROWSERS_PATH']=str(browser_path)

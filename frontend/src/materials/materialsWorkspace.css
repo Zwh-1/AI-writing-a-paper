@@ -2,6 +2,8 @@
   --materials-accent: #27715c;
   min-width: 0;
 }
+.material-source-actions { display:flex; flex-wrap:wrap; gap:7px 10px; margin-bottom:8px; }
+.material-source-actions .text-button { font-size:11px; text-align:left; line-height:1.6; }
 .materials-workspace [hidden] {
   display: none !important;
 }
