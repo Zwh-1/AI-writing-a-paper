@@ -1,6 +1,6 @@
 param([Parameter(Mandatory=$true)][string]$Source,[Parameter(Mandatory=$true)][string]$Output,[ValidateSet('pptx','docx')][string]$Kind,[string]$UpdatedDocx='')
 $taskVersion=$PSVersionTable.PSVersion.ToString();$taskEdition=$PSVersionTable.PSEdition
-if($taskVersion -cne '7.6.5' -or $taskEdition -cne 'Core'){throw 'Required PowerShell 7.6.5 Core'}
+if ($PSVersionTable.PSVersion -le [version]'7.6.0' -or $PSVersionTable.PSEdition -ne 'Core') { throw 'Requires PowerShell > 7.6.0 Core' }
 $ErrorActionPreference='Stop';$taskApp=$null;$taskDocument=$null;$taskBefore=0;$taskProg=$null;$taskSecurity=$null;$taskAlerts=$null
 if(-not(Test-Path -LiteralPath $Source)){throw 'Source file missing'}
 if([System.IO.Path]::GetExtension($Source) -cne ('.'+$Kind)){throw 'Unexpected source extension'}

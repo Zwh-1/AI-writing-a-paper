@@ -3,6 +3,7 @@ import { apiUrl, api, send } from "../client";
 import { ReferenceSurface, useReferenceTitle } from "./ReferenceWorkbenchParts";
 import type { Row } from "../workspace/types";
 import ImageCoveragePanel from "./ImageCoveragePanel";
+import Reader from "../reading/Reader";
 import {
   place,
   semanticLabels,
@@ -31,6 +32,7 @@ export default function ReadingDialog({
   onSaved?: () => void;
 }) {
   const titleOf = useReferenceTitle();
+  const [parallel, setParallel] = useState(false);
   const base = `/projects/${pid}/document-reading`;
   const [question, setQuestion] = useState(existing?.question || ""),
     [sid, setSid] = useState(existing?.section_id || ""),
@@ -153,6 +155,18 @@ export default function ReadingDialog({
         <p role="alert" className="error-text">
           {error}
         </p>
+      )}
+      <div className="studio-toolbar">
+        <button className="btn" onClick={() => setParallel(!parallel)}>
+          {parallel ? "收起对照阅读" : "打开对照阅读、批注与问答"}
+        </button>
+      </div>
+      {parallel && (
+        <Reader
+          pid={pid}
+          files={[{ ...file, id: file.file_id || file.id }]}
+          initialFile={file.file_id || file.id}
+        />
       )}
       <div className="dr-task" hidden={!!current}>
         <label>

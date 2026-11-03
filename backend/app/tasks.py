@@ -31,7 +31,7 @@ def enqueue(pid,kind,payload,key=None):
         if kind=='parse' and payload.get('file_id'):
             pending=c.execute("SELECT * FROM tasks WHERE project_id=? AND kind='parse' AND json_extract(payload,'$.file_id')=? AND status IN ('queued','running') LIMIT 1",(pid,payload['file_id'])).fetchone()
             if pending:return dict(pending)
-        if kind in ('parse','extract_rules','rules_ai','ocr_local','ocr_local_batch','material_summary','evidence_knowledge_build'):
+        if kind in ('parse','extract_rules','rules_ai','ocr_local','ocr_local_batch','material_summary','evidence_knowledge_build','studio','export'):
             pending=c.execute("SELECT * FROM tasks WHERE project_id=? AND kind=? AND payload=? AND status IN ('queued','running') ORDER BY created_at LIMIT 1",(pid,kind,db.dumps(payload))).fetchone()
             if pending:return dict(pending)
         if key:
@@ -82,6 +82,14 @@ def _model_call(task,system,user,manifest,images=None):
 def _metered_model_call(task,system,user,manifest,images=None):
     cfg=provider.config();p=require_project(task['project_id']);
     from .expense_evidence import preflight
+    from .section_materials import validate as validate_materials
+    validate_materials(p['id'],manifest.get('section_materials'),remote=True)
+    if manifest.get('evidence_bundle'):
+        from .writing_retrieval import validate as validate_bundle
+        validate_bundle(p['id'],manifest['evidence_bundle'],remote=True)
+    if manifest.get('resource_refs'):
+        from .resource_refs import validate as validate_resources
+        validate_resources(p['id'],manifest['resource_refs'],remote=True)
     if manifest.get('knowledge_refs'):
         from .knowledge_lineage import validate_refs
         validate_refs(p['id'],manifest['knowledge_refs'],remote=True)
@@ -586,6 +594,12 @@ def _writing(task,payload):
     context={'project':{'title':p['title'],'brief':db.loads(p['brief'],{})},'section':s,'operation':payload.get('operation','generate'),'instruction':payload.get('instruction',''),'rules':rule_text,'facts':allowed_facts,'sources':[{'id':e['id'],'file_id':e['file_id'],'location':db.loads(e['locator'],{}),'text':e['text']} for e in evidence],'references':[{'id':r['id'],'file_id':r['file_id'],'metadata':db.loads(r['metadata'],{})} for r in refs],'existing_text':'\n'.join(documents.plain(n) for n in old_blocks), 'existing_blocks':[{'node_id':n.get('attrs',{}).get('nodeId'),'text':documents.plain(n),'protected':n.get('attrs',{}).get('nodeId') in protected} for n in old_blocks], 'terminology':terms,'outline':outline,'related_sections':related,'scope':'selected_paragraphs' if targets else 'section'}
     context.update(continuity)
     context.update(live_context)
+    from .section_materials import snapshot as material_snapshot
+    from .resource_refs import source_files as product_files
+    product_inputs,material_inputs=material_snapshot(pid,s['id'],remote=True)
+    product_refs=[value['source_ref'] for value in product_inputs]
+    context['research_products']=[{key:value[key] for key in ('title','text','source_ref','kind','classification')} for value in product_inputs]
+    file_ids.update(product_files(pid,product_refs))
     from . import writing_ops, writing_brief
     operation_key = ('whole_paper' if task['kind'] == 'write_paper'
                      else 'section' if payload.get('operation', 'generate') == 'generate'
@@ -633,6 +647,25 @@ def _writing(task,payload):
     file_ids.update(guidance['file_ids'])
     context['writing_examples']=guidance['examples']
     context['guidance_gaps']=guidance['gaps']
+    from . import writing_flow, writing_retrieval
+    context,evidence_bundle,argument_plan,context_coverage=writing_flow.prepare(pid,s,context,knowledge_context,guidance,query)
+    # Keep canonical reading records in the existing packer and allow-list path.
+    # Model units use the same text with compact passage locations.
+    for unit in context.get('knowledge_units',[]):
+        if 'passages' not in unit and unit.get('passage_locations'):
+            # Keep exact range metadata. The text has already been read and is
+            # supplied once; duplicating the whole joined text for every
+            # neighbouring unit would misstate both its scope and input size.
+            unit['passages']=[deepcopy(location) for location in unit['passage_locations'] if location.get('id')]
+    knowledge_context['knowledge_units']=context.get('knowledge_units',[])
+    knowledge_context['sources']=[{**row,'locator':db.dumps(row.get('location',{}))} for row in context.get('sources',[])]
+    knowledge_context['document_readings']=context.get('document_readings',[])
+    refs=[{**row,'metadata':db.dumps(row['metadata']) if isinstance(row.get('metadata'),dict) else row.get('metadata','{}')} for row in context.get('references',[])]
+    allowed_facts=context.get('facts',allowed_facts)
+    from .writing_agent.evidence import get as current_evidence
+    project_evidence=[current_evidence(pid,row['id'],remote=True) for row in context.get('project_evidence',[])]
+    if evidence_bundle:file_ids.update(evidence_bundle['compatibility']['file_ids'])
+    system+=' argument_plan按实际任务和已登记主张组织每段职责。避免多段重复同一结论。可为实质主张返回claim_spans：[{"local_id":"c1","text":"正文中唯一原句","role":"fact|inference","evidence_ids":[],"source_ids":[],"knowledge_unit_ids":[],"fact_ids":[]}]，并用citation_intents:[{"claim_id":"c1","reference_id":"实际文献ID","source_ids":[],"knowledge_unit_ids":[],"kind":"paraphrase"}]在对应原句后插引用。范围与哈希可省略由程序确定，禁止杜撰ID。缺少依据时返回retrieval_requests:[{"query":"需补读的问题"}]和missing_materials，不用无依据强断言填充。evidence_bundle目录只作实际读取范围说明，原文分别在sources/knowledge_units/project_evidence/research_products。'
     from .writing_request import pack
     cfg=provider.config();output_limit=min(int(cfg.get('max_output_tokens',8192)),2048 if s['kind']=='abstract' else max(2048,int(s['target_words'])*2+1024))
     request_cfg={**cfg,'max_output_tokens':output_limit}
@@ -643,12 +676,17 @@ def _writing(task,payload):
             db.execute('UPDATE tasks SET result=? WHERE id=?',(db.dumps({**checkpoint,'context_budget':error.detail['context_budget']}),task['id']))
         raise
     evidence=knowledge_context['sources']
+    if evidence_bundle:
+        evidence_bundle=writing_retrieval.restrict(evidence_bundle,context)
+        context['evidence_bundle']=writing_retrieval.for_model(evidence_bundle)
     loaded_reference_ids={r['id'] for r in context['references']}
     refs=[r for r in refs if r['id'] in loaded_reference_ids]
     user=db.dumps(context)
     ids=[r['id'] for r in content_rules];manifest={'rule_package_id':package['id'],'required_rule_ids':ids,'loaded_rule_ids':ids,'rule_text_hash':hashlib.sha256(rule_text.encode()).hexdigest(),'base_revision_id':payload.get('base_revision_id'),'section_id':s['id'],'source_ids':[e['id'] for e in evidence],'file_ids':sorted(file_ids),'fact_revisions':{f['id']:f['revision'] for f in allowed_facts}}
     manifest['knowledge_documents']={e['knowledge_document_id']:e['knowledge_document_version'] for e in evidence if e.get('knowledge_document_id')}
     manifest['context_budget']=request_budget
+    manifest['resource_refs']=product_refs
+    manifest['section_materials']=material_inputs
     manifest['literature_candidates']=knowledge_context.get('document_candidates',[])
     manifest.update(live_manifest)
     manifest['writing_task_id']=task['id']
@@ -680,6 +718,7 @@ def _writing(task,payload):
     manifest['writing_state'].update({k:manifest[k] for k in ('knowledge_unit_versions','knowledge_read_scopes','knowledge_selection','document_reading_versions','knowledge_refs')})
     if paper_candidate:
         previous=paper_candidate['manifest']
+        manifest['retained_candidate_provenance']=True
         # The complete previous candidate was sent for revision. Preserve its
         # provenance and reading scopes even when only some blocks are reused.
         for key in ('source_ids','file_ids'):
@@ -697,9 +736,13 @@ def _writing(task,payload):
         manifest['writing_state'].update({k:manifest[k] for k in ('evidence_versions','permission_stamps','knowledge_unit_versions','knowledge_read_scopes','document_reading_versions','knowledge_refs')})
         manifest['paper_revision_source']={'task_id':db.loads(task['payload'],{})['revision_source_task_id'],
                                            'section_id':s['id'],'document_hash':digest(paper_candidate['document'])}
+    manifest['argument_plan_hash']=argument_plan['hash']
+    manifest['context_coverage']=context_coverage
+    if evidence_bundle:writing_flow._manifest_bundle(manifest,evidence_bundle)
+    writing_flow.sync_manifest(pid,context,manifest)
     if not all('['+rid+']' in user for rid in ids): raise ValueError('规则加载检查失败')
     event(task['id'],'写作上下文已就绪；正在检查本次费用预留',35,{'input_upper_bound':request_budget['input_upper_bound'],'deferred_documents':len(request_budget['deferred_documents'])})
-    result=model_call(task,system,user,{**manifest,'candidate_format_attempt':1})
+    result=writing_flow.generate(task,s,system,context,{**manifest,'candidate_format_attempt':1},candidate_from_text)
     event(task['id'],'检查结构、来源与引用',85)
     data,used_text,problem=candidate_from_text(result['text'])
     validation_attempts=[{'attempt':1,'valid':data is not None,'error':problem or None}]
@@ -714,7 +757,7 @@ def _writing(task,payload):
                        '至少一个段落的text必须是非空字符串；不要返回Markdown、代码围栏或解释。')
         retry_manifest={**manifest,'candidate_format_attempt':attempt,
                         'candidate_format_repair':True,'candidate_validation_error':problem}
-        retry=model_call(task,repair_system,user,retry_manifest)
+        retry=writing_flow._cached_call(task,repair_system,context,retry_manifest,stage='candidate_format_repair',index=attempt)
         data,used_text,problem=candidate_from_text(retry['text'])
         validation_attempts.append({'attempt':attempt,'valid':data is not None,'error':problem or None})
         if data is None:
@@ -739,6 +782,15 @@ def _writing(task,payload):
                 'raw_text':used_text,'document':None,
                 'validation_error':f'章节响应经过{len(validation_attempts)}次调用仍未通过候选契约校验：{details}',
                 'validation_attempts':validation_attempts,'manifest':manifest}
+    data,context,manifest,writing_quality,evidence_bundle=writing_flow.finish(task,s,data,system,context,manifest,candidate_from_text,bundle=evidence_bundle)
+    # Supplementary reads can legitimately introduce new allowed sources. Only
+    # the actual server-read, version-frozen context extends these allow-lists.
+    evidence=[{**row,'locator':db.dumps(row.get('location',{}))} for row in context.get('sources',[])]
+    refs=[{**row,'metadata':db.dumps(row['metadata']) if isinstance(row.get('metadata'),dict) else row.get('metadata','{}')} for row in context.get('references',[])]
+    allowed_facts=context.get('facts',allowed_facts)
+    project_evidence=[current_evidence(pid,row['id'],remote=True) for row in context.get('project_evidence',[])]
+    knowledge_context['knowledge_units']=context.get('knowledge_units',[])
+    knowledge_context['document_readings']=context.get('document_readings',[])
     paragraphs=data.get('paragraphs',[])
     if not isinstance(paragraphs,list) or not paragraphs: raise ValueError('模型没有返回有效段落')
     content=[];proposals=[];allowed_sources={e['id']:e for e in evidence};allowed_refs={r['id']:r for r in refs};preserved=set();allowed_fact_ids={f['id'] for f in allowed_facts};allowed_units={u['unit_id']:u for u in knowledge_context['knowledge_units']};allowed_readings={r['reading_id']:r for r in knowledge_context.get('document_readings',[])};orphan_notes=[]
@@ -748,6 +800,16 @@ def _writing(task,payload):
         if preserved_id:
             if preserved_id not in preservable:raise ValueError('模型引用了不存在的受保护内容')
             if preserved_id not in preserved:content.append(preservable[preserved_id]);preserved.add(preserved_id)
+            continue
+        from .writing_evidence_quality import compile_paragraph
+        exact=compile_paragraph(pid,para,context,manifest)
+        if exact['handled']:
+            if exact['findings']:
+                orphan_notes.extend(finding['message'] for finding in exact['findings'])
+            content.append(exact['node']);proposals.extend(exact['citation_proposals'])
+            if para.get('visual_ids'):
+                from .writing_visuals import insert_existing
+                content.extend(insert_existing(pid,para['visual_ids'],live_context['available_visuals'],exact['node'],s['id'],protected.values()))
             continue
         raw_text=para.get('text','')
         if not isinstance(raw_text,str): raise ValueError('段落文字类型无效')
@@ -831,7 +893,14 @@ def _writing(task,payload):
     check_result = brief_check(s, brief, paragraphs, documents.plain(doc),
                                related=related, facts=allowed_facts, terms=terms)
     notes='；'.join([x for x in [data.get('notes',''),'；'.join(orphan_notes)] if x])
-    return {'section_id':s['id'],'base_revision_id':payload.get('base_revision_id'),'document':doc,'text':documents.plain(doc),'missing_materials':missing,'notes':notes,'citation_proposals':proposals,'manifest':manifest,'validation_attempts':validation_attempts,'stale':require_section(s['id'])['current_revision_id']!=payload.get('base_revision_id') or require_project(pid)['rule_package_id']!=package['id'],'brief_check':check_result,'writing_brief':{'hash':brief['hash'],'points':len(brief['points']),'paragraphs':brief['paragraph_plan']['count'],'summary':writing_brief.summary(brief)},**preview_data(pid,{s['id']:doc})}
+    if evidence_bundle:
+        used_sources={identity for node in documents.nodes(doc) for identity in node.get('attrs',{}).get('sourceIds',[])}
+        used_evidence={identity for node in documents.nodes(doc) for identity in node.get('attrs',{}).get('evidenceIds',[])}
+        used_references={node['attrs']['citationId'] for node in documents.nodes(doc) if node['type']=='citation'}
+        allowed=evidence_bundle['compatibility']
+        evidence_bundle=writing_retrieval.attach_usage(evidence_bundle,source_ids=used_sources & set(allowed['source_ids']),reference_ids=used_references & set(allowed['reference_ids']),evidence_ids=used_evidence & set(allowed['evidence_ids']))
+        manifest['evidence_bundle']=evidence_bundle
+    return {'section_id':s['id'],'base_revision_id':payload.get('base_revision_id'),'document':doc,'text':documents.plain(doc),'missing_materials':missing,'notes':notes,'citation_proposals':proposals,'manifest':manifest,'validation_attempts':validation_attempts,'stale':require_section(s['id'])['current_revision_id']!=payload.get('base_revision_id') or require_project(pid)['rule_package_id']!=package['id'],'brief_check':check_result,'writing_brief':{'hash':brief['hash'],'points':len(brief['points']),'paragraphs':brief['paragraph_plan']['count'],'summary':writing_brief.summary(brief)},'evidence_bundle':evidence_bundle,'writing_quality':writing_quality,'argument_plan':argument_plan,'context_coverage':context_coverage,**preview_data(pid,{s['id']:doc})}
 
 def support_check(task,payload):
     cid=payload['citation_id'];cite=db.one('SELECT c.*,r.document,s.project_id FROM citations c JOIN revisions r ON r.id=c.revision_id JOIN sections s ON s.id=r.section_id WHERE c.id=?',(cid,))
@@ -910,6 +979,9 @@ def semantic_review(task):
     return {'added_findings':added,'requires_human_review':True}
 
 def dispatch(task):
+    if task['kind']=='studio':
+        from .research_tasks import process
+        return process(task,db.loads(task['payload'],{}))
     if task['kind']=='paper_image':
         from .image_generation import generate
         return generate(task)
@@ -1041,8 +1113,8 @@ def dispatch(task):
         from .reviews import run
         return run(pid)
     if kind=='export':
-        from .exports import export_project
-        return export_project(pid,p,task['id'])
+        from .export_service import generate
+        return generate(pid,p,task['id'])
     if kind=='backup':
         from .exports import backup
         return backup()
@@ -1121,7 +1193,10 @@ def run_one():
                     detail=None
                 raise ValueError(detail or '写作响应没有形成含正文的有效候选')
         state='succeeded'
-        if task['kind'] in ('materials_rules_autopilot','autopilot_exception_repair','rule_document_rebuild','literature_refresh','graph_wiki_build','knowledge_refresh','knowledge_maintenance') and not result.get('complete'):
+        if task['kind']=='studio' and db.loads(task['payload'],{}).get('action')=='zotero' and result.get('complete') is False:
+            state='incomplete'
+            event(task['id'],'书目已同步；部分附件仍待重试',95,{'attachment_failures':result.get('attachment_failures',[])})
+        elif task['kind'] in ('materials_rules_autopilot','autopilot_exception_repair','rule_document_rebuild','literature_refresh','graph_wiki_build','knowledge_refresh','knowledge_maintenance') and not result.get('complete'):
             state='budget_blocked' if result.get('pause_reason') and '预算' in result['pause_reason'] else 'incomplete'
         elif task['kind']=='rules_ai' and result.get('automatic') and not result.get('complete'):
             state='budget_blocked' if any(i['state']=='budget_wait' for i in result['unresolved_items']) else 'incomplete'

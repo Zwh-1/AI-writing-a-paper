@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 import time
 import zipfile
 
@@ -33,6 +34,11 @@ GUIDES=(*GUIDES,'docs/0.7.1知识库功能补齐与验收说明_2026-10-28.md')
 GUIDES=(*GUIDES,'docs/0.7.2资料规则文献页面重构与整合_2026-10-28.md')
 GUIDES=(*GUIDES,'docs/0.7.3完整整合便携版使用说明.md','docs/0.7.3首屏加载性能修复_2026-10-31.md','docs/六页文献工作台布局优化_2026-10-31.md','docs/文献页面功能核查与修复_2026-10-31.md')
 GUIDES=(*GUIDES,'docs/API接口整合方案_2026-11-02.md','docs/API接口整合实施记录_2026-11-02.md','docs/DeepSeek接口整合与切换_2026-11-02.md')
+GUIDES=(*GUIDES,'deployment/STUDIO.md','docs/PaperSpark功能补齐实施记录_2026-11-02.md')
+GUIDES=(*GUIDES,'docs/PaperSpark全部功能复查与补齐_2026-11-02.md')
+GUIDES=(*GUIDES,'docs/架构整合实施记录_2026-11-02.md','docs/新增功能架构集成评估与改进方案_2026-11-02.md')
+GUIDES=(*GUIDES,'docs/功能完整性复查与补齐记录_2026-11-02.md','docs/功能完整性复核_2026-11-02/README.md')
+GUIDES=(*GUIDES,'docs/核心写作与素材闭环实施记录_2026-11-03.md','docs/0.10.0完整整合便携版使用说明.md')
 
 
 def _walk(folder, allow_modules=False):
@@ -143,6 +149,7 @@ def selected_files(profile='full', root=None):
                 continue
             yield path
     for name in ('runner.py', '启动论文工作台.ps1', '停止论文工作台.ps1', '安装便携组件.ps1',
+                 'scripts/yantai-data.mjs','scripts/yantai_data_offline.py','scripts/yantai_query_projection.py','deployment/execution.Dockerfile',
                  '准备截图浏览器.ps1', '准备隔离执行环境.ps1', 'frontend/package.json',
                  'requirements.lock.txt', 'requirements-advanced.lock.txt','requirements-graphrag.lock.txt', *SCRIPTS, *GUIDES, *RUNTIME_ASSETS):
         path = root / name
@@ -170,8 +177,30 @@ def _validate_version(root):
 
 def _private(relative):
     path = PurePosixPath(relative)
-    return (relative.startswith(('data/', '.experimental/')) or path.suffix in ('.dpapi', '.sqlite3')
-            or path.suffix == '.json' and path.name.startswith(('session-', 'processes-')) or path.name in ('session.json', '.env'))
+    return (relative.startswith(('data/', '.experimental/', 'private/'))
+            or path.suffix in ('.dpapi', '.sqlite', '.sqlite3', '.db')
+            or path.name.endswith(('.sqlite3-wal', '.sqlite3-shm', '.db-wal', '.db-shm'))
+            or path.suffix == '.json' and path.name.startswith(('session-', 'processes-'))
+            or path.name == 'session.json'
+            or path.name.startswith('.env') and path.name != '.env.example')
+
+
+def source_revision(root):
+    """Record the actual checkout identity without requiring Git on end users."""
+    def git(*args):
+        result = subprocess.run(['git', '-C', str(root), *args], capture_output=True,
+                                text=True, encoding='utf-8', errors='replace', timeout=15,
+                                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+        if result.returncode:
+            raise ValueError('Not a Git checkout')
+        return result.stdout.strip()
+    try:
+        if Path(git('rev-parse', '--show-toplevel')).resolve() != Path(root).resolve():
+            return {'commit': None, 'dirty': None}
+        return {'commit': git('rev-parse', 'HEAD'),
+                'dirty': bool(git('status', '--porcelain', '--untracked-files=all'))}
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return {'commit': None, 'dirty': None}
 
 
 def plan(profile='full', root=None):
@@ -203,6 +232,7 @@ def build(profile='full', root=None, output=None, audit=False, max_bytes=None):
     root = Path(root or ROOT).resolve()
     version = _validate_version(root)
     paths = plan(profile, root)
+    release_source = source_revision(root)
     groups = defaultdict(int)
     for path in paths:
         relative = archive_name(path, root)
@@ -214,6 +244,7 @@ def build(profile='full', root=None, output=None, audit=False, max_bytes=None):
     if profile == 'full':
         limit = min(MAX_PACKAGE_BYTES, max_bytes) if max_bytes is not None else MAX_PACKAGE_BYTES
     report = {'version': version, 'profile': profile, 'files': len(paths), 'size_limit_bytes': limit,
+              'source_commit': release_source['commit'], 'source_dirty': release_source['dirty'],
               'uncompressed_bytes': sum(groups.values()), 'groups_raw_bytes': dict(groups)}
     if audit:
         return report
@@ -238,6 +269,7 @@ def build(profile='full', root=None, output=None, audit=False, max_bytes=None):
                 print(json.dumps({'phase': 'compressing', 'profile': profile, 'done': i, 'total': len(paths)}), flush=True)
                 last_notice = time.monotonic()
         manifest = {'version': version, 'profile': profile, 'package_kind': 'component' if profile in ('browser', 'models','graphrag') else 'application',
+                    'source_commit': release_source['commit'], 'source_dirty': release_source['dirty'],
                     'files': hashes, 'user_data_included': False, 'api_key_included': False,
                     'optional_components': ['browser', 'models','graphrag'] if profile == 'portable' else ['graphrag'] if profile in ('full','offline') else [],
                     'automatic_resource_download': profile == 'full',

@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { FileText, LoaderCircle, Search } from "lucide-react";
 import { api } from "./client";
+import SourceCard from './workspace/SourceCard';
+import ProductLink from './products/ProductLink';
 
 type Row = Record<string, any>;
 const roles: Record<string, string> = {
@@ -16,12 +18,13 @@ export default function WritingSources({ pid, sid, tick, onOpen, onMaterials, lo
   const [input, setInput] = useState("");
   const [query, setQuery] = useState("");
   const [attempt, setAttempt] = useState(0);
-  const [result, setResult] = useState<{ items: Row[]; mode: string } | null>(null);
+  const [result, setResult] = useState<{ items: Row[]; mode: string; products?: Row[] } | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   useEffect(() => {
     const controller = new AbortController();
     setLoading(true); setError(""); setResult(null);
+    if(!pid||!sid){setLoading(false);return()=>controller.abort();}
     api(`/projects/${pid}/sections/${sid}/materials?q=${encodeURIComponent(query)}`, { signal: controller.signal })
       .then(data => { if (!controller.signal.aborted) setResult(data); })
       .catch(reason => { if (!controller.signal.aborted) setError((reason as Error).message); })
@@ -47,8 +50,10 @@ export default function WritingSources({ pid, sid, tick, onOpen, onMaterials, lo
           <button className="btn" onClick={() => window.dispatchEvent(new CustomEvent("paper-attach-source", { detail: { sectionId: sid, sourceId: source.id } }))}>关联当前段落</button>
           <small>来源 ID：{source.id}</small>
         </details>)}</div>
+        {!!result?.products?.length&&<div className="writing-source-results" aria-label="本章互通材料">{result.products.map(item=><details className="evidence-card" key={item.id}><summary>{item.data.title}<small>{item.source_state==='stale'?'来源已变化，请更新':'已关联本章写作 · 内容仍需核对'}</small></summary><p>{item.data.text}</p>{item.source_refs.map((ref:any)=><SourceCard key={ref.type+ref.id} pid={pid} source={ref}/>)}</details>)}</div>}
         {!result?.items.length && <div className="small-empty"><Search size={24} /><p>{query ? "未找到匹配原文，请换用关键词检索。" : "本节暂无可用原文，请在资料中心导入或核对解析结果。"}</p></div>}
       </>}
     <button className="text-button" onClick={onMaterials}>前往资料中心</button>
+    <ProductLink pid={pid} sectionId={sid} label="从产物库关联本章资料"/>
   </section>;
 }

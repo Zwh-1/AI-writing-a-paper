@@ -26,6 +26,8 @@ def record_key(table,row):
     return table+':'+db.dumps([row[k] for k in keys])
 
 def make(pid,base_heads=None):
+    if db.one('SELECT id FROM studio_records WHERE project_id=? LIMIT 1',(pid,)):
+        raise HTTPException(409,'项目包含研究助手记录，请使用完整知识包或本地备份同步，以保留对话、译文、批注与画布。')
     if db.one('SELECT id FROM knowledge_parses WHERE project_id=? LIMIT 1',(pid,)):
         raise HTTPException(409,'该项目含版本化证据知识库，旧版云同步无法完整承载，请使用完整本地备份与隔离恢复')
     if db.one('SELECT id FROM thesis_core_versions WHERE project_id=? LIMIT 1',(pid,)) or db.one('SELECT id FROM repository_snapshots WHERE project_id=? LIMIT 1',(pid,)):

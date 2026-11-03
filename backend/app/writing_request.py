@@ -62,6 +62,11 @@ def pack(context, knowledge, system, cfg):
         context['literature_documents']=[]
         if context.get('section_contract'):
             context['section_contract']={k:v for k,v in context['section_contract'].items() if k!='evidence_ids'}
+        if context.get('paper_plan'):
+            # The current task already has its exact writing_brief and argument
+            # cards. Other chapters need goals/dependencies, not a second copy
+            # of every generic paragraph template. No prose or evidence is cut.
+            context['paper_plan']=[{k:v for k,v in row.items() if k!='paragraph_plan'} for row in context['paper_plan']]
 
     def compact_gaps():
         grouped={}

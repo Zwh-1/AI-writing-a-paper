@@ -13,9 +13,33 @@ def key_hash(key):return hashlib.sha256(key.encode()).hexdigest()
 
 
 def priced_config(configuration, key):
-    """Reuse only prices verified for this exact account, endpoint and model."""
+    """Reuse only prices verified for this exact account, endpoint and model.
+
+    Resolution order:
+      1. Explicit input_price/output_price already in the configuration.
+      2. Endpoint-embedded expense_pricing_basis from the adaptive adapter
+         (produced only on switch / failover, marked as conservative estimate).
+      3. The verified ai_autopilot_reference_pricing snapshot.
+
+    This function never applies a blind family default on its own: doing so
+    would silently bypass the strict "require real tariff" policy. Family
+    defaults are applied only by deepseek_profiles._autobind_pricing, which
+    records them as an explicit endpoint_probe basis.
+    """
     cfg=dict(configuration)
     if all(finite(cfg.get(k)) for k in ('input_price','output_price')):return cfg
+    # 2) Endpoint-embedded adaptive basis (produced on switch / failover).
+    basis=cfg.get('expense_pricing_basis')
+    if isinstance(basis,dict) and basis.get('kind') in ('endpoint_configured','endpoint_probe'):
+        if (basis.get('model')==cfg.get('model')
+                and basis.get('base_url')==cfg.get('base_url','').rstrip('/').removesuffix('/v1')
+                and basis.get('credential_hash')==key_hash(key)
+                and basis.get('currency')==cfg.get('currency')
+                and all(finite(basis.get(k)) for k in ('input_price','output_price'))):
+            for name in ('input_price','output_price'):
+                if not finite(cfg.get(name)):cfg[name]=basis[name]
+            cfg['pricing_evidence']=basis
+            return cfg
     evidence=db.setting('ai_autopilot_reference_pricing',{})
     if (evidence.get('verified') and evidence.get('model')==cfg.get('model')
         and evidence.get('base_url')==cfg['base_url'].rstrip('/').removesuffix('/v1')
@@ -25,6 +49,7 @@ def priced_config(configuration, key):
         for name in ('input_price','output_price'):
             if not finite(cfg.get(name)):cfg[name]=evidence[name]
         cfg['pricing_evidence']=evidence
+        return cfg
     return cfg
 
 def budget(pid,reservation=0):
@@ -80,8 +105,8 @@ def reconcile(pid,profile='material-summary'):
         identity=key_hash(provider._REQUEST.get()['key']);model=cfg['model'];base=cfg['base_url'].rstrip('/').removesuffix('/v1')
         try:
             with provider.client({**cfg,'timeout_seconds':20}) as client:
-                response=client.get(provider.usage_endpoint(cfg['base_url']),headers=provider.headers('openai'))
-            if response.status_code!=200:raise ValueError('余额接口返回 HTTP '+str(response.status_code))
+                response=client.get(provider.usage_statistics_endpoint(cfg['base_url']),headers=provider.headers('openai'))
+            if response.status_code!=200:raise ValueError('请求统计接口返回 HTTP '+str(response.status_code))
             raw=response.json();normalized=provider.normalize_account_usage(raw)
             payload=raw.get('data',raw) if normalized['response_scope']=='data' else raw
         except (provider.httpx.RequestError,ValueError,provider.ProviderError) as error:
@@ -127,7 +152,7 @@ def reconcile(pid,profile='material-summary'):
             token_accounting[local_name]={'local_reported_total':known,'remote_total':remote,'method':alternatives.get(remote,'partial_local_usage_lower_bound'),'reported_cached_tokens':sum(cached) if cached and all(v is not None for v in cached) else None}
         # Use the largest reported amount, avoiding an assumption about discounts.
         amount=max([*amounts,sum(x['cost'] for x in executed if finite(x['cost']))]);ids=[x['id'] for x in executed];anchor=ids[0]
-        evidence={'model_stats':{k:stat[k] for k in ('model','requests','input_tokens','output_tokens','cost','actual_cost','account_cost') if k in stat},'method':'matched_dedicated_key_model_total_conservative_max','token_accounting':token_accounting,'run_ids':ids,'key_lifetime_checked':True,'account_fetched_at':account['fetched_at'],'currency':normalized['unit'],'request_url':provider.usage_endpoint(cfg['base_url']),'provider_response_sha256':hashlib.sha256(response.content).hexdigest(),'amount_basis':'conservative_max_not_verified_net_debit','per_request_costs_unknown':True}
+        evidence={'model_stats':{k:stat[k] for k in ('model','requests','input_tokens','output_tokens','cost','actual_cost','account_cost') if k in stat},'method':'matched_dedicated_key_model_total_conservative_max','token_accounting':token_accounting,'run_ids':ids,'key_lifetime_checked':True,'account_fetched_at':account['fetched_at'],'currency':normalized['unit'],'request_url':provider.usage_statistics_endpoint(cfg['base_url']),'provider_response_sha256':hashlib.sha256(response.content).hexdigest(),'amount_basis':'conservative_max_not_verified_net_debit','per_request_costs_unknown':True}
         with db.transaction() as conn:
             if any(conn.execute('SELECT status FROM generation_runs WHERE id=?',(x,)).fetchone()[0] in ('pending','sent','outcome_unknown') for x in ids):raise ValueError('账单核对期间请求状态已变化')
             conflict=conn.execute('SELECT g.id FROM generation_billing_group_runs m JOIN generation_billing_groups g ON g.id=m.group_id WHERE m.run_id IN ('+','.join('?' for _ in ids)+') AND (g.credential_hash<>? OR g.project_id<>?) LIMIT 1',(*ids,identity,pid)).fetchone()

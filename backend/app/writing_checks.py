@@ -73,7 +73,7 @@ def fact_number_drift(paragraphs, facts):
         recorded = set()
         for identity in cited:
             recorded |= _numbers(statements[identity])
-        if recorded and not (recorded & written):
+        if recorded and written-recorded:
             drifted.append((cited[0], statements[cited[0]], body))
     return drifted
 
@@ -191,4 +191,10 @@ def check(section, brief, paragraphs, text='', related=(), facts=(), terms=()):
 
     return {'version': VERSION, 'brief_hash': brief.get('hash'), 'words': words, 'target_words': target,
             'coverage': cover, 'findings': findings,
+            'dimensions':{'task_point_declarations':'incomplete' if cover['missing'] else 'declared',
+                          'actual_task_coverage':'requires_independent_review',
+                          'quantitative_anchoring':'issues' if unanchored or drifted else 'local_checked',
+                          'cross_section_copying':'issues' if duplicates else 'local_checked',
+                          'terminology':'issues' if mismatched else 'local_checked',
+                          'semantic_support':'not_checked'},
             'passed': not cover['missing'] and not unanchored}

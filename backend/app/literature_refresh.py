@@ -188,6 +188,8 @@ def regenerate_file(task,root_task,gen,file,cfg):
         old=db.one('SELECT * FROM material_summaries WHERE file_id=?',(fid,))
         if old and not db.setting(state_key(gen,'previous:'+fid)):db.set_setting(state_key(gen,'previous:'+fid),old)
         db.execute('INSERT OR REPLACE INTO material_summaries VALUES(?,?,?,?,?,?,?)',(fid,source_hash,signature(source_hash,provider_hash,head['id']),db.dumps(data),cfg['model'],task['id'],db.now()))
+        from .knowledge_lineage import changed
+        changed(pid,'summary',fid,'文献总结已更新，复用内容需复查')
         result={'file_id':fid,'name':file['name'],'complete':True,'updated_at':db.now(),'covered_pages':len(texts),'quote_checks':data['quote_checks']}
         db.set_setting(state_key(gen,'file:'+fid),result)
     return result

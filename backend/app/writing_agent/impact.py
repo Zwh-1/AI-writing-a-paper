@@ -121,6 +121,10 @@ def resolve_manual(pid,sid,body):
     project_stale(sid);return reasons(pid,sid)
 
 def check_manifest(pid,manifest):
+    if manifest.get('evidence_bundle'):
+        from ..writing_retrieval import validate as validate_bundle
+        try:validate_bundle(pid,manifest['evidence_bundle'],remote=bool(manifest.get('remote',True)))
+        except __import__('fastapi').HTTPException:return ['写作素材包的来源版本、用途或权限']
     if manifest.get('live_input_versions') is not None:
         from ..writing_live import validate
         try:validate(pid,manifest,manifest.get('writing_task_id'))
@@ -128,6 +132,13 @@ def check_manifest(pid,manifest):
     from ..knowledge_units import get as get_unit
     from fastapi import HTTPException
     unit_conflicts=[]
+    from ..section_materials import validate as validate_materials
+    try:validate_materials(pid,manifest.get('section_materials'),remote=bool(manifest.get('remote')))
+    except HTTPException:unit_conflicts.append('章节写作材料集合已变化')
+    if manifest.get('resource_refs'):
+        from ..resource_refs import validate as validate_resources
+        try:validate_resources(pid,manifest['resource_refs'],remote=bool(manifest.get('remote')))
+        except HTTPException:unit_conflicts.append('互通材料的来源版本或权限')
     if manifest.get('knowledge_refs'):
         from ..knowledge_lineage import validate_refs
         try:validate_refs(pid,manifest['knowledge_refs'],remote=bool(manifest.get('remote')))

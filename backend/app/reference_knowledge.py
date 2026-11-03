@@ -113,7 +113,7 @@ def decorate(pid, items):
     return result
 
 
-def search(pid, query, limit=10, remote=False, rerank_override=None,file_ids=None):
+def search_legacy(pid, query, limit=10, remote=False, rerank_override=None,file_ids=None):
     from . import parsers, retrieval, model_install
     security.require_project(pid)
     source_options={'file_ids':file_ids} if file_ids else {}
@@ -145,7 +145,17 @@ def search(pid, query, limit=10, remote=False, rerank_override=None,file_ids=Non
     return {**result, 'items': items, 'warnings': [*result.get('warnings', []), *warning], 'collection_id': 'literature:' + pid, 'external_requests': False}
 
 
+def search(pid, query, limit=10, remote=False, rerank_override=None, file_ids=None):
+    from .knowledge_service import search as current_search
+    result=current_search(pid,query,min(30,max(1,int(limit))),remote=remote,file_ids=file_ids)
+    from .resource_refs import for_hit
+    return {**result,'items':[{**hit,'source_ref':for_hit(pid,hit)} for hit in result['items']]}
+
+
 def get_chunk(pid, source_id, remote=False):
+    if source_id.startswith('unit:'):
+        from .knowledge_service import read_source
+        return read_source(pid,source_id,remote)
     security.require_project(pid)
     source = db.one('SELECT s.*,f.name,f.extension,f.project_id,f.active,f.role,p.page_number,p.title AS page_title,p.review_state FROM sources s JOIN files f ON f.id=s.file_id LEFT JOIN pages p ON p.id=s.page_id WHERE s.id=? AND f.project_id=?', (source_id, pid))
     if not source or not source['active'] or not is_research({'id':source['file_id'],'role':source['role']}) or source['review_state'] == 'not_applicable':
@@ -166,7 +176,8 @@ def permission_epoch(pid):
         original['effective_remote'] = security.file_allows_remote(original['id'], pid)
     sources = db.rows("SELECT s.id,s.text,p.review_state FROM sources s JOIN files f ON f.id=s.file_id LEFT JOIN pages p ON p.id=s.page_id WHERE f.project_id=? AND "+research_sql()+" ORDER BY s.id", (pid,))
     terms = db.rows('SELECT zh,en FROM terms WHERE project_id=? ORDER BY zh', (pid,))
-    return text_hash(db.dumps({'files': files, 'sources': [(item['id'], text_hash(item['text']), item['review_state']) for item in sources], 'terms': terms,'usages':db.rows('SELECT fu.* FROM file_usage_additions fu JOIN files f ON f.id=fu.file_id WHERE f.project_id=? ORDER BY fu.file_id,fu.usage',(pid,))}))
+    heads=db.rows('SELECT p.id,p.file_id,p.input_hash,p.file_hash FROM knowledge_parses p JOIN knowledge_heads h ON h.parse_id=p.id WHERE p.project_id=? ORDER BY p.id',(pid,))
+    return text_hash(db.dumps({'heads':heads,'files': files, 'sources': [(item['id'], text_hash(item['text']), item['review_state']) for item in sources], 'terms': terms,'usages':db.rows('SELECT fu.* FROM file_usage_additions fu JOIN files f ON f.id=fu.file_id WHERE f.project_id=? ORDER BY fu.file_id,fu.usage',(pid,))}))
 
 
 def status(pid):
@@ -209,7 +220,9 @@ def build_index(pid, progress=None):
         result = retrieval.build_index(pid, progress, knowledge=True)
     else:
         result = {'indexed': 0, 'warnings': ['本地模型未安装，已建立全文知识库索引；向量索引可在模型就绪后更新']}
-    return {**result, 'knowledge_base': status(pid), 'external_requests': False}
+    from .knowledge_service import index_units
+    unit_index=index_units(pid,progress)
+    return {**result,'unit_index':unit_index, 'knowledge_base': status(pid), 'external_requests': False}
 
 
 @router.get('')
@@ -226,7 +239,9 @@ def knowledge_index(pid: str):
 @router.post('/search')
 def knowledge_search(pid: str, body: dict):
     from .knowledge_service import search as unified_search
-    return unified_search(pid, body.get('query', ''), body.get('limit', 10),collection=body.get('collection','originals'),file_ids=body.get('file_ids'))
+    result=unified_search(pid, body.get('query', ''), body.get('limit', 10),collection=body.get('collection','all'),file_ids=body.get('file_ids'))
+    from .resource_refs import for_hit
+    return {**result,'items':[{**hit,'source_ref':for_hit(pid,hit)} for hit in result['items']]}
 
 
 @router.get('/chunks/{source_id}')
@@ -242,6 +257,13 @@ def document_chunks(pid: str, file_id: str, offset: int = 0, limit: int = 20):
         raise HTTPException(404, '文献不存在于当前知识库')
     if offset < 0 or not 1 <= limit <= 50:
         raise HTTPException(422, '知识片段分页参数无效')
+    head=db.one('SELECT p.* FROM knowledge_parses p JOIN knowledge_heads h ON h.parse_id=p.id WHERE p.file_id=?',(file_id,))
+    if head and head['strategy']=='layout':
+        from .content_view import file_units
+        from .resource_refs import for_hit
+        _,parse_id,units=file_units(pid,file_id)
+        items=[{**unit,'id':'unit:'+unit['id'],'knowledge_unit_id':unit['id'],'file_id':file_id,'page_number':unit['locator'].get('page')} for unit in units]
+        return {'items':[{**hit,'source_ref':for_hit(pid,hit)} for hit in items[offset:offset+limit]],'total':len(items),'offset':offset,'limit':limit,'parse_id':parse_id}
     sources = [source for source in current_sources(pid) if source['file_id'] == file_id]
     sources.sort(key=lambda item: (item['page_number'] or 0, db.loads(item['locator'], {}).get('char_start', 0), item['id']))
     return {'items': decorate(pid, sources[offset:offset + limit]), 'total': len(sources), 'offset': offset, 'limit': limit}

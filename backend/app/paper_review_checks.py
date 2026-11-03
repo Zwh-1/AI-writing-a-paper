@@ -53,6 +53,11 @@ def review(output, plan=(), references=None):
         citation_parents = {c.get('attrs', {}).get('nodeId'): p for p in nodes if p['type'] in ('paragraph', 'heading')
                             for c in documents.nodes(p) if c['type'] == 'citation'}
         proposals = {p.get('node_id'): p for p in item.get('citation_proposals', [])}
+        for finding in (item.get('writing_quality') or {}).get('findings',[]):
+            critical=finding.get('kind') in {'result_evidence_level','claim_mapping_invalid','citation_mapping_invalid','citation_source_invalid','claim_span_invalid','citation_evidence_gap'}
+            add('writing_'+str(finding.get('kind','quality')),finding.get('message','写作质量仍待核对'),[sid],
+                node_id=finding.get('node_id'),excerpt=finding.get('text',''),severity='error' if critical else 'warning',
+                action=finding.get('repair_query','按定位问题补读并局部修订'))
         metrics.append({'section_id': sid, 'title': item['title'], 'words': count,
                         'target_words': target, 'citations': len(citations), 'visuals': len(visuals)})
         if item.get('degraded'):

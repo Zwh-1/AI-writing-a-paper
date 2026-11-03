@@ -15,10 +15,18 @@ def freeze(pid):
                 revisions[s['id']]=dict(row)
         refs={x['id']:dict(x) for x in c.execute('SELECT * FROM bibliography WHERE project_id=?',(pid,))}
         cites=[dict(x) for x in c.execute('SELECT c.* FROM citations c JOIN sections s ON s.current_revision_id=c.revision_id WHERE s.project_id=?',(pid,))]
-        artifacts={x['id']:dict(x) for x in c.execute('SELECT * FROM artifacts WHERE project_id=?',(pid,))}
+        from .asset_service import frozen_assets
+        artifacts=frozen_assets(c,pid)
+        research_trace={'records':[dict(r) for r in c.execute('SELECT * FROM studio_records WHERE project_id=?',(pid,))],
+            'links':[dict(r) for r in c.execute('SELECT * FROM research_links WHERE project_id=?',(pid,))],
+            'states':[dict(r) for r in c.execute('SELECT * FROM research_record_states WHERE project_id=?',(pid,))],
+            'asset_versions':[dict(r) for r in c.execute('SELECT * FROM asset_versions WHERE project_id=?',(pid,))],
+            'document_dependencies':[dict(r) for r in c.execute('SELECT d.* FROM dependencies d JOIN sections s ON s.current_revision_id=d.revision_id WHERE d.project_id=?',(pid,))],
+            'execution_runs':[{'id':r['id'],'input':{key:value for key,value in db.loads(r['payload'],{}).items() if key in ('product_refs','file_ids','message_id')},'result':db.loads(r['result'],{})} for r in c.execute("SELECT id,payload,result FROM tasks WHERE project_id=? AND kind='studio' AND status='succeeded' AND json_extract(payload,'$.action')='execute'",(pid,))],
+            'interpretation':'个人随记与模型输出保留派生身份，不等于证据已核验'}
         package=c.execute('SELECT * FROM rule_packages WHERE id=?',(project['rule_package_id'],)).fetchone() if project['rule_package_id'] else None
         settings={x['key']:db.loads(x['value']) for x in c.execute('SELECT * FROM settings WHERE key IN (?,?,?)',('format:'+pid,'template:'+pid,'figure_policy:'+pid))}
-        findings=[dict(x) for x in c.execute('SELECT * FROM findings WHERE project_id=?',(pid,))];facts=[dict(x) for x in c.execute('SELECT * FROM facts WHERE project_id=?',(pid,))];files=[dict(x) for x in c.execute('SELECT id,sha256,name,active,egress,role FROM files WHERE project_id=?',(pid,))]
+        findings=[dict(x) for x in c.execute("SELECT * FROM findings WHERE project_id=? AND status!='superseded'",(pid,))];facts=[dict(x) for x in c.execute('SELECT * FROM facts WHERE project_id=?',(pid,))];files=[dict(x) for x in c.execute('SELECT id,sha256,name,active,egress,role FROM files WHERE project_id=?',(pid,))]
         knowledge_links=[dict(x) for x in c.execute('SELECT l.* FROM citation_knowledge_links l JOIN citations ci ON ci.id=l.citation_id JOIN sections s ON s.current_revision_id=ci.revision_id WHERE s.project_id=?',(pid,))]
         knowledge_units={x['id']:dict(x) for x in c.execute('SELECT u.*,p.file_id,p.file_hash,p.engine,p.strategy FROM knowledge_units u JOIN knowledge_parses p ON p.id=u.parse_id WHERE p.project_id=?',(pid,))}
         knowledge_checks=[dict(x) for x in c.execute('SELECT * FROM knowledge_claim_checks WHERE project_id=?',(pid,))]
@@ -35,7 +43,7 @@ def freeze(pid):
         project_evidence={identity:dict(c.execute('SELECT * FROM evidence_items WHERE id=? AND project_id=?',(identity,pid)).fetchone()) for identity in evidence_ids if c.execute('SELECT id FROM evidence_items WHERE id=? AND project_id=?',(identity,pid)).fetchone()}
         graph_wiki=freeze_knowledge(c,pid,revisions)
         c.commit()
-    return {'project':project,'sections':sections,'revisions':revisions,'references':refs,'citations':cites,'artifacts':artifacts,'package':dict(package) if package else None,'settings':settings,'findings':findings,'facts':facts,'file_versions':files,'knowledge_units':knowledge_units,'knowledge_links':knowledge_links,'knowledge_claim_checks':knowledge_checks,'document_readings':reading_records,'citation_reading_links':reading_links,'material_usages':material_uses,'material_profiles':material_profiles,'reading_citation_reviews':reading_reviews,'project_evidence':project_evidence,'graph_wiki':graph_wiki,'created_at':db.now()}
+    return {'research_trace':research_trace,'project':project,'sections':sections,'revisions':revisions,'references':refs,'citations':cites,'artifacts':artifacts,'package':dict(package) if package else None,'settings':settings,'findings':findings,'facts':facts,'file_versions':files,'knowledge_units':knowledge_units,'knowledge_links':knowledge_links,'knowledge_claim_checks':knowledge_checks,'document_readings':reading_records,'citation_reading_links':reading_links,'material_usages':material_uses,'material_profiles':material_profiles,'reading_citation_reviews':reading_reviews,'project_evidence':project_evidence,'graph_wiki':graph_wiki,'created_at':db.now()}
 
 def freeze_knowledge(connection,pid,revisions):
     from .documents import nodes
@@ -104,6 +112,7 @@ def markdown_document(doc,figure_rows=None,section_id=None):
             if 'italic' in marks:text='*'+text+'*'
             return text
         if kind=='citation':return '[cite:'+attrs.get('citationId','')+']'
+        if kind=='inlineFormula':return '$'+(attrs.get('latex') or attrs.get('expression',''))+'$'
         if kind=='hardBreak':return '  \n'
         if kind=='crossReference':
             target=resolve_reference(figure_rows,attrs,section_id)
@@ -113,11 +122,11 @@ def markdown_document(doc,figure_rows=None,section_id=None):
         kind=n['type'];attrs=n.get('attrs',{})
         if kind=='heading':return '#'*min(int(attrs.get('level',2))+1,6)+' '+inline(n)
         if kind=='paragraph':return inline(n)
-        if kind=='formula':return '$$\n'+attrs.get('expression','')+'\n$$'
+        if kind=='formula':return '$$\n'+(attrs.get('latex') or attrs.get('expression',''))+'\n$$'
         if kind=='figure':
             row=next((r for r in figure_rows if r['section_id']==section_id and r['node_id']==attrs.get('nodeId')),None)
             title=((row['label']+' ') if row else '')+attrs.get('caption','图表')
-            return '!['+title+'](图-'+attrs.get('artifactId','')+'.png)'+('\n\n'+title if row else '')
+            return '!['+title+'](图-'+(attrs.get('assetVersionId') or attrs.get('artifactId',''))+'.png)'+('\n\n'+title if row else '')
         if kind=='blockquote':return '\n'.join('> '+line for line in inline(n).splitlines())
         if kind=='table':
             rows=[[' '.join(inline(c).splitlines()).replace('|','\\|') for c in row.get('content',[])] for row in n.get('content',[])]

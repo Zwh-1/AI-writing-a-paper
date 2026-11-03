@@ -39,4 +39,6 @@ def load(pid, sid, query=''):
         mode = 'recent'
     for item in items:
         item['linked'] = item['id'] in source_ids
-    return {'items': items, 'mode': mode}
+    from .section_materials import list_records
+    products=list_records(pid,sid,query)
+    return {'items': items, 'mode': mode,'products':products}

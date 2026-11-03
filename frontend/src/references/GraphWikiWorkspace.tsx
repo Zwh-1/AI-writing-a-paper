@@ -37,6 +37,8 @@ const stateLabel: Record<string, string> = {
 };
 const pageLabel: Record<string, string> = {
   document: "文献",
+  author: "作者",
+  keyword: "关键词",
   concept: "概念",
   method: "方法",
   topic: "主题",

@@ -253,6 +253,9 @@ def pool_generate(system,user,images=None,on_retry=None):
         tried=endpoints
     for ep in tried:
         used_endpoint_ids.append(ep.get('id'))
+        # 故障切换到新端点时自动适配该 API 的计价结构，避免因缺失报价而阻断。
+        from . import deepseek_profiles
+        ep = deepseek_profiles._autobind_pricing(ep)
         for attempt in range(same_retry+1):
             last_attempt=attempt
             try:
@@ -296,27 +299,22 @@ def read_generation(r,c,path,body):
     try: data=r.json()
     except ValueError as e: raise ProviderError('中转站没有返回有效 JSON',unknown=True) from e
     if not isinstance(data,dict):raise ProviderError('中转站响应不是JSON对象，执行费用未知',unknown=True)
+    from . import adapter
     if protocol=='responses':
-        text=''.join(p.get('text','') for item in data.get('output',[]) for p in item.get('content',[]) if p.get('type')=='output_text');finish=data.get('status');usage=data.get('usage',{})
+        text=''.join(p.get('text','') for item in data.get('output',[]) for p in item.get('content',[]) if p.get('type')=='output_text');finish=data.get('status');raw_usage=data.get('usage',{})
+        normalized=adapter.normalize_usage(raw_usage)
+        usage={'input_tokens':normalized['input_tokens'],'output_tokens':normalized['output_tokens'],'raw':raw_usage}
     else:
         choices=data.get('choices',[])
         if not choices: raise ProviderError('中转站未返回 choices，执行费用未知',unknown=True)
-        text=choices[0].get('message',{}).get('content') or '';finish=choices[0].get('finish_reason');u=data.get('usage',{})
-        usage={'input_tokens':u.get('prompt_tokens'),'output_tokens':u.get('completion_tokens'),'raw':u}
+        text=choices[0].get('message',{}).get('content') or '';finish=choices[0].get('finish_reason');raw_usage=data.get('usage',{})
+        normalized=adapter.normalize_usage(raw_usage)
+        usage={'input_tokens':normalized['input_tokens'],'output_tokens':normalized['output_tokens'],'raw':raw_usage}
     cost=usage_cost(c,usage)
     result={'text':text,'usage':usage,'cost':cost,'remote_id':data.get('id'),'response_evidence':response_evidence(r,data),'request_hash':hashlib.sha256(db.dumps({'path':path,'body':body}).encode()).hexdigest()}
     if finish in ('length','MAX_TOKENS','incomplete'):raise ProviderError('模型输出被截断，请减少单次篇幅或调整输出上限',response_result=result)
     if not text:raise ProviderError('模型返回内容为空',response_result=result)
     return result
-
-def usage_cost(cfg,usage):
-    """A rate calculation is an estimate; malformed usage is never a zero bill."""
-    import math
-    if not isinstance(usage,dict):return None
-    if not all(type(usage.get(k)) is int and usage[k]>=0 for k in ('input_tokens','output_tokens')):return None
-    if not all(type(cfg.get(k)) in (int,float) and math.isfinite(cfg[k]) and cfg[k]>=0 for k in ('input_price','output_price')):return None
-    amount=(usage['input_tokens']*cfg['input_price']+usage['output_tokens']*cfg['output_price'])/1e6
-    return amount if math.isfinite(amount) else None
 
 def response_evidence(response,data):
     """Keep a reproducible response fingerprint without raw headers or secrets."""
@@ -422,36 +420,124 @@ def parse_json(text):
 
 
 def usage_endpoint(base_url):
-    """Match the relay contract supplied by the user; no /v1 duplication."""
-    return base_url.rstrip('/').removesuffix('/v1')+'/v1/usage'
+    """Match the relay contract supplied by the user; no /v1 duplication.
+
+    Uses the API-family classifier so every endpoint in a family gets the same
+    contract regardless of custom subdomains. Falls back to the legacy rules
+    for endpoints the adapter cannot classify.
+    """
+    from . import adapter
+    base = base_url.rstrip('/').removesuffix('/v1')
+    family = adapter.detect_api_family(base_url)
+    if family == adapter.FAMILY_DEEPSEEK_OFFICIAL:
+        return base + '/v1/user/balance'
+    if family in (adapter.FAMILY_NEW_API, adapter.FAMILY_X5M5X):
+        return base + '/v1/dashboard/billing/subscription'
+    # Legacy host heuristics for unclassified relays.
+    if 'deepseek.com' in base:
+        return base + '/v1/user/balance'
+    if 'new.' in base or 'x5m5x.com' in base and not base.startswith('https://api.'):
+        return base + '/v1/dashboard/billing/subscription'
+    return base + '/v1/usage'
+
+
+def usage_statistics_endpoint(base_url):
+    """Request accounting totals are distinct from the account balance resource.
+
+    Relays that expose the legacy per-model statistics contract use /v1/usage.
+    Unsupported services fail closed in reconciliation; a balance is never
+    interpreted as evidence for completed request costs.
+    """
+    return base_url.rstrip('/').removesuffix('/v1') + '/v1/usage'
+
 
 def normalize_account_usage(response):
-    from decimal import Decimal,InvalidOperation
+    """Normalize any vendor balance response through the adapter.
+
+    Preserves the exact legacy contract (is_valid, remaining_exact, unit,
+    validity_source, unit_source) while making it robust to family-specific
+    field names. Unknown or malformed amounts are never silently zeroed.
+    """
+    from . import adapter
+    if not isinstance(response, dict):
+        raise ProviderError('余额接口未返回JSON对象')
+    try:
+        result = adapter.normalize_balance(response)
+    except ValueError as error:
+        raise ProviderError(str(error)) from error
+    return result
+
+
+def usage_cost(cfg, usage):
+    """A rate calculation is an estimate; malformed usage is never a zero bill.
+
+    Family defaults are consulted ONLY when the configuration carries an
+    explicit adaptive pricing basis (endpoint_probe / endpoint_configured /
+    family_default_conservative_estimate). A plain configuration with no
+    bound pricing evidence keeps the original semantics: if prices are missing,
+    the cost is unknown (None) and the reservation ceiling applies.
+    """
     import math
-    if not isinstance(response,dict):raise ProviderError('余额接口未返回JSON对象')
-    payload=response
-    if not any(k in response for k in ('remaining','quota','balance','is_active','isValid')) and isinstance(response.get('data'),dict):payload=response['data']
-    quota=payload.get('quota') if isinstance(payload.get('quota'),dict) else {}
-    def first(*values):return next((v for v in values if v is not None),None)
-    amount=first(payload.get('remaining'),quota.get('remaining'),payload.get('balance'))
-    exact=None;numeric=None
-    if amount is not None:
-        if isinstance(amount,bool) or not isinstance(amount,(str,int,float)):raise ProviderError('余额字段不是有效数值，未按零余额处理')
-        try:
-            decimal=Decimal(str(amount).strip())
-            if not decimal.is_finite():raise InvalidOperation
-            numeric=float(decimal)
-            if not math.isfinite(numeric):raise InvalidOperation
-            exact=format(decimal,'f')
-        except (InvalidOperation,ValueError,OverflowError) as error:raise ProviderError('无法解析余额字段，未按零余额处理') from error
-    reported=first(payload.get('is_active'),payload.get('isValid'))
-    if reported is None:valid=True;validity_source='default_assumed'
-    elif isinstance(reported,bool):valid=reported;validity_source='response'
-    elif reported in (0,1):valid=bool(reported);validity_source='response'
-    elif isinstance(reported,str) and reported.strip().lower() in ('true','false','1','0'):valid=reported.strip().lower() in ('true','1');validity_source='response'
-    else:valid=None;validity_source='unrecognized'
-    supplied_unit=first(payload.get('unit'),quota.get('unit'));unit=str(supplied_unit) if isinstance(supplied_unit,(str,int,float)) else 'USD'
-    return {'is_valid':valid,'validity_source':validity_source,'remaining':numeric,'remaining_exact':exact,'unit':unit,'unit_source':'response' if supplied_unit is not None else 'default_USD','balance_known':exact is not None,'response_scope':'data' if payload is not response else 'root'}
+    if not isinstance(usage, dict):
+        return None
+    if not all(type(usage.get(k)) is int and usage[k] >= 0 for k in ('input_tokens', 'output_tokens')):
+        return None
+    cfg = dict(cfg or {})
+    # Resolve any missing price only when an adaptive basis was bound.
+    if not all(type(cfg.get(k)) in (int, float) and math.isfinite(cfg[k]) and cfg[k] >= 0 for k in ('input_price', 'output_price')):
+        basis = cfg.get('expense_pricing_basis') or cfg.get('pricing_evidence') or {}
+        if isinstance(basis, dict) and basis.get('kind') in ('endpoint_configured', 'endpoint_probe', 'family_default_conservative_estimate'):
+            for name in ('input_price', 'output_price'):
+                if not (type(cfg.get(name)) in (int, float) and math.isfinite(cfg[name]) and cfg[name] >= 0):
+                    if type(basis.get(name)) in (int, float) and math.isfinite(basis[name]) and basis[name] >= 0:
+                        cfg[name] = basis[name]
+    if not all(type(cfg.get(k)) in (int, float) and math.isfinite(cfg[k]) and cfg[k] >= 0 for k in ('input_price', 'output_price')):
+        return None
+    amount = (usage['input_tokens'] * cfg['input_price'] + usage['output_tokens'] * cfg['output_price']) / 1e6
+    return amount if math.isfinite(amount) else None
+
+
+def auto_bind_pricing(cfg, key=None, response=None):
+    """Attempt to resolve pricing for a freshly switched endpoint.
+
+    Priority:
+      1. Explicit configured input_price/output_price.
+      2. Family default (safety fallback, marked as such).
+      3. Pricing extracted from a provider response (e.g. balance/pricing body).
+
+    Returns a tuple (resolved_cfg, source_marker) where source_marker is one of
+    'configured', 'family_default', 'response_extracted', 'unresolved'.
+    """
+    import math
+    from . import adapter
+    cfg = dict(cfg or {})
+    resolved = dict(cfg)
+    if all(type(resolved.get(k)) in (int, float) and math.isfinite(resolved[k]) and resolved[k] >= 0
+           for k in ('input_price', 'output_price')):
+        return resolved, 'configured'
+    # Try extracting from a response body when available.
+    if isinstance(response, dict):
+        pricing = adapter.normalize_pricing(response)
+        if pricing:
+            for k in ('input_price', 'output_price'):
+                if not (type(resolved.get(k)) in (int, float) and math.isfinite(resolved[k]) and resolved[k] >= 0):
+                    if pricing.get(k) is not None:
+                        resolved[k] = pricing[k]
+            resolved.setdefault('currency', pricing.get('currency', resolved.get('currency', 'USD')))
+            if all(type(resolved.get(k)) in (int, float) and math.isfinite(resolved[k]) and resolved[k] >= 0
+                   for k in ('input_price', 'output_price')):
+                return resolved, 'response_extracted'
+    # Family default as the final safety net.
+    family = adapter.detect_api_family(cfg.get('base_url'), cfg.get('model'))
+    defaults = adapter.default_pricing(family, cfg.get('model'))
+    if any(defaults.get(k) is not None for k in ('input_price', 'output_price')):
+        for k in ('input_price', 'output_price'):
+            if not (type(resolved.get(k)) in (int, float) and math.isfinite(resolved[k]) and resolved[k] >= 0):
+                if defaults.get(k) is not None:
+                    resolved[k] = defaults[k]
+        resolved.setdefault('currency', defaults.get('currency', resolved.get('currency', 'USD')))
+        return resolved, 'family_default'
+    return resolved, 'unresolved'
 
 @frozen_request
 def account_usage():

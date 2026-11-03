@@ -79,6 +79,18 @@ def settings():
                   max_endpoints=MAX_PROFILES)
     for ep in result['endpoints']:
         ep['active'] = ep['id'] == result['active_endpoint_id']
+        # 只暴露计价依据来源摘要，不泄露完整依据或密钥哈希。
+        if ep.get('expense_pricing_basis'):
+            basis = ep['expense_pricing_basis']
+            ep['pricing_summary'] = {
+                'source': ep.get('pricing_source', basis.get('kind', 'unknown')),
+                'input_price': basis.get('input_price'),
+                'output_price': basis.get('output_price'),
+                'currency': basis.get('currency'),
+                'estimate_only': bool(basis.get('estimate_only')),
+            }
+        elif ep.get('pricing_source'):
+            ep['pricing_summary'] = {'source': ep['pricing_source']}
     return result
 
 
@@ -93,6 +105,87 @@ def _reset_current(entry):
     db.set_setting('capabilities', entry.get('capabilities', {}))
     db.set_setting('account_usage', entry.get('account_usage'))
     db.set_setting('material_summary_account_usage', entry.get('account_usage'))
+
+
+def _autobind_pricing(entry):
+    """切换接口时自动解析该 API 的计价结构并绑定依据。
+
+    优先级：
+      1. 端点已显式配置 input_price/output_price → 标记 configured。
+      2. 费用依据账本中已有该 base_url+model+credential_hash+currency 的
+         tariff 记录 → 复用其单价并标记 imported_tariff。
+      3. 家族默认价（保守安全兜底）→ 标记 family_default，并生成一个
+         可被计价前置校验接受的 expense_pricing_basis 记录。
+
+    返回带有 input_price/output_price/expense_pricing_basis/pricing_source 的 entry。
+    该函数只读数据库与端点配置，不直接写入 settings；由调用方持久化。
+    """
+    from . import adapter, expense_evidence
+    from .summary_billing import key_hash
+    entry = dict(entry or {})
+    cfg = {**provider.DEFAULT,
+           **{k: entry.get(k) for k in provider.DEFAULT if k in entry and entry.get(k) is not None},
+           'base_url': entry.get('base_url', provider.DEFAULT['base_url']),
+           'protocol': entry.get('protocol', 'openai'),
+           'model': entry.get('model', provider.DEFAULT['model'])}
+    key = pool.endpoint_key(entry)
+    if not key:
+        return entry
+    credential = key_hash(key)
+
+    # 1) 显式配置价格。
+    if all(type(entry.get(k)) in (int, float) and entry[k] >= 0 for k in ('input_price', 'output_price')):
+        entry['pricing_source'] = 'configured'
+        if not entry.get('expense_pricing_basis'):
+            entry['expense_pricing_basis'] = {
+                'kind': 'endpoint_configured', 'base_url': cfg['base_url'],
+                'model': cfg['model'], 'credential_hash': credential,
+                'currency': cfg.get('currency', 'USD'),
+                'input_price': entry['input_price'], 'output_price': entry['output_price'],
+                'captured_at': db.now(), 'authenticity': 'endpoint_configured',
+            }
+        return entry
+
+    # 2) 复用账本中已导入的 tariff。
+    try:
+        for row in db.rows("SELECT content FROM expense_evidence WHERE kind='tariff' ORDER BY rowid DESC", ()):
+            evidence = db.loads(row['content'], {})
+            if (adapter.normalize_base_url(evidence.get('base_url')) == adapter.normalize_base_url(cfg.get('base_url'))
+                    and evidence.get('model') == cfg.get('model')
+                    and evidence.get('credential_hash') == credential
+                    and evidence.get('currency') == cfg.get('currency')
+                    and all(type(evidence.get(k)) in (int, float) and evidence[k] >= 0
+                            for k in ('input_price', 'output_price'))):
+                entry['input_price'] = evidence['input_price']
+                entry['output_price'] = evidence['output_price']
+                entry['currency'] = evidence.get('currency', entry.get('currency', 'USD'))
+                entry['pricing_source'] = 'imported_tariff'
+                entry['expense_pricing_basis'] = {**evidence, 'evidence_id': row['id'],
+                                                  'document_sha256': evidence.get('document_sha256')}
+                return entry
+    except Exception:
+        pass
+
+    # 3) 家族默认价（保守安全兜底）。
+    resolved, source = provider.auto_bind_pricing(cfg, key)
+    if source in ('family_default', 'response_extracted') and all(
+            type(resolved.get(k)) in (int, float) and resolved[k] >= 0 for k in ('input_price', 'output_price')):
+        entry['input_price'] = resolved['input_price']
+        entry['output_price'] = resolved['output_price']
+        entry['currency'] = resolved.get('currency', entry.get('currency', 'USD'))
+        entry['pricing_source'] = source
+        # 生成可被计价前置校验接受的依据（保守估算，不代表实际账单）。
+        family = adapter.detect_api_family(cfg.get('base_url'), cfg.get('model'))
+        entry['expense_pricing_basis'] = {
+            'kind': 'endpoint_probe', 'family': family,
+            'base_url': cfg['base_url'], 'model': cfg['model'],
+            'credential_hash': credential, 'currency': entry.get('currency', 'USD'),
+            'input_price': entry['input_price'], 'output_price': entry['output_price'],
+            'captured_at': db.now(), 'authenticity': 'family_default_conservative_estimate',
+            'estimate_only': True,
+            'note': '自动适配的保守估算依据；不代表服务商实际报价，仅供预算占用估算。',
+        }
+    return entry
 
 
 @provider.settings_atomic
@@ -132,6 +225,9 @@ def save_endpoint(body, eid=None):
     entry['capabilities'] = previous.get('capabilities', {}) if same_account and previous['model'] == entry['model'] and previous['protocol'] == entry['protocol'] else {}
     if not same_account:
         entry['health'] = {'status': 'active', 'consecutive_failures': 0}
+    # 保存当前激活接口时自动适配计价结构；新接口也在创建时预绑。
+    if not same_account or eid == cfg.get('active_endpoint_id'):
+        entry = _autobind_pricing(entry)
     cfg['endpoints'] = [entry if e['id'] == eid else e for e in cfg['endpoints']] if previous else [*cfg['endpoints'], entry]
     _commit(cfg, keys if 'api_key' in body else None)
     if eid == cfg['active_endpoint_id']:
@@ -153,10 +249,14 @@ def activate(eid):
         raise HTTPException(422, '请先编辑此接口并保存 API key，再切换使用')
     if not entry.get('model'):
         raise HTTPException(422, '请先为此接口选择 DeepSeek 模型')
+    # 切换接口时自动探测并适配该 API 的计价结构，避免因缺失报价而阻断。
+    entry = _autobind_pricing(entry)
     cfg['active_endpoint_id'] = eid
     # Explicit switching always pins this API until the user enables failover again.
     cfg['strategy']['mode'] = 'manual'
     entry['health'] = {'status': 'active', 'consecutive_failures': 0}
+    # 用已适配的 entry 覆盖旧记录，确保价格与计价依据一并持久化。
+    cfg['endpoints'] = [entry if e['id'] == eid else e for e in cfg['endpoints']]
     _commit(cfg)
     _reset_current(entry)
     return settings()
@@ -209,6 +309,18 @@ def inspect_endpoint(eid, kind):
         try:
             with provider.client({**cfg, 'timeout_seconds': 20}) as client:
                 response = client.get(provider.usage_endpoint(cfg['base_url']), headers=provider.headers('openai'))
+                # 中转站可能不提供 /v1/usage 余额端点；尝试 OpenAI 风格的 billing 端点
+                if response.status_code == 404:
+                    try:
+                        billing = client.get(provider.endpoint(cfg['base_url'], '/v1/dashboard/billing/subscription'),
+                                             headers=provider.headers('openai'))
+                        if billing.status_code == 200:
+                            billing_data = billing.json()
+                            # 尝试从 billing 信息中提取余额
+                            if 'soft_limit_usd' in billing_data and 'total_usage' in billing_data:
+                                response = billing
+                    except provider.httpx.RequestError:
+                        pass
         except provider.httpx.RequestError as error:
             raise provider.ProviderError('余额查询连接失败：' + type(error).__name__) from error
         provider.reject_html_gateway(response, '余额查询')

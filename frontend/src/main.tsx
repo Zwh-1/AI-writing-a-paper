@@ -1,16 +1,31 @@
+import { ExportActions, ExportFiles } from "./exports/ExportArtifacts";
+import { listenWorkspace } from "./workspace/WorkspaceContext";
+import AssetWorkspace from './assets/AssetWorkspace';
+import ProductLink from './products/ProductLink';
+import ResearchSettings from './settings/ResearchSettings';
+import ResearchSync from './settings/ResearchSync';
+import {useTask} from './tasks/useCommand';
 import SentenceLocator from "./SentenceLocator";
 import WritingSources from "./WritingSources";
 import PaperVisualsButton from "./PaperVisuals";
 import { lazy, Suspense } from "react";
 import WorkspaceDialog from "./workspace/WorkspaceDialog";
+import ProjectWorkspaceNavigation from "./workspace/ProjectWorkspaceNavigation";
+import { projectWorkspaces, projectPageLabel, projectBreadcrumb, readWorkspacePage, rememberWorkspacePage, workspaceForPage } from "./workspace/projectNavigation";
 import type { ViewMutationRecord } from "@tiptap/pm/view";
 import OutlineWorkspace from "./outline/OutlineWorkspace";
 import { PaperWritingButton, PaperTaskDialog } from "./paper/PaperWriting";
 import DocumentPreview from "./paper/DocumentPreview";
+import EvidenceTrace from "./writing/EvidenceTrace";
 const RulesWorkspace = lazy(() => import("./RulesWorkspace"));
 const MaterialsWorkspace = lazy(() => import("./materials/MaterialsWorkspace"));
 const AgentWriting = lazy(() => import("./AgentWriting"));
 const ReferencesWorkspace = lazy(() => import("./references/ReferencesWorkspace"));
+const ResearchStudio = lazy(() => import("./studio/Studio"));
+const ProductWorkspace = lazy(() => import('./products/ProductWorkspace'));
+import EditorTools from "./editor/EditorTools";
+import { InlineMath, CommentRanges } from "./editor/EditorExtensions";
+import "./studio/studio.css";
 import GptFallbackSettings from "./GptFallbackSettings";
 import ImageGenerationSettings from "./ImageGenerationSettings";
 import DeepSeekSettings from "./DeepSeekSettings";
@@ -98,6 +113,7 @@ import {
   Wallet,
 } from "lucide-react";
 import "./styles.css";
+import "./workspace/projectWorkspace.css";
 import { LockedNodes } from "./editorLocks";
 type Row = Record<string, any>;
 import { apiUrl, api, send, setCsrf } from "./client";
@@ -293,6 +309,12 @@ function JsonDetail({ value }: { value: unknown }) {
   return <pre className="technical">{JSON.stringify(value, null, 2)}</pre>;
 }
 function useLoad(path: string | null, refresh = 0) {
+  const [resourceEpoch,setResourceEpoch]=useState(0);
+  useEffect(()=>{
+    const changed=(event:Event)=>{const pid=(event as CustomEvent).detail?.project_id;if(path&&(!pid||path.includes('/projects/'+pid+'/')||!path.startsWith('/projects/')))setResourceEpoch(value=>value+1);};
+    window.addEventListener('paper-resource-changed',changed);
+    return()=>window.removeEventListener('paper-resource-changed',changed);
+  },[path]);
   const [data, setData] = useState<any>(null);
   const [error, setError] = useState("");
   const requestVersion = useRef(0);
@@ -319,7 +341,7 @@ function useLoad(path: string | null, refresh = 0) {
     return () => {
       alive = false;
     };
-  }, [path, refresh]);
+  }, [path, refresh,resourceEpoch]);
   return { data, error, set };
 }
 function PageTitle({
@@ -327,23 +349,31 @@ function PageTitle({
   title,
   description,
   actions,
+  workspace,
 }: {
   eyebrow?: string;
   title: string;
   description?: string;
   actions?: ReactNode;
+  workspace?: string;
 }) {
+  const { setPage } = useApp();
   return (
-    <div className="page-title">
+    <><div className="page-title">
       <div>
         <div className="eyebrow">{eyebrow ?? "PAPER WORKBENCH"}</div>
         <h1>{title}</h1>
         {description && <p>{description}</p>}
       </div>
       <div className="actions">{actions}</div>
-    </div>
+    </div>{workspace && <ProjectWorkspaceNavigation page={workspace} onNavigate={setPage} />}</>
   );
 }
+function WorkspaceLoading({ page, message }: { page: string; message: string }) {
+  const { setPage } = useApp();
+  return <><ProjectWorkspaceNavigation page={page} onNavigate={setPage} /><p role="status">{message}</p></>;
+}
+
 const taskVerified = (task: Row) =>
   Boolean(task.acknowledged_at) || task.status === "acknowledged";
 function taskGroups(tasks: Row[]) {
@@ -375,47 +405,20 @@ function formValues(e: FormEvent<HTMLFormElement>) {
     string
   >;
 }
-const sourceNavPages = [
-  { id: "materials", label: "资料中心" },
-  { id: "rules", label: "论文规则" },
-  { id: "references", label: "文献与知识" },
-] as const;
-type SourceNavPage = (typeof sourceNavPages)[number]["id"];
-const isSourcePage = (value: string): value is SourceNavPage =>
-  sourceNavPages.some((item) => item.id === value);
-const sourcePageLabel = (value: string) =>
-  sourceNavPages.find((item) => item.id === value)?.label;
-const sourceSubPageKey = (pid: string) => `paper-source-subpage:${pid}`;
 const nav: {
   id: string;
   label: string;
   Icon: typeof LayoutDashboard;
-  pages?: readonly { id: string; label: string }[];
+  pages?: readonly { id: string; title: string }[];
 }[] = [
   { id: "overview", label: "项目概览", Icon: LayoutDashboard },
-  {
-    id: "materials",
-    label: "资料与文献",
-    Icon: Library,
-    pages: sourceNavPages,
-  },
-  { id: "outline", label: "提纲与计划", Icon: ListTree },
-  { id: "editor", label: "写作工作台", Icon: PenLine },
-  { id: "agent-writing", label: "有据写作", Icon: BookOpen },
-  { id: "research", label: "研究与成果", Icon: FlaskConical },
-  { id: "review", label: "修改与检查", Icon: ClipboardCheck },
-  { id: "exports", label: "排版与交付", Icon: Download },
-  { id: "advanced", label: "高级研究与协作", Icon: Activity },
+  ...projectWorkspaces.map((group) => ({
+    id: group.id,
+    label: group.label,
+    Icon: group.icon,
+    pages: group.pages,
+  })),
 ];
-function navLabel(page: string) {
-  const entry = nav.find((item) =>
-    item.pages
-      ? item.pages.some((sub) => sub.id === page)
-      : item.id === page,
-  );
-  if (!entry) return "";
-  return entry.pages ? `${entry.label} · ${sourcePageLabel(page)}` : entry.label;
-}
 function App() {
   const [ready, setReady] = useState(false),
     [authError, setAuthError] = useState(""),
@@ -429,6 +432,12 @@ function App() {
     [taskDetail, setTaskDetail] = useState<Row | null>(null),
     [allTasks, setAllTasks] = useState<Row[]>([]);
   const lastTaskSig = useRef("");
+  const navigationProject = useRef(pid);
+  useEffect(()=>listenWorkspace((projectId,location)=>{
+    if(projectId!==pid)return;
+    if(location.sectionId)localStorage.setItem('paper_section',location.sectionId);
+    setPage(location.page);
+  }),[pid]);
   useEffect(() => {
     const navigate = (event: Event) => {
       const detail = (event as CustomEvent<{ pid: string; location: SourceLocation }>).detail;
@@ -438,8 +447,18 @@ function App() {
     return () => window.removeEventListener(SOURCE_NAVIGATION, navigate);
   }, [pid]);
   useEffect(() => {
-    if (pid && isSourcePage(page))
-      sessionStorage.setItem(sourceSubPageKey(pid), page);
+    if (navigationProject.current !== pid) {
+      navigationProject.current = pid;
+      const group = workspaceForPage(page);
+      if (group) {
+        const restored = readWorkspacePage(pid, group);
+        if (restored !== page) {
+          setPage(restored);
+          return;
+        }
+      }
+    }
+    rememberWorkspacePage(pid, page);
   }, [pid, page]);
   const { data: projects, set: setProjects } = useLoad(
     ready ? "/projects" : null,
@@ -623,7 +642,7 @@ function App() {
             </button>
           </div>
           <div className="nav-label">创作空间</div>
-          <nav>
+          <nav aria-label="项目功能导航">
             {nav.map(({ id, label, Icon, pages }) => {
               const current = pages?.some((item) => item.id === page)
                 ? page
@@ -632,29 +651,27 @@ function App() {
               return (
                 <button
                   key={id}
+                  type="button"
                   className={active ? "active" : ""}
+                  aria-label={label}
+                  aria-describedby={current ? `sidebar-location-${id}` : undefined}
                   aria-current={active ? "page" : undefined}
                   title={
                     pages
-                      ? `${label}：${pages.map((item) => item.label).join(" / ")}`
+                      ? `${label}：${pages.map((item) => item.title).join(" / ")}`
                       : label
                   }
                   onClick={() => {
                     if (!pages) return setPage(id);
                     if (current) return;
-                    const saved = sessionStorage.getItem(
-                      sourceSubPageKey(pid),
-                    );
-                    setPage(
-                      pages.find((item) => item.id === saved)?.id ??
-                        pages[0].id,
-                    );
+                    const group = projectWorkspaces.find((item) => item.id === id);
+                    if (group) setPage(readWorkspacePage(pid, group));
                   }}
                 >
                   <Icon size={18} />
                   <span className="nav-copy">
                     {label}
-                    {current && <small>{sourcePageLabel(current)}</small>}
+                    {current && <small id={`sidebar-location-${id}`}>{projectPageLabel(current)}</small>}
                   </span>
                   {active && <span className="nav-dot" />}
                 </button>
@@ -670,6 +687,8 @@ function App() {
             </div>
             <button
               className={page === "settings" ? "active" : ""}
+              aria-label="接口与设置"
+              aria-current={page === "settings" ? "page" : undefined}
               onClick={() => setPage("settings")}
             >
               <Settings size={18} />
@@ -683,7 +702,7 @@ function App() {
               我的研究空间
               <ChevronRight size={14} />
               <span>
-                {page === "settings" ? "接口与设置" : navLabel(page)}
+                {projectBreadcrumb(page)}
               </span>
             </div>
             <div className="topbar-right">
@@ -721,12 +740,14 @@ function App() {
                 {page === "rules" && <Rules />}
                 {page === "outline" && <Outline />}
                 {page === "editor" && <Writing />}
-                {page === "agent-writing" && <Suspense fallback={<p>正在打开有据写作…</p>}><AgentWriting pid={pid} tick={tick} onOpenEditor={(sectionId)=>{localStorage.setItem("paper_section",sectionId);setPage("editor");}} onOpenResearch={()=>setPage("research")} onOpenProject={()=>setPage("overview")} onOpenSettings={()=>setPage("settings")} onOpenRules={()=>setPage("rules")} /></Suspense>}
+                {page === "agent-writing" && <Suspense fallback={<WorkspaceLoading page="agent-writing" message="正在打开有据写作…" />}><AgentWriting pid={pid} tick={tick} navigation={<ProjectWorkspaceNavigation page={page} onNavigate={setPage} />} onOpenEditor={(sectionId)=>{localStorage.setItem("paper_section",sectionId);setPage("editor");}} onOpenResearch={()=>setPage("research")} onOpenProject={()=>setPage("overview")} onOpenSettings={()=>setPage("settings")} onOpenRules={()=>setPage("rules")} /></Suspense>}
                 {page === "research" && <Research />}
+                {page === "studio" && <Suspense fallback={<WorkspaceLoading page="studio" message="正在打开研究助手…" />}><ResearchStudio key={pid} pid={pid} navigation={<ProjectWorkspaceNavigation page={page} onNavigate={setPage} />} onOpenSection={(sectionId)=>{localStorage.setItem("paper_section",sectionId);setPage("editor");}} /></Suspense>}
+                {page === 'products' && <Suspense fallback={<WorkspaceLoading page="products" message="正在读取项目产物…" />}><ProductWorkspace key={pid} pid={pid} navigation={<ProjectWorkspaceNavigation page={page} onNavigate={setPage} />}/></Suspense>}
                 {page === "references" && <References />}
                 {page === "review" && <Review />}
                 {page === "exports" && <Exports />}
-                {page === "advanced" && <AdvancedPage pid={pid} tick={tick} onProjectImported={(id)=>{setPid(id);refresh();}} />}
+                {page === "advanced" && <AdvancedPage key={pid} pid={pid} tick={tick} navigation={<ProjectWorkspaceNavigation page={page} onNavigate={setPage} />} onProjectImported={(id)=>{setPid(id);refresh();}} />}
               </>
             )}
           </main>
@@ -1383,7 +1404,7 @@ function Overview() {
 }
 function Materials() {
   const { pid, tick, act, notify, refresh, setPage } = useApp();
-  return <Suspense fallback={<div className="panel muted" role="status">正在打开资料中心…</div>}><MaterialsWorkspace key={pid} pid={pid} tick={tick} act={act} notify={notify} refresh={refresh} onRules={() => setPage("rules")} renderSource={(file, onClose) => <SourceViewer file={file} onClose={onClose} />} /></Suspense>;
+  return <Suspense fallback={<WorkspaceLoading page="materials" message="正在打开资料中心…" />}><MaterialsWorkspace key={pid} pid={pid} tick={tick} act={act} notify={notify} refresh={refresh} onRules={() => setPage("rules")} renderSource={(file, onClose) => <SourceViewer file={file} onClose={onClose} />} /></Suspense>;
 }
 function SourceViewer({ file, onClose }: { file: Row; onClose: () => void }) {
   const { tick, act, notify } = useApp();
@@ -1613,7 +1634,7 @@ function SourceViewer({ file, onClose }: { file: Row; onClose: () => void }) {
 }
 function Rules() {
   const { pid, tick, act, setPage, refresh } = useApp();
-  return <Suspense fallback={<div className="panel muted" role="status">正在打开论文规则…</div>}><RulesWorkspace pid={pid} tick={tick} act={act} refresh={refresh} onMaterials={()=>setPage("materials")} onTasks={()=>document.querySelector<HTMLButtonElement>(".task-trigger")?.click()} renderSource={(file,onClose)=><SourceViewer file={file} onClose={onClose}/>}/></Suspense>;
+  return <Suspense fallback={<WorkspaceLoading page="rules" message="正在打开论文规则…" />}><RulesWorkspace pid={pid} tick={tick} act={act} refresh={refresh} onMaterials={()=>setPage("materials")} onTasks={()=>document.querySelector<HTMLButtonElement>(".task-trigger")?.click()} renderSource={(file,onClose)=><SourceViewer file={file} onClose={onClose}/>}/></Suspense>;
 }
 
 function Outline() {
@@ -1624,6 +1645,7 @@ function Outline() {
       pid={pid}
       tick={tick}
       act={act}
+      navigation={<ProjectWorkspaceNavigation page="outline" onNavigate={setPage} />}
       onWrite={(sectionId) => {
         localStorage.setItem("paper_section", sectionId);
         setPage("editor");
@@ -1647,9 +1669,11 @@ const StableIds = Extension.create({
           "bulletList",
           "orderedList",
           "listItem",
+          "citation",
         ],
         attributes: {
           sourceIds: { default: [], renderHTML: () => ({}) },
+          sourceRefs: { default: [], renderHTML: () => ({}) },
           factIds: { default: [], renderHTML: () => ({}) },
           evidenceIds: { default: [], renderHTML: () => ({}) },
           knowledgeUnitIds: { default: [], renderHTML: () => ({}) },
@@ -1657,6 +1681,8 @@ const StableIds = Extension.create({
           knowledgeClaimIds: { default: [], renderHTML: () => ({}) },
           wikiVersionIds: { default: [], renderHTML: () => ({}) },
           wikiBlockIds: { default: [], renderHTML: () => ({}) },
+          claimEvidence: { default: [], renderHTML: () => ({}) },
+          claimMapping: { default: null, renderHTML: () => ({}) },
           describesFigureId: { default: "", parseHTML: (e:HTMLElement)=>e.getAttribute("data-describes-figure")||"", renderHTML:(a:Row)=>a.describesFigureId?{"data-describes-figure":a.describesFigureId}:{} },
           nodeId: {
             default: null,
@@ -1745,6 +1771,7 @@ const Figure = Node.create({
   addAttributes() {
     return {
       artifactId: { default: "" },
+      assetVersionId: { default: "" },
       caption: { default: "" },
       nodeId: { default: null },
       diagramType: { default: "" }, figurePurpose: { default: "" }, explanationNodeId: { default: "" }, relatedSectionIds: { default: [] },
@@ -1760,14 +1787,14 @@ const Figure = Node.create({
       [
         "img",
         {
-          src: artifactImages[HTMLAttributes.artifactId] ?? "",
+          src: HTMLAttributes.assetVersionId?apiUrl(`/asset-versions/${HTMLAttributes.assetVersionId}/file`):(artifactImages[HTMLAttributes.artifactId] ?? ""),
           alt: HTMLAttributes.caption,
         },
       ],
       ["figcaption", {}, HTMLAttributes.caption || "研究图表"],
     ];
   },
-  addNodeView(){return ({node})=>{let current=node;const dom=document.createElement("figure"),img=document.createElement("img"),caption=document.createElement("figcaption");dom.append(img,caption);const sync=()=>{dom.dataset.artifact=current.attrs.artifactId;img.src=artifactImages[current.attrs.artifactId]??"";img.alt=current.attrs.caption;const label=figureLabels[activeFigureSection+":"+current.attrs.nodeId];caption.textContent=(label?label+" ":"")+(current.attrs.caption||"研究图表");};sync();window.addEventListener("paper-figure-index",sync);return {dom,update(next:any){if(next.type.name!=="figure")return false;current=next;sync();return true;},ignoreMutation:()=>true,destroy(){window.removeEventListener("paper-figure-index",sync)}};}}
+  addNodeView(){return ({node})=>{let current=node;const dom=document.createElement("figure"),img=document.createElement("img"),caption=document.createElement("figcaption");dom.append(img,caption);const sync=()=>{dom.dataset.artifact=current.attrs.artifactId;img.src=current.attrs.assetVersionId?apiUrl(`/asset-versions/${current.attrs.assetVersionId}/file`):(artifactImages[current.attrs.artifactId]??"");img.alt=current.attrs.caption;const label=figureLabels[activeFigureSection+":"+current.attrs.nodeId];caption.textContent=(label?label+" ":"")+(current.attrs.caption||"研究图表");};sync();window.addEventListener("paper-figure-index",sync);return {dom,update(next:any){if(next.type.name!=="figure")return false;current=next;sync();return true;},ignoreMutation:()=>true,destroy(){window.removeEventListener("paper-figure-index",sync)}};}}
 });
 const Formula = Node.create({
   name: "formula",
@@ -1826,7 +1853,7 @@ function Writing() {
   if (!sections?.length)
     return (
       <>
-        <PageTitle title="写作工作台" />
+        <PageTitle title="写作工作台" workspace="editor" />
         <Empty
           title="先建立论文提纲"
           detail="整篇或按章写作都使用提纲安排内容，章节目标与适用规则也便于你统一核对结果。"
@@ -1842,6 +1869,7 @@ function Writing() {
     <>
       <PageTitle
         title="写作工作台"
+        workspace="editor"
         description="让每段论述有依据，让每次修改可追溯。"
         actions={
           <>
@@ -2130,6 +2158,8 @@ function RichEditor({
       CrossReference,
       Figure,
       Formula,
+      InlineMath,
+      CommentRanges,
       Footnote,
       ThesisTable.configure({ resizable: true, View: ThesisTableView }),
       TableRow,
@@ -2492,6 +2522,7 @@ function RichEditor({
         <SentenceLocator pid={pid} revisionId={revision.current} editor={editor} disabled={dirty.current}/>
         <EditorContent editor={editor} />
       </div>
+      <EditorTools pid={pid} sectionId={content.section.id} editor={editor} getRevision={()=>revision.current} ensureSaved={saveNow} assets={artifacts} files={liveInputs.data?.materials||[]} onDocumentAdopted={(saved)=>{revision.current=saved.id;seenRevisions.current.add(saved.id);dirty.current=false;editor?.commands.setContent(editorDocument(parse(saved.document)),{emitUpdate:false});localStorage.removeItem("paper_emergency_"+content.section.id);updateState("已保存");setContextRevision(value=>value+1);refresh();}} onArtifact={(artifact)=>{artifactImages[artifact.artifact_id]=apiUrl(`/projects/${pid}/studio/assets/${artifact.artifact_id}`);window.dispatchEvent(new Event("paper-figure-index"));refresh();}} />
       <div className="actions" style={{ padding: "12px 20px" }}>
         <Button
           onClick={async () => {
@@ -2639,12 +2670,8 @@ function TaskDetail({ task, onClose }: { task: Row; onClose: () => void }) {
   const [t, setT] = useState(task),
     [selected, setSelected] = useState<string[]>([]);
   const result = t.result ?? {};
-  useEffect(() => {
-    if (["running", "queued"].includes(t.status)) {
-      const id = setInterval(() => api("/tasks/" + t.id).then(setT), 2000);
-      return () => clearInterval(id);
-    }
-  }, [t.id, t.status]);
+  const observed=useTask(["running","queued"].includes(t.status)?t.id:'');
+  useEffect(()=>{if(observed.task)setT({...observed.task,result:typeof observed.task.result==='string'?JSON.parse(observed.task.result):observed.task.result});},[observed.task]);
   const [before, setBefore] = useState("");
   useEffect(() => {
     if (result.section_id)
@@ -2742,6 +2769,7 @@ function TaskDetail({ task, onClose }: { task: Row; onClose: () => void }) {
       {result.document && result.validation_error && (
         <div className="alert">{result.validation_error}</div>
       )}
+      {(result.evidence_bundle || result.writing_quality) && <EvidenceTrace pid={pid} sectionId={result.section_id} bundle={result.evidence_bundle} quality={result.writing_quality} argumentPlan={result.argument_plan} coverage={result.context_coverage} />}
       {result.document && (
         <CandidateMerge task={t} act={act} onClose={onClose} />
       )}
@@ -2863,7 +2891,8 @@ function Research() {
   return (
     <>
       <PageTitle
-        title="把真实研究，登记清楚。"
+        title="研究与成果"
+        workspace="research"
         description="计划、实现与测量分别记录，每个结论都能回到对应材料。"
         actions={
           <>
@@ -2886,6 +2915,7 @@ function Research() {
         }
       />
       <ResearchMap />
+      <AssetWorkspace key={pid} pid={pid}/>
       <section className="panel research-chain">
         <div className="section-heading"><h2>写作链路状态</h2><span>研究事实 → 章节任务 → 正文复核</span></div>
         <div className="research-chain-grid">
@@ -3132,7 +3162,7 @@ function Research() {
 function References() {
   const { pid, tick, act } = useApp();
   return (
-    <Suspense fallback={<div className="panel muted" role="status">正在打开文献与术语…</div>}>
+    <Suspense fallback={<WorkspaceLoading page="references" message="正在打开文献与知识…" />}>
       <ReferencesWorkspace
         key={pid}
         pid={pid}
@@ -3156,10 +3186,12 @@ function Review() {
   return (
     <>
       <PageTitle
-        title="让问题，停在交付之前。"
+        title="修改与检查"
+        workspace="review"
         description="程序检查与人工核对分别记录，未解决事项不会被隐藏。"
         actions={
           <>
+            <ProductLink pid={pid}/>
             <Button onClick={() => setAdding(true)}>
               <MessageSquare size={15} />
               登记导师意见
@@ -3367,10 +3399,12 @@ function Exports() {
   return (
     <>
       <PageTitle
-        title="从草稿，到可交付的文档。"
+        title="排版与交付"
+        workspace="exports"
         description="正文、引用、规则与格式一起冻结版本，在目标软件检查最终版面。"
         actions={
           <>
+            <ProductLink pid={pid}/>
             <Button
               onClick={() =>
                 act(
@@ -3503,6 +3537,7 @@ function Exports() {
           </div>
         </section>
       </div>
+      <ExportActions pid={pid} mode={writingPolicy} />
       <section className="panel mt">
         <div className="section-heading">
           <h2>导出历史</h2>
@@ -3519,41 +3554,7 @@ function Exports() {
                 {date(x.created_at)} · {x.id.slice(0, 10)}…
               </small>
             </div>
-            <a
-              className="btn"
-              href={
-                apiUrl("/exports/" +
-                x.id +
-                "/files/" +
-                encodeURIComponent("论文.docx"))
-              }
-            >
-              DOCX
-              <Download size={14} />
-            </a>
-            <a
-              className="btn"
-              href={
-                apiUrl("/exports/" +
-                x.id +
-                "/files/" +
-                encodeURIComponent("检查报告.md"))
-              }
-            >
-              检查报告
-            </a>
-            <a
-              className="btn primary"
-              href={
-                apiUrl("/exports/" +
-                x.id +
-                "/files/" +
-                encodeURIComponent("论文交付包.zip"))
-              }
-            >
-              交付包
-              <Download size={14} />
-            </a>
+            <ExportFiles item={x} />
           </div>
         ))}
         {!exports?.length && (
@@ -3679,6 +3680,8 @@ function SettingsPage() {
       <DeepSeekSettings onChanged={refresh} />
       <GptFallbackSettings pid={pid} />
       <ImageGenerationSettings />
+      <ResearchSettings key={pid} pid={pid} files={[]} onRefresh={async()=>{refresh();}}/>
+      <ResearchSync key={pid} pid={pid}/>
       <div className="settings-layout">
         <section className="panel">
           <div className="section-heading"><h2>使用说明</h2><Settings size={17} /></div>

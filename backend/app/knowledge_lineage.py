@@ -6,7 +6,7 @@ from fastapi import HTTPException
 from . import db, security, knowledge_units as units, material_policy as policy
 
 _CACHE = ContextVar('knowledge_validation', default=None)
-TABLES = {'observation':'knowledge_observations','entity':'kg_entities','entity_version':'kg_entity_versions',
+TABLES = {'reference':'bibliography','observation':'knowledge_observations','entity':'kg_entities','entity_version':'kg_entity_versions',
           'assertion':'kg_assertions','wiki_page':'wiki_pages','wiki_version':'wiki_versions','artifact':'knowledge_artifacts',
           'release':'knowledge_releases','comparison':'knowledge_comparisons','wiki_block':'wiki_blocks'}
 
@@ -68,6 +68,11 @@ def descendants_of_files(pid,file_ids):
     return result
 
 def version_of(pid,kind,identity,remote=False,seen=None):
+    from .product_adapters import EXTRA_TABLES
+    from .resource_refs import RECORD_TYPES
+    if kind in RECORD_TYPES or kind in ('source','asset','revision','summary','fact','analysis') or kind in EXTRA_TABLES:
+        from .resource_refs import version_of as resource_version
+        return resource_version(pid,kind,identity,remote,seen)
     cache=_CACHE.get();key=('version',pid,kind,identity,remote)
     if (kind,identity) in (seen or set()):fail('KNOWLEDGE_CYCLE','知识来源依赖出现循环')
     if cache is not None and ('failure',key) in cache:
@@ -85,6 +90,14 @@ def _version_of(pid, kind, identity, remote=False, seen=None):
     key=(kind,identity)
     if key in seen:fail('KNOWLEDGE_CYCLE','知识来源依赖出现循环')
     seen=seen|{key}
+    if kind=='reference':
+        row=owned(pid,kind,identity);metadata=db.loads(row['metadata'],{})
+        if metadata.get('_studio_deleted'):fail('SOURCE_STALE','书目已从当前知识库移除')
+        if row['file_id']:
+            original=db.one('SELECT active FROM files WHERE id=? AND project_id=?',(row['file_id'],pid))
+            if not original or not original['active']:fail('SOURCE_STALE','书目关联原件已停用')
+            if remote and not security.file_allows_remote(row['file_id'],pid):fail('SOURCE_ACCESS_REVOKED','书目原件禁止外发',403)
+        return digest([row['revision'],metadata,row['file_id']])
     if kind=='file':
         original,head,stamp=file_stamp(pid,identity)
         if not original['active']:fail('SOURCE_STALE','原件已归档')
@@ -196,6 +209,9 @@ def source_files(pid, refs):
         if (typ,identity) in seen:continue
         seen.add((typ,identity))
         if typ=='file':files.add(identity)
+        elif typ=='reference':
+            row=owned(pid,'reference',identity)
+            if row['file_id']:files.add(row['file_id'])
         elif typ=='unit':
             row=db.one('SELECT p.file_id FROM knowledge_units u JOIN knowledge_parses p ON p.id=u.parse_id WHERE u.id=? AND p.project_id=?',(identity,pid))
             if row:files.add(row['file_id'])
@@ -226,7 +242,10 @@ def allow_remote_history(pid,refs):
         r=queue.pop();kind,identity=r['type'],r['id']
         if (kind,identity) in seen:continue
         seen.add((kind,identity))
-        if kind=='file':
+        if kind=='reference':
+            row=owned(pid,'reference',identity)
+            if row['file_id'] and not security.file_allows_remote(row['file_id'],pid):return False
+        elif kind=='file':
             if not security.file_allows_remote(identity,pid):return False
         elif kind=='unit':
             u=db.one('SELECT p.file_id FROM knowledge_units u JOIN knowledge_parses p ON p.id=u.parse_id WHERE u.id=? AND p.project_id=?',(identity,pid))
@@ -247,6 +266,11 @@ def changed(pid, kind, identity, note):
         typ,uid=queue.pop(0)
         if (typ,uid) in seen:continue
         seen.add((typ,uid))
+        from .product_sources import dependents as product_dependents
+        queue.extend(product_dependents(pid,typ,uid))
+        for link in db.rows('SELECT DISTINCT r.id,r.kind FROM research_links l JOIN studio_records r ON r.id=l.record_id AND r.revision=l.record_revision WHERE l.project_id=? AND l.target_type=? AND l.target_id=? AND r.deleted_at IS NULL',(pid,typ,uid)):
+            db.execute("INSERT INTO research_record_states(record_id,project_id,state,note) VALUES(?,?,'stale',?) ON CONFLICT(record_id) DO UPDATE SET state='stale',note=excluded.note",(link['id'],pid,note))
+            queue.append((link['kind'],link['id']))
         if typ in ('assertion','observation','entity_version','wiki_version','wiki_block','file','unit','evidence'):
             for link in db.rows('SELECT block_id FROM wiki_links WHERE project_id=? AND target_type=? AND target_id=?',(pid,typ,uid)):
                 queue.append(('wiki_block',link['block_id']))

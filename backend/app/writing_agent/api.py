@@ -22,7 +22,7 @@ def writing_link(pid):
     facts=[]
     for fact in db.rows('SELECT * FROM facts WHERE project_id=? ORDER BY created_at',(pid,)):
         synced=evidence.sync_fact(pid,fact['id'])
-        usage=db.rows("SELECT DISTINCT s.id,s.title FROM dependencies d JOIN revisions r ON r.id=d.downstream_id JOIN sections s ON s.id=r.section_id WHERE d.project_id=? AND d.upstream_type='fact' AND d.upstream_id=? ORDER BY s.position",(pid,fact['id']))
+        usage=db.rows("SELECT DISTINCT s.id,s.title FROM dependencies d JOIN sections s ON s.current_revision_id=d.revision_id WHERE d.project_id=? AND d.upstream_type IN ('fact','knowledge:fact') AND d.upstream_id=? AND s.state!='archived' ORDER BY s.position",(pid,fact['id']))
         facts.append({**fact,'evidence_id':synced['id'],'used_by':[dict(row) for row in usage]})
     artifacts=[]
     for artifact in db.rows('SELECT * FROM artifacts WHERE project_id=? ORDER BY created_at DESC',(pid,)):
@@ -134,7 +134,9 @@ def writing_preflight(pid,section_id:str,profile_id:str|None=None,budget_limit:f
     from .launch import preflight
     return preflight(pid,section_id,profile_id,budget_limit)
 @router.get('/writing-sessions')
-def sessions(pid):security.require_project(pid);return db.rows('SELECT s.*,(SELECT COUNT(*) FROM writing_candidates c WHERE c.session_id=s.id) candidate_count FROM writing_sessions s WHERE project_id=? ORDER BY created_at DESC LIMIT 100',(pid,))
+def sessions(pid,include_materials:bool=False):
+    security.require_project(pid)
+    return db.rows("SELECT s.*,(SELECT COUNT(*) FROM writing_candidates c WHERE c.session_id=s.id) candidate_count FROM writing_sessions s WHERE project_id=?"+('' if include_materials else " AND operation!='collect_materials'")+" ORDER BY created_at DESC LIMIT 100",(pid,))
 @router.post('/writing-sessions')
 def new_session(pid,body:dict):return coordinator.create(pid,body)
 @router.get('/writing-sessions/{sid}')

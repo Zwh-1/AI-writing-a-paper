@@ -238,6 +238,9 @@ def compile_file(task,fid,mode='literal',progress=None,namespace=None):
             assertions.extend(adopted['assertion_ids']);entities.extend(adopted['entity_ids'])
         if progress:progress(index+1,len(rows))
     pages=document_page(pid,original,doc,assertions,mode) if doc and assertions else []
+    if doc:
+        from .knowledge_metadata import enrich
+        for book in db.rows("SELECT id FROM bibliography WHERE project_id=? AND file_id=? AND COALESCE(json_extract(metadata,'$._studio_deleted'),0)=0",(pid,fid)):enrich(pid,book['id'])
     return {'file_id':fid,'observation_ids':observations,'assertion_ids':assertions,'entity_ids':list(dict.fromkeys(entities+([doc['id']] if doc else []))),'page_ids':pages,'run_ids':runs,'mode':mode,'semantic_quality_verified':False}
 
 @db.atomic

@@ -1,0 +1,30 @@
+name: Verify workbench
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+jobs:
+  verify:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install dependencies
+        run: |
+          python -m pip install -r deployment/requirements.workbench.txt pytest
+          npm ci --prefix frontend --ignore-scripts --no-audit --no-fund
+      - name: Verify features and API contract
+        shell: pwsh
+        run: |
+          if ($PSVersionTable.PSVersion -le [version]'7.6.0' -or $PSVersionTable.PSEdition -ne 'Core') { throw 'Requires PowerShell > 7.6.0 Core' }
+          $env:PAPER_DATA_DIR=Join-Path $env:RUNNER_TEMP 'yantai-ci'
+          python runner.py test tests/test_studio.py tests/test_api_v2.py tests/test_reference_library.py tests/test_graph_wiki.py tests/test_document_reading.py tests/test_rag_reranking.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run build --prefix frontend
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git diff --exit-code -- frontend/package-lock.json

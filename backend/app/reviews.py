@@ -52,6 +52,11 @@ def run(pid):
     with db.transaction() as c:
         previous=[dict(r) for r in c.execute('SELECT * FROM findings WHERE project_id=?',(pid,)).fetchall()]
         if previous: c.execute('INSERT INTO project_revisions VALUES(?,?,?,?,?)',(db.uid(),pid,'review_history',db.dumps(previous),db.now()))
-        c.execute('DELETE FROM findings WHERE project_id=?',(pid,))
+        linked={r['id'] for r in c.execute("SELECT DISTINCT f.id FROM findings f WHERE f.project_id=? AND (EXISTS(SELECT 1 FROM research_links l WHERE l.project_id=f.project_id AND l.target_type='finding' AND l.target_id=f.id) OR EXISTS(SELECT 1 FROM dependencies d WHERE d.project_id=f.project_id AND d.upstream_type='knowledge:finding' AND d.upstream_id=f.id))",(pid,))}
+        for row in previous:
+            if row['id'] in linked:c.execute("UPDATE findings SET status='superseded' WHERE id=?",(row['id'],))
+            else:c.execute('DELETE FROM findings WHERE id=?',(row['id'],))
         for f in findings: c.execute('INSERT INTO findings VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',tuple(f.values()))
+    from .knowledge_lineage import changed
+    for identity in linked:changed(pid,'finding',identity,'检查已重新执行，旧检查意见及其复用内容需复查')
     return {'findings':findings,'summary':{'fail':sum(f['result']=='fail' for f in findings),'unknown':sum(f['result']=='unknown' for f in findings),'pass':sum(f['result']=='pass' for f in findings)}}

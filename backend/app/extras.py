@@ -40,7 +40,8 @@ async def import_bibliography(pid:str,file:UploadFile=File(...)):
     for meta in records:
         existing=[db.loads(r['metadata'],{}) for r in db.rows('SELECT metadata FROM bibliography WHERE project_id=?',(pid,))]
         if any((meta.get('doi') and meta['doi']==x.get('doi')) or meta['title'].casefold()==str(x.get('title','')).casefold() for x in existing):continue
-        db.execute('INSERT INTO bibliography(id,project_id,metadata,verification,created_at) VALUES(?,?,?,?,?)',(db.uid(),pid,db.dumps(meta),'unverified',db.now()));count+=1
+        from .reference_service import save as save_reference
+        save_reference(pid,meta);count+=1
     return {'imported':count,'recognized':len(records),'verification':'unverified'}
 
 @router.post('/projects/{pid}/references/lookup')

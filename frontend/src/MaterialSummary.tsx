@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { apiUrl, api, send } from "./client";
 import { useSourceBillingGate } from './workspace/SourceWorkspace';
+import ProductLink from './products/ProductLink';
 type Row = Record<string, any>;
 
 export function MaterialSummarySettings({
@@ -389,6 +390,7 @@ export function MaterialSummary({
       )}
       {summary ? (
         <div className="summary-result">
+          {file.project_id && <ProductLink pid={file.project_id} kind="summary" identity={file.id} label="复用这份总结"/>}
           <a
             className="btn summary-download"
             href={apiUrl("/files/" + file.id + "/summary/markdown")}

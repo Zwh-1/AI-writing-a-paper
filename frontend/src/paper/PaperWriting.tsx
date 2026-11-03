@@ -12,6 +12,8 @@ import { api, send } from "../client";
 import WorkspaceDialog from "../workspace/WorkspaceDialog";
 import "./paperWriting.css";
 import DocumentPreview from "./DocumentPreview";
+import EvidenceTrace from "../writing/EvidenceTrace";
+import WritingFlowControls from "../writing/WritingFlowControls";
 
 type Row = Record<string, any>;
 type Props = {
@@ -522,6 +524,7 @@ function PaperWorkspace({
                     })}
                   </ol>
                 </details>
+                <WritingFlowControls pid={pid} sections={plan.map((section) => ({ id: String(section.id), title: String(section.title) }))} disabled={busy} onChanged={onChanged} />
                 <div className="paper-footer">
                   <p className="muted">
                     生成过程保留为候选，现有正文在统一采用前保持原样。
@@ -843,6 +846,7 @@ function PaperWorkspace({
                 {sections.map((section) => (
                   <section key={section.section_id} id={`paper-section-${section.section_id}`}>
                     <h3>{section.title}</h3>
+                    <EvidenceTrace pid={pid} sectionId={section.section_id} bundle={section.evidence_bundle} quality={section.writing_quality} argumentPlan={section.argument_plan} coverage={section.context_coverage} />
                   {section.document?<DocumentPreview document={section.document} sectionId={section.section_id} figures={result.figure_index??[]} assets={result.preview_assets??[]} citations={Object.fromEntries(cited)}/>:<div className="paper-prose">{readable(section.text)}</div>}
                     {!complete && !!section.missing_materials?.length && (
                       <details>

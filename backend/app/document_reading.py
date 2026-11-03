@@ -126,6 +126,8 @@ def touch(pid,identity):
     db.execute("UPDATE document_readings SET state='reading',reviewer='',review_note='',updated_at=? WHERE id=?",(db.now(),identity))
     from .writing_agent.impact import changed
     changed(pid,'document_reading',identity,'原文阅读范围或核对记录发生变化，需复查相关论断')
+    from .knowledge_lineage import changed as product_changed
+    product_changed(pid,'reading',identity,'问题阅读记录已更新，复用内容需复查')
 
 
 @db.atomic

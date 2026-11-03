@@ -2,6 +2,7 @@ import {useEffect,useRef,useState} from 'react';
 import {api} from './client';
 import {get,post,label,parse,Row,path,useResource} from './writingShared';
 import ClaimEvidencePanel from './ClaimEvidencePanel';
+import EvidenceTrace from './writing/EvidenceTrace';
 export default function WritingSessionPanel({pid,sessionId,epoch,onChange,onError,onOpenEditor}:{pid:string;sessionId:string;epoch:number;onChange:()=>void;onError:(s:string)=>void;onOpenEditor?:(sid:string)=>void}){
   const [session,S]=useState<Row|null>(null),[selected,C]=useState(''),[candidate,D]=useState<Row|null>(null),[note,N]=useState(''),[instructions,I]=useState(''),[busy,B]=useState(false),[nodes,Nodes]=useState<string[]>([]);
   const keys=useRef<Record<string,string>>({});
@@ -15,6 +16,7 @@ export default function WritingSessionPanel({pid,sessionId,epoch,onChange,onErro
   async function accept(policy:string){if(!candidate||!session)return;const body={base_revision_id:session.base_versions.base_revision_id,accept_policy:policy,placement:'replace_section'};const k=candidate.id+policy;keys.current[k]??=crypto.randomUUID();const result=await api(path(pid,`/writing-candidates/${candidate.id}/accept`),{method:'POST',headers:{'Idempotency-Key':keys.current[k]},body:JSON.stringify(body)});if(result?.revision_ids?.length)onOpenEditor?.(session.section_id);return result;}
   if(!session)return <p>选择会话后查看判定、候选与核验。</p>;
   const inProgress=['queued','running'].includes(session.status);
+  const materialBundles=(session.steps??[]).flatMap((step:Row)=>step.output?.material_bundles??step.output?.result?.material_bundles??[]).filter((value:Row,index:number,all:Row[])=>all.findIndex((other:Row)=>other.bundle_id===value.bundle_id)===index);
   return <div className="wa-stack"><section className="wa-card"><div className="wa-row"><h3>{label(session.status)}</h3><span>请求 {session.budget.requests} 次；费用/预留 {Number(session.budget.charged??0).toFixed(4)}</span></div>
     {candidate?.decision?.draft_field_corrections?.length>0&&<p className="wa-notice">候选中的源码依据编号已作为待核验的来源关联保留，没有作为文献引用使用。正文未因此改写，支持性仍需逐句核对。</p>}
     <ol className="wa-steps">{session.steps.map((s:Row)=><li key={s.id}><strong>{label(s.stage)}</strong><span>{label(s.state)}</span>{s.error&&<p role="alert">{s.error.message}</p>}{s.stage==='judgment'&&s.output?.judgment&&<details><summary>事实与结论判定</summary>{s.output.judgment.claims.map((c:Row)=><article key={c.local_id}><p>{c.statement}</p><p>条件：{c.conditions.join('；')||'未登记'}</p><p>尚不能推出：{c.not_established.join('；')||'未登记'}</p></article>)}<p>缺口：{s.output.judgment.missing_evidence.join('；')||'未列缺口，仍需核验正文'}</p></details>}{s.output?.result?.findings?.length>0&&<details><summary>本阶段核验记录（{s.output.result.findings.length} 项）</summary><ul>{s.output.result.findings.map((f:Row,i:number)=><li key={i}>{f.message}</li>)}</ul></details>}</li>)}</ol>
@@ -24,6 +26,7 @@ export default function WritingSessionPanel({pid,sessionId,epoch,onChange,onErro
     {session.status==='needs_evidence'&&<p>请在证据与章节任务中补齐材料，再按新版本建立会话；当前结果已保留。</p>}
     {['failed','budget_blocked','needs_review'].includes(session.status)&&<details><summary>更新未完成阶段的模型配置</summary><p>已完成步骤、原始响应和费用保留。来源变化或远端未知不能通过此操作绕过。</p><select aria-label="替代阶段配置" value={replacementProfile} onChange={e=>RP(e.target.value)}><option value="">请选择当前有效配置</option>{(availableProfiles.data??[]).filter((p:Row)=>p.configuration_current).map((p:Row)=><option key={p.id} value={p.id}>{p.actual_config.model} · {p.id.slice(0,8)}</option>)}</select><button disabled={busy||!replacementProfile||note.length<8} onClick={()=>void act(()=>post(pid,`/writing-sessions/${sessionId}/profiles`,{stage_profiles:Object.fromEntries(session.steps.filter((s:Row)=>s.state!=='completed').map((s:Row)=>[s.stage,replacementProfile])),note}))}>按上述核对依据更新未完成阶段</button></details>}
   </section>
+  {materialBundles.map((bundle:Row)=><EvidenceTrace key={bundle.bundle_id} pid={pid} sectionId={session.section_id} bundle={bundle} compact />)}
   <section className="wa-card" id="writing-candidate-review" tabIndex={-1} aria-label="候选稿与采用"><h3>核对与采用</h3><label>核对依据<textarea value={note} onChange={e=>N(e.target.value)} placeholder="写明对照了什么源码、条件、结果及未决问题"/></label>
     {!candidate&&session.status==='needs_review'&&<button disabled={busy||note.trim().length<8} onClick={()=>void act(()=>post(pid,`/writing-sessions/${sessionId}/approve-judgment`,{note}))}>已人工核对判定，继续写作</button>}
     {candidate&&<><select aria-label="正文候选版本" value={candidate.id} onChange={e=>{C(e.target.value);Nodes([]);}}>{session.candidates.map((c:Row)=><option key={c.id} value={c.id}>{c.created_at} · {c.id.slice(0,8)}</option>)}</select>

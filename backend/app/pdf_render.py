@@ -43,6 +43,7 @@ def render_pdf(path,project,snapshots,refs,numbering,fmt,artifacts,figure_rows=N
             value='['+str(numbering.get(n.get('attrs',{}).get('citationId'),'?'))+']'
             return '<super>'+value+'</super>' if fmt.get('reference_superscript',True) else value
         if n['type']=='hardBreak':return '<br/>'
+        if n['type']=='inlineFormula':return escape(n.get('attrs',{}).get('latex') or n.get('attrs',{}).get('expression',''))
         if n['type']=='crossReference':
             target=resolve_reference(figure_rows,n.get('attrs',{}),active_sid)
             return escape(target['label'] if target else '【图表引用失效】')

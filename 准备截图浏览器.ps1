@@ -1,6 +1,6 @@
 param([switch]$NoDownload)
 $taskVersion=$PSVersionTable.PSVersion.ToString();$taskEdition=$PSVersionTable.PSEdition
-if($taskVersion -cne '7.6.5' -or $taskEdition -cne 'Core'){throw 'Required PowerShell 7.6.5 Core'}
+if ($PSVersionTable.PSVersion -le [version]'7.6.0' -or $PSVersionTable.PSEdition -ne 'Core') { throw 'Requires PowerShell > 7.6.0 Core' }
 $taskBrowser=Join-Path $PSScriptRoot '.runtime\browser';$taskNode=Join-Path $taskBrowser 'node.exe';$taskCli=Join-Path $taskBrowser 'node_modules\playwright-core\cli.js'
 if(-not(Test-Path -LiteralPath $taskNode) -or -not(Test-Path -LiteralPath $taskCli)){throw '浏览器运行时不完整，请重新解压精简便携版或完整便携版。'}
 $env:PLAYWRIGHT_BROWSERS_PATH=Join-Path $PSScriptRoot '.runtime\browsers'

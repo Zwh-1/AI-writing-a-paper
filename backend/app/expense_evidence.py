@@ -55,11 +55,28 @@ def append(pid, kind, content, rid=None, document=None):
 def source_for(cfg, credential_hash):
     """Accept a scoped stored tariff or the existing reproducible account formula.
 
+    Also accepts an endpoint-embedded pricing basis produced by the adaptive
+    binding path (deepseek_profiles._autobind_pricing / summary_billing.priced_config),
+    so a freshly switched API does not hard-fail the preflight merely because its
+    quote has not been imported into the ledger.
+
     A public CNY quote alone cannot justify an account's USD price.
     """
     evidence = cfg.get('expense_pricing_basis') or cfg.get('pricing_evidence') or {}
     if not isinstance(evidence, dict):
         return None
+    # Endpoint-embedded or family-default basis produced by the adaptive adapter.
+    if evidence.get('kind') in ('endpoint_configured', 'endpoint_probe', 'family_default_conservative_estimate'):
+        if any((base(evidence.get('base_url')) != base(cfg.get('base_url')),
+                evidence.get('model') != cfg.get('model'),
+                evidence.get('credential_hash') != credential_hash,
+                evidence.get('currency') != cfg.get('currency'))):
+            return None
+        fields = ('image_price',) if 'image_price' in cfg else ('input_price', 'output_price')
+        if not all(finite(cfg.get(k)) and evidence.get(k) == cfg[k] for k in fields):
+            return None
+        # Conservative estimate: it is never an actual invoice, only a budget basis.
+        return {**evidence, 'estimate_only': True}
     if any((base(evidence.get('base_url')) != base(cfg.get('base_url')),
             evidence.get('model') != cfg.get('model'),
             evidence.get('credential_hash') != credential_hash,
@@ -95,9 +112,21 @@ def source_for(cfg, credential_hash):
 
 
 def resolve_config(pid, cfg, key):
-    """Attach only this project's most recent matching imported tariff."""
+    """Attach only this project's most recent matching imported tariff.
+
+    Also preserves an endpoint-embedded adaptive pricing basis so a freshly
+    switched API passes the preflight without a manual tariff import.
+    """
     from .summary_billing import key_hash, priced_config
     result = priced_config(cfg, key)
+    # 保留自适应适配器在端点上生成的计价依据（导入 tariff、自动探测或家族默认）。
+    basis = cfg.get('expense_pricing_basis') or result.get('pricing_evidence')
+    if isinstance(basis, dict) and basis.get('kind') in ('endpoint_configured', 'endpoint_probe', 'family_default_conservative_estimate'):
+        if (base(basis.get('base_url')) == base(cfg.get('base_url'))
+                and basis.get('model') == cfg.get('model')
+                and basis.get('credential_hash') == key_hash(key)
+                and basis.get('currency') == cfg.get('currency')):
+            result['expense_pricing_basis'] = basis
     for row in db.rows("SELECT * FROM expense_evidence WHERE project_id=? AND kind='tariff' ORDER BY rowid DESC", (pid,)):
         evidence = db.loads(row['content'], {})
         if (base(evidence.get('base_url')) == base(cfg.get('base_url')) and evidence.get('model') == cfg.get('model')

@@ -6,8 +6,28 @@ from .config import DATA
 from .security import safe_object
 from .parsers import tokens
 
+def _recognize_tesseract(path,language):
+    import csv,shutil
+    executable=shutil.which('tesseract')
+    if not executable:raise ValueError('请安装 Tesseract 与相应语言包，或选择云解析服务')
+    language={'zh-Hans-CN':'chi_sim+eng','zh-Hant-TW':'chi_tra+eng','en-US':'eng','en':'eng'}.get(language,language)
+    result=subprocess.run([executable,str(Path(path).resolve()),'stdout','-l',language,'tsv'],capture_output=True,timeout=120)
+    if result.returncode:raise ValueError('Tesseract OCR 失败：'+result.stderr.decode(errors='replace')[-400:])
+    grouped={}
+    for row in csv.DictReader(io.StringIO(result.stdout.decode('utf-8',errors='replace')),delimiter='\t'):
+        if not row.get('text','').strip() or float(row.get('conf','-1'))<0:continue
+        key=(row['block_num'],row['par_num'],row['line_num']);grouped.setdefault(key,[]).append({'text':row['text'],'box':{'x':float(row['left']),'y':float(row['top']),'width':float(row['width']),'height':float(row['height'])}})
+    lines=[{'text':' '.join(word['text'] for word in words),'raw_text':' '.join(word['text'] for word in words),'words':words} for words in grouped.values()]
+    return {'text':'\n'.join(line['text'] for line in lines),'lines':lines,'language':language}
+
 def _native_capabilities():
-    if os.name!='nt':return {'available':False,'reason':'本地OCR需要Windows'}
+    if os.name!='nt':
+        import shutil
+        executable=shutil.which('tesseract')
+        if not executable:return {'available':False,'reason':'本地OCR需要 Tesseract 或 Windows OCR'}
+        result=subprocess.run([executable,'--list-langs'],capture_output=True,timeout=10)
+        languages=[{'tag':name,'name':name} for name in result.stdout.decode(errors='replace').splitlines()[1:] if name.strip()]
+        return {'available':bool(languages),'languages':languages,'engine':'Tesseract','external_requests':False}
     try:
         from winrt.windows.media.ocr import OcrEngine
         languages=[{'tag':x.language_tag,'name':x.display_name} for x in OcrEngine.available_recognizer_languages]
@@ -15,6 +35,7 @@ def _native_capabilities():
     except Exception as e:return {'available':False,'reason':type(e).__name__+': '+str(e)[:180]}
 
 async def _recognize_path_native(path,language='zh-Hans-CN'):
+    if os.name!='nt':return _recognize_tesseract(path,language)
     from winrt.windows.media.ocr import OcrEngine
     from winrt.windows.globalization import Language
     from winrt.windows.graphics.imaging import BitmapDecoder,BitmapPixelFormat,BitmapAlphaMode
@@ -59,7 +80,7 @@ def _ocr_process(mode, payload=None, timeout=60):
 
 def capabilities():
     global _CAPABILITY_CACHE
-    if os.name!='nt':return {'available':False,'reason':'本地OCR需要Windows'}
+    if os.name!='nt':return _native_capabilities()
     if _CAPABILITY_CACHE and time.monotonic()-_CAPABILITY_CACHE[0]<60:return dict(_CAPABILITY_CACHE[1])
     try:value=_ocr_process('ocr-capabilities',timeout=20)
     except Exception as error:value={'available':False,'reason':str(error)[:350],'external_requests':False}

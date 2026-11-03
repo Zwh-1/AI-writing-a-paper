@@ -1,5 +1,5 @@
 param([int]$Port=8791)
-if ($PSVersionTable.PSVersion.ToString() -cne '7.6.5' -or $PSVersionTable.PSEdition -cne 'Core') { throw 'Required: PowerShell 7.6.5 Core. No version fallback is permitted.' }
+if ($PSVersionTable.PSVersion -le [version]'7.6.0' -or $PSVersionTable.PSEdition -ne 'Core') { throw 'Requires PowerShell > 7.6.0 Core' }
 $ErrorActionPreference='Stop'
 $taskReviewData=Join-Path $PSScriptRoot '.runtime\writing-v4-live-data'
 if (-not (Test-Path -LiteralPath (Join-Path $taskReviewData 'workbench.sqlite3'))) { throw '真实验收资料不在此安装目录；便携包不包含本机私人验收数据。' }

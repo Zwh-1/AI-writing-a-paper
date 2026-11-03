@@ -1,0 +1,145 @@
+name: Release workbench
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Explicit x.y.z; leave empty for Conventional Commits version selection'
+        required: false
+permissions:
+  contents: write
+  packages: write
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      released: ${{ steps.version.outputs.released }}
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Select consistent version
+        id: version
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          if [ -n "$VERSION" ]; then node scripts/release-version.mjs "$VERSION"; else node scripts/release-version.mjs --auto; fi
+      - name: Commit and tag
+        if: steps.version.outputs.released == 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email github-actions[bot]@users.noreply.github.com
+          git add frontend/package.json frontend/package-lock.json backend/app/config.py deployment/desktop/windows.nsi
+          git diff --cached --quiet || git commit -m "chore(release): v${VERSION}"
+          git tag "v${VERSION}"
+          git push origin HEAD --tags
+      - name: Create release
+        if: steps.version.outputs.released == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: gh release create "v${VERSION}" --verify-tag --generate-notes
+  desktop:
+    needs: version
+    if: needs.version.outputs.released == 'true'
+    strategy:
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: v${{ needs.version.outputs.version }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install runtime
+        run: |
+          python -m pip install -r deployment/requirements.workbench.txt pyinstaller
+          npm ci --prefix frontend --ignore-scripts --no-audit --no-fund
+          npm run build --prefix frontend
+      - name: Add Windows OCR
+        if: runner.os == 'Windows'
+        run: python -m pip install winrt-windows.media.ocr winrt-windows.storage winrt-windows.graphics.imaging winrt-windows.globalization winrt-windows.foundation winrt-windows.foundation.collections winrt-windows.storage.streams
+      - name: Build native application
+        env:
+          PYTHONPATH: backend
+        run: python -m PyInstaller --noconfirm deployment/desktop/yantai.spec
+      - name: Package Windows installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          if ($PSVersionTable.PSVersion -le [version]'7.6.0' -or $PSVersionTable.PSEdition -ne 'Core') { throw 'Requires PowerShell > 7.6.0 Core' }
+          choco install nsis --yes --no-progress
+          & (Join-Path ${env:ProgramFiles(x86)} 'NSIS/makensis.exe') "/DVERSION=$env:VERSION" deployment/desktop/windows.nsi
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Package macOS DMG
+        if: runner.os == 'macOS'
+        run: |
+          hdiutil create -volname Yantai -srcfolder dist/Yantai.app -ov -format UDZO "Yantai-${{ needs.version.outputs.version }}.dmg"
+          ditto -c -k --sequesterRsrc --keepParent dist/Yantai.app "Yantai-${{ needs.version.outputs.version }}-macOS.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Yantai-${{ runner.os }}
+          path: |
+            deployment/desktop/*-setup.exe
+            *.dmg
+            *-macOS.zip
+      - name: Publish assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          find . -maxdepth 4 -type f \( -name '*-setup.exe' -o -name '*.dmg' -o -name '*-macOS.zip' \) -print0 | xargs -0 -I{} gh release upload "v${{ needs.version.outputs.version }}" "{}" --clobber
+  images:
+    needs: version
+    if: needs.version.outputs.released == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - image: workbench
+            dockerfile: deployment/workbench.Dockerfile
+            platforms: linux/amd64,linux/arm64
+            torch_channel: cpu
+          - image: surya-cpu
+            dockerfile: deployment/surya.Dockerfile
+            platforms: linux/amd64,linux/arm64
+            torch_channel: cpu
+          - image: surya-gpu
+            dockerfile: deployment/surya.Dockerfile
+            platforms: linux/amd64
+            torch_channel: cu126
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: v${{ needs.version.outputs.version }}
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Resolve lowercase image name
+        id: image
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: ${{ matrix.platforms }}
+          build-args: |
+            TORCH_CHANNEL=${{ matrix.torch_channel }}
+          push: true
+          tags: ${{ steps.image.outputs.name }}-${{ matrix.image }}:${{ needs.version.outputs.version }}

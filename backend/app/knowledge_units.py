@@ -205,6 +205,8 @@ def activate_parse(pid, identity):
     db.execute('INSERT INTO knowledge_heads VALUES(?,?) ON CONFLICT(file_id) DO UPDATE SET parse_id=excluded.parse_id', (parse['file_id'], identity))
     if prior:
         changed(pid, [r['id'] for r in db.rows('SELECT id FROM knowledge_units WHERE parse_id=?', (prior['parse_id'],))], '文献解析或分段版本已切换，需复查引用范围')
+        from .knowledge_lineage import changed as invalidate
+        invalidate(pid,'file',parse['file_id'],'当前解析版本已切换，相关派生内容需复查')
     db.audit(pid, 'knowledge_parse_activated', {'parse_id': identity, 'previous': prior})
     return {'parse_id': identity, 'previous': prior}
 

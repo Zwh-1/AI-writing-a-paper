@@ -1,5 +1,5 @@
 param([Parameter(Mandatory=$true)][string]$ApplicationRoot,[Parameter(Mandatory=$true)][string]$QaDirectory,[int]$Port=8818)
-if ($PSVersionTable.PSVersion.ToString() -cne '7.6.5' -or $PSVersionTable.PSEdition -cne 'Core') { throw 'Required PowerShell 7.6.5 Core.' }
+if ($PSVersionTable.PSVersion -le [version]'7.6.0' -or $PSVersionTable.PSEdition -ne 'Core') { throw 'Requires PowerShell > 7.6.0 Core' }
 $ErrorActionPreference='Stop'
 $taskFullRoot=[System.IO.Path]::GetFullPath($ApplicationRoot)
 $taskActualPowerShell=(Get-Process -Id $PID).Path

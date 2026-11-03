@@ -290,6 +290,15 @@
     },
     {
       "method": "GET",
+      "path": "/api/v2/studio/zotero/callback",
+      "legacy_path": "/api/v1/studio/zotero/callback",
+      "canonical": true,
+      "domain": "studio",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "GET",
       "path": "/api/v2/model-profiles/primary",
       "legacy_path": "/api/v1/settings",
       "canonical": true,
@@ -379,6 +388,24 @@
       "transport": "json"
     },
     {
+      "method": "GET",
+      "path": "/api/v2/studio/cache/orphans",
+      "legacy_path": "/api/v1/studio/cache/orphans",
+      "canonical": true,
+      "domain": "studio",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/studio/cache/orphans",
+      "legacy_path": "/api/v1/studio/cache/orphans",
+      "canonical": true,
+      "domain": "studio",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
       "method": "POST",
       "path": "/api/v2/provider/probe-image",
       "legacy_path": "/api/v1/provider/probe-image",
@@ -412,6 +439,15 @@
       "canonical": false,
       "domain": "deepseek",
       "owner": "app.deepseek_profiles",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/studio/cache/clear",
+      "legacy_path": "/api/v1/studio/cache/clear",
+      "canonical": true,
+      "domain": "studio",
+      "owner": "app.research_api",
       "transport": "json"
     },
     {
@@ -484,6 +520,15 @@
       "canonical": true,
       "domain": "system",
       "owner": "app.main",
+      "transport": "json"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/studio/cache",
+      "legacy_path": "/api/v1/studio/cache",
+      "canonical": true,
+      "domain": "studio",
+      "owner": "app.research_api",
       "transport": "json"
     },
     {
@@ -740,6 +785,15 @@
     },
     {
       "method": "POST",
+      "path": "/api/v2/projects/{project_id}/literature/abstract/translate",
+      "legacy_path": "/api/v1/projects/{pid}/studio/abstract/translate",
+      "canonical": true,
+      "domain": "literature",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
       "path": "/api/v2/projects/{project_id}/knowledge/search-index/search",
       "legacy_path": "/api/v1/projects/{pid}/knowledge-base/search",
       "canonical": true,
@@ -812,6 +866,33 @@
     },
     {
       "method": "POST",
+      "path": "/api/v2/projects/{project_id}/literature/discovery/search",
+      "legacy_path": "/api/v1/projects/{pid}/studio/openalex/search",
+      "canonical": true,
+      "domain": "literature",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/projects/{project_id}/literature/discovery/import",
+      "legacy_path": "/api/v1/projects/{pid}/studio/openalex/import",
+      "canonical": true,
+      "domain": "literature",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/projects/{project_id}/literature/deletion/preview",
+      "legacy_path": "/api/v1/projects/{pid}/studio/deletion/preview",
+      "canonical": true,
+      "domain": "literature",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
       "path": "/api/v2/projects/{pid}/evidence-knowledge/imports/preview",
       "legacy_path": "/api/v1/projects/{pid}/evidence-knowledge/imports/preview",
       "canonical": false,
@@ -853,6 +934,15 @@
       "canonical": true,
       "domain": "writing",
       "owner": "app.writing_agent.api",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/projects/{project_id}/writing/retrieval/validate",
+      "legacy_path": "/api/v1/projects/{pid}/writing-retrieval/validate",
+      "canonical": true,
+      "domain": "writing",
+      "owner": "app.writing_retrieval_api",
       "transport": "json"
     },
     {
@@ -911,6 +1001,15 @@
     },
     {
       "method": "POST",
+      "path": "/api/v2/projects/{project_id}/writing/retrieval/prepare",
+      "legacy_path": "/api/v1/projects/{pid}/writing-retrieval/prepare",
+      "canonical": true,
+      "domain": "writing",
+      "owner": "app.writing_retrieval_api",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
       "path": "/api/v2/projects/{project_id}/references/archive-import",
       "legacy_path": "/api/v1/projects/{pid}/references/archive-import",
       "canonical": true,
@@ -947,6 +1046,24 @@
     },
     {
       "method": "GET",
+      "path": "/api/v2/projects/{project_id}/parsing/providers/health",
+      "legacy_path": "/api/v1/projects/{pid}/studio/parsing/health",
+      "canonical": true,
+      "domain": "parsing",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/projects/{project_id}/knowledge/metadata-graph",
+      "legacy_path": "/api/v1/projects/{pid}/studio/metadata-graph",
+      "canonical": true,
+      "domain": "knowledge",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "GET",
       "path": "/api/v2/projects/{project_id}/writing/joint-candidates",
       "legacy_path": "/api/v1/projects/{pid}/writing-joint-candidates",
       "canonical": true,
@@ -970,6 +1087,15 @@
       "canonical": true,
       "domain": "writing",
       "owner": "app.paper_writing",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/projects/{project_id}/writing/retrieval/search",
+      "legacy_path": "/api/v1/projects/{pid}/writing-retrieval/search",
+      "canonical": true,
+      "domain": "writing",
+      "owner": "app.writing_retrieval_api",
       "transport": "json"
     },
     {
@@ -1063,6 +1189,33 @@
       "transport": "json"
     },
     {
+      "method": "GET",
+      "path": "/api/v2/projects/{project_id}/research-sync/conflicts",
+      "legacy_path": "/api/v1/projects/{pid}/research-sync/conflicts",
+      "canonical": true,
+      "domain": "research-sync",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/projects/{project_id}/research-content/search",
+      "legacy_path": "/api/v1/projects/{pid}/research-content/search",
+      "canonical": true,
+      "domain": "research-content",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/projects/{project_id}/literature/zotero/oauth",
+      "legacy_path": "/api/v1/projects/{pid}/studio/zotero/oauth",
+      "canonical": true,
+      "domain": "literature",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
       "method": "POST",
       "path": "/api/v2/projects/{pid}/ai-autopilot/repair-exceptions",
       "legacy_path": "/api/v1/projects/{pid}/ai-autopilot/repair-exceptions",
@@ -1144,6 +1297,33 @@
       "transport": "json"
     },
     {
+      "method": "POST",
+      "path": "/api/v2/projects/{project_id}/research-sync/snapshot",
+      "legacy_path": "/api/v1/projects/{pid}/research-sync/snapshot",
+      "canonical": true,
+      "domain": "research-sync",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/projects/{project_id}/literature/imports/url",
+      "legacy_path": "/api/v1/projects/{pid}/studio/imports/url",
+      "canonical": true,
+      "domain": "literature",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/projects/{project_id}/literature/zotero/sync",
+      "legacy_path": "/api/v1/projects/{pid}/studio/zotero/sync",
+      "canonical": true,
+      "domain": "literature",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
       "method": "GET",
       "path": "/api/v2/projects/{project_id}/billing/entries/export",
       "legacy_path": "/api/v1/projects/{pid}/expenses/export",
@@ -1159,6 +1339,15 @@
       "canonical": false,
       "domain": "expenses",
       "owner": "app.expense_evidence",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/projects/{project_id}/writing/retrieval/read",
+      "legacy_path": "/api/v1/projects/{pid}/writing-retrieval/read",
+      "canonical": true,
+      "domain": "writing",
+      "owner": "app.writing_retrieval_api",
       "transport": "json"
     },
     {
@@ -1253,6 +1442,24 @@
     },
     {
       "method": "POST",
+      "path": "/api/v2/projects/{project_id}/resource-refs/resolve",
+      "legacy_path": "/api/v1/projects/{pid}/resource-refs/resolve",
+      "canonical": true,
+      "domain": "resource-refs",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/projects/{project_id}/exports/formats/latex",
+      "legacy_path": "/api/v1/projects/{pid}/studio/exports/latex",
+      "canonical": true,
+      "domain": "exports",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
       "path": "/api/v2/projects/{project_id}/writing/joint-reviews",
       "legacy_path": "/api/v1/projects/{pid}/writing-joint-reviews",
       "canonical": true,
@@ -1294,6 +1501,42 @@
       "canonical": false,
       "domain": "writing-live",
       "owner": "app.writing_live",
+      "transport": "json"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/projects/{project_id}/writing/flow/settings",
+      "legacy_path": "/api/v1/projects/{pid}/writing-flow/settings",
+      "canonical": true,
+      "domain": "writing",
+      "owner": "app.writing_flow_api",
+      "transport": "json"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v2/projects/{project_id}/writing/flow/settings",
+      "legacy_path": "/api/v1/projects/{pid}/writing-flow/settings",
+      "canonical": true,
+      "domain": "writing",
+      "owner": "app.writing_flow_api",
+      "transport": "json"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/projects/{project_id}/writing/argument-plan",
+      "legacy_path": "/api/v1/projects/{pid}/writing-plan",
+      "canonical": true,
+      "domain": "writing",
+      "owner": "app.writing_flow_api",
+      "transport": "json"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v2/projects/{project_id}/writing/argument-plan",
+      "legacy_path": "/api/v1/projects/{pid}/writing-plan",
+      "canonical": true,
+      "domain": "writing",
+      "owner": "app.writing_flow_api",
       "transport": "json"
     },
     {
@@ -1361,6 +1604,15 @@
     },
     {
       "method": "GET",
+      "path": "/api/v2/projects/{project_id}/writing/flow/metrics",
+      "legacy_path": "/api/v1/projects/{pid}/writing-flow/metrics",
+      "canonical": true,
+      "domain": "writing",
+      "owner": "app.writing_flow_api",
+      "transport": "json"
+    },
+    {
+      "method": "GET",
       "path": "/api/v2/projects/{project_id}/knowledge/completion",
       "legacy_path": "/api/v1/projects/{pid}/knowledge/completion",
       "canonical": true,
@@ -1405,6 +1657,24 @@
       "transport": "json"
     },
     {
+      "method": "POST",
+      "path": "/api/v2/projects/{project_id}/research-sync/apply",
+      "legacy_path": "/api/v1/projects/{pid}/research-sync/apply",
+      "canonical": true,
+      "domain": "research-sync",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/projects/{project_id}/literature/deletion",
+      "legacy_path": "/api/v1/projects/{pid}/studio/deletion",
+      "canonical": true,
+      "domain": "literature",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
       "method": "GET",
       "path": "/api/v2/projects/{project_id}/writing/diagnostics",
       "legacy_path": "/api/v1/projects/{pid}/diagnostics",
@@ -1420,6 +1690,15 @@
       "canonical": true,
       "domain": "writing",
       "owner": "app.writing_agent.api",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/projects/{pid}/writing-retrieval/validate",
+      "legacy_path": "/api/v1/projects/{pid}/writing-retrieval/validate",
+      "canonical": false,
+      "domain": "writing-retrieval",
+      "owner": "app.writing_retrieval_api",
       "transport": "json"
     },
     {
@@ -1513,6 +1792,42 @@
       "transport": "json"
     },
     {
+      "method": "POST",
+      "path": "/api/v2/projects/{project_id}/products/relations",
+      "legacy_path": "/api/v1/projects/{pid}/products/relations",
+      "canonical": true,
+      "domain": "products",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/projects/{project_id}/literature/library",
+      "legacy_path": "/api/v1/projects/{pid}/studio/library",
+      "canonical": true,
+      "domain": "literature",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/projects/{pid}/studio/abstract/translate",
+      "legacy_path": "/api/v1/projects/{pid}/studio/abstract/translate",
+      "canonical": false,
+      "domain": "studio",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/projects/{project_id}/writing/completion",
+      "legacy_path": "/api/v1/projects/{pid}/studio/completion",
+      "canonical": true,
+      "domain": "writing",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
       "method": "GET",
       "path": "/api/v2/projects/{project_id}/writing/model-link",
       "legacy_path": "/api/v1/projects/{pid}/writing-link",
@@ -1537,6 +1852,15 @@
       "canonical": true,
       "domain": "writing",
       "owner": "app.writing_ops",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/projects/{pid}/writing-retrieval/prepare",
+      "legacy_path": "/api/v1/projects/{pid}/writing-retrieval/prepare",
+      "canonical": false,
+      "domain": "writing-retrieval",
+      "owner": "app.writing_retrieval_api",
       "transport": "json"
     },
     {
@@ -1676,6 +2000,96 @@
     },
     {
       "method": "POST",
+      "path": "/api/v2/projects/{project_id}/workspace-intents",
+      "legacy_path": "/api/v1/projects/{pid}/workspace-intents",
+      "canonical": true,
+      "domain": "workspace-intents",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/projects/{project_id}/workspace-intents",
+      "legacy_path": "/api/v1/projects/{pid}/workspace-intents",
+      "canonical": true,
+      "domain": "workspace-intents",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/projects/{project_id}/literature/zotero",
+      "legacy_path": "/api/v1/projects/{pid}/studio/zotero",
+      "canonical": true,
+      "domain": "literature",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v2/projects/{project_id}/literature/zotero",
+      "legacy_path": "/api/v1/projects/{pid}/studio/zotero",
+      "canonical": true,
+      "domain": "literature",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/projects/{project_id}/parsing/providers",
+      "legacy_path": "/api/v1/projects/{pid}/studio/parsing",
+      "canonical": true,
+      "domain": "parsing",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v2/projects/{project_id}/parsing/providers",
+      "legacy_path": "/api/v1/projects/{pid}/studio/parsing",
+      "canonical": true,
+      "domain": "parsing",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/projects/{project_id}/execution/results",
+      "legacy_path": "/api/v1/projects/{pid}/studio/execution/results",
+      "canonical": true,
+      "domain": "execution",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/projects/{pid}/studio/execution/results",
+      "legacy_path": "/api/v1/projects/{pid}/studio/execution/results",
+      "canonical": false,
+      "domain": "studio",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/projects/{project_id}/execution/install",
+      "legacy_path": "/api/v1/projects/{pid}/studio/execution/install",
+      "canonical": true,
+      "domain": "execution",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/projects/{pid}/studio/execution/install",
+      "legacy_path": "/api/v1/projects/{pid}/studio/execution/install",
+      "canonical": false,
+      "domain": "studio",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
       "path": "/api/v2/projects/{project_id}/writing/bootstrap",
       "legacy_path": "/api/v1/projects/{pid}/writing-bootstrap",
       "canonical": true,
@@ -1717,6 +2131,15 @@
       "canonical": false,
       "domain": "writing-quality-policies",
       "owner": "app.writing_agent.api",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/projects/{pid}/writing-retrieval/search",
+      "legacy_path": "/api/v1/projects/{pid}/writing-retrieval/search",
+      "canonical": false,
+      "domain": "writing-retrieval",
+      "owner": "app.writing_retrieval_api",
       "transport": "json"
     },
     {
@@ -1825,6 +2248,78 @@
       "canonical": true,
       "domain": "references",
       "owner": "app.extras",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/projects/{project_id}/products/preview",
+      "legacy_path": "/api/v1/projects/{pid}/products/preview",
+      "canonical": true,
+      "domain": "products",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/projects/{project_id}/research-records",
+      "legacy_path": "/api/v1/projects/{pid}/studio/records",
+      "canonical": true,
+      "domain": "research-records",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/projects/{project_id}/research-records",
+      "legacy_path": "/api/v1/projects/{pid}/studio/records",
+      "canonical": true,
+      "domain": "research-records",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/projects/{project_id}/writing/comments",
+      "legacy_path": "/api/v1/projects/{pid}/studio/comments",
+      "canonical": true,
+      "domain": "writing",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/projects/{project_id}/writing/comments",
+      "legacy_path": "/api/v1/projects/{pid}/studio/comments",
+      "canonical": true,
+      "domain": "writing",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/projects/{pid}/studio/deletion/preview",
+      "legacy_path": "/api/v1/projects/{pid}/studio/deletion/preview",
+      "canonical": false,
+      "domain": "studio",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/projects/{project_id}/execution/health",
+      "legacy_path": "/api/v1/projects/{pid}/studio/execution/health",
+      "canonical": true,
+      "domain": "execution",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/projects/{pid}/studio/execution/health",
+      "legacy_path": "/api/v1/projects/{pid}/studio/execution/health",
+      "canonical": false,
+      "domain": "studio",
+      "owner": "app.research_api",
       "transport": "json"
     },
     {
@@ -2026,6 +2521,51 @@
       "transport": "json"
     },
     {
+      "method": "POST",
+      "path": "/api/v2/projects/{project_id}/workspace/query",
+      "legacy_path": "/api/v1/projects/{pid}/workspace/query",
+      "canonical": true,
+      "domain": "workspace",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/projects/{project_id}/research/status",
+      "legacy_path": "/api/v1/projects/{pid}/studio/status",
+      "canonical": true,
+      "domain": "research",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v2/projects/{project_id}/literature/tags",
+      "legacy_path": "/api/v1/projects/{pid}/studio/tags",
+      "canonical": true,
+      "domain": "literature",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/projects/{pid}/studio/openalex/search",
+      "legacy_path": "/api/v1/projects/{pid}/studio/openalex/search",
+      "canonical": false,
+      "domain": "studio",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/projects/{pid}/studio/openalex/import",
+      "legacy_path": "/api/v1/projects/{pid}/studio/openalex/import",
+      "canonical": false,
+      "domain": "studio",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
       "method": "GET",
       "path": "/api/v2/projects/{project_id}/billing/entries",
       "legacy_path": "/api/v1/projects/{pid}/expenses",
@@ -2059,6 +2599,15 @@
       "canonical": false,
       "domain": "diagnostic-comparisons",
       "owner": "app.writing_agent.api",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/projects/{pid}/writing-retrieval/read",
+      "legacy_path": "/api/v1/projects/{pid}/writing-retrieval/read",
+      "canonical": false,
+      "domain": "writing-retrieval",
+      "owner": "app.writing_retrieval_api",
       "transport": "json"
     },
     {
@@ -2171,6 +2720,33 @@
     },
     {
       "method": "POST",
+      "path": "/api/v2/projects/{project_id}/products/reuse",
+      "legacy_path": "/api/v1/projects/{pid}/products/reuse",
+      "canonical": true,
+      "domain": "products",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/projects/{pid}/studio/parsing/health",
+      "legacy_path": "/api/v1/projects/{pid}/studio/parsing/health",
+      "canonical": false,
+      "domain": "studio",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/projects/{pid}/studio/metadata-graph",
+      "legacy_path": "/api/v1/projects/{pid}/studio/metadata-graph",
+      "canonical": false,
+      "domain": "studio",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
       "path": "/api/v2/projects/{pid}/writing-joint-reviews",
       "legacy_path": "/api/v1/projects/{pid}/writing-joint-reviews",
       "canonical": false,
@@ -2230,6 +2806,24 @@
       "canonical": true,
       "domain": "writing",
       "owner": "app.paper_writing",
+      "transport": "json"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/projects/{pid}/writing-flow/settings",
+      "legacy_path": "/api/v1/projects/{pid}/writing-flow/settings",
+      "canonical": false,
+      "domain": "writing-flow",
+      "owner": "app.writing_flow_api",
+      "transport": "json"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v2/projects/{pid}/writing-flow/settings",
+      "legacy_path": "/api/v1/projects/{pid}/writing-flow/settings",
+      "canonical": false,
+      "domain": "writing-flow",
+      "owner": "app.writing_flow_api",
       "transport": "json"
     },
     {
@@ -2315,6 +2909,33 @@
     },
     {
       "method": "GET",
+      "path": "/api/v2/projects/{project_id}/asset-library",
+      "legacy_path": "/api/v1/projects/{pid}/studio/assets",
+      "canonical": true,
+      "domain": "asset-library",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/projects/{project_id}/asset-library",
+      "legacy_path": "/api/v1/projects/{pid}/studio/assets",
+      "canonical": true,
+      "domain": "asset-library",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/projects/{pid}/studio/exports/latex",
+      "legacy_path": "/api/v1/projects/{pid}/studio/exports/latex",
+      "canonical": false,
+      "domain": "studio",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "GET",
       "path": "/api/v2/projects/{project_id}/writing/state",
       "legacy_path": "/api/v1/projects/{pid}/writing-state",
       "canonical": true,
@@ -2338,6 +2959,15 @@
       "canonical": true,
       "domain": "writing",
       "owner": "app.writing_agent.api",
+      "transport": "json"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/projects/{pid}/writing-flow/metrics",
+      "legacy_path": "/api/v1/projects/{pid}/writing-flow/metrics",
+      "canonical": false,
+      "domain": "writing-flow",
+      "owner": "app.writing_flow_api",
       "transport": "json"
     },
     {
@@ -2446,6 +3076,24 @@
       "canonical": true,
       "domain": "advanced",
       "owner": "app.advanced",
+      "transport": "json"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/projects/{project_id}/capabilities",
+      "legacy_path": "/api/v1/projects/{pid}/capabilities",
+      "canonical": true,
+      "domain": "capabilities",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/projects/{pid}/studio/zotero/oauth",
+      "legacy_path": "/api/v1/projects/{pid}/studio/zotero/oauth",
+      "canonical": false,
+      "domain": "studio",
+      "owner": "app.research_api",
       "transport": "json"
     },
     {
@@ -2585,6 +3233,33 @@
     },
     {
       "method": "GET",
+      "path": "/api/v2/asset-versions/{resource_id}/file",
+      "legacy_path": "/api/v1/asset-versions/{identity}/file",
+      "canonical": true,
+      "domain": "asset-versions",
+      "owner": "app.research_api",
+      "transport": "file"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/projects/{pid}/studio/imports/url",
+      "legacy_path": "/api/v1/projects/{pid}/studio/imports/url",
+      "canonical": false,
+      "domain": "studio",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/projects/{pid}/studio/zotero/sync",
+      "legacy_path": "/api/v1/projects/{pid}/studio/zotero/sync",
+      "canonical": false,
+      "domain": "studio",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "GET",
       "path": "/api/v2/projects/{project_id}/thesis-core",
       "legacy_path": "/api/v1/projects/{pid}/thesis-core",
       "canonical": true,
@@ -2644,6 +3319,15 @@
       "canonical": false,
       "domain": "deepseek",
       "owner": "app.deepseek_profiles",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/projects/{pid}/studio/completion",
+      "legacy_path": "/api/v1/projects/{pid}/studio/completion",
+      "canonical": false,
+      "domain": "studio",
+      "owner": "app.research_api",
       "transport": "json"
     },
     {
@@ -2774,6 +3458,60 @@
     },
     {
       "method": "GET",
+      "path": "/api/v2/projects/{project_id}/execution",
+      "legacy_path": "/api/v1/projects/{pid}/studio/execution",
+      "canonical": true,
+      "domain": "execution",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/projects/{pid}/studio/execution",
+      "legacy_path": "/api/v1/projects/{pid}/studio/execution",
+      "canonical": false,
+      "domain": "studio",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v2/projects/{project_id}/execution",
+      "legacy_path": "/api/v1/projects/{pid}/studio/execution",
+      "canonical": true,
+      "domain": "execution",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v2/projects/{pid}/studio/execution",
+      "legacy_path": "/api/v1/projects/{pid}/studio/execution",
+      "canonical": false,
+      "domain": "studio",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/projects/{project_id}/execution",
+      "legacy_path": "/api/v1/projects/{pid}/studio/execution",
+      "canonical": true,
+      "domain": "execution",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/projects/{pid}/studio/execution",
+      "legacy_path": "/api/v1/projects/{pid}/studio/execution",
+      "canonical": false,
+      "domain": "studio",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "GET",
       "path": "/api/v2/projects/{project_id}/workspace",
       "legacy_path": "/api/v1/projects/{pid}/source-workspace",
       "canonical": true,
@@ -2897,6 +3635,42 @@
       "domain": "artifacts",
       "owner": "app.advanced",
       "transport": "file"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/projects/{project_id}/products",
+      "legacy_path": "/api/v1/projects/{pid}/products",
+      "canonical": true,
+      "domain": "products",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/projects/{pid}/studio/comments",
+      "legacy_path": "/api/v1/projects/{pid}/studio/comments",
+      "canonical": false,
+      "domain": "studio",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/projects/{pid}/studio/comments",
+      "legacy_path": "/api/v1/projects/{pid}/studio/comments",
+      "canonical": false,
+      "domain": "studio",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/projects/{pid}/studio/deletion",
+      "legacy_path": "/api/v1/projects/{pid}/studio/deletion",
+      "canonical": false,
+      "domain": "studio",
+      "owner": "app.research_api",
+      "transport": "json"
     },
     {
       "method": "GET",
@@ -3044,6 +3818,51 @@
     },
     {
       "method": "GET",
+      "path": "/api/v2/projects/{pid}/studio/library",
+      "legacy_path": "/api/v1/projects/{pid}/studio/library",
+      "canonical": false,
+      "domain": "studio",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/projects/{pid}/studio/records",
+      "legacy_path": "/api/v1/projects/{pid}/studio/records",
+      "canonical": false,
+      "domain": "studio",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/projects/{pid}/studio/records",
+      "legacy_path": "/api/v1/projects/{pid}/studio/records",
+      "canonical": false,
+      "domain": "studio",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/projects/{pid}/studio/parsing",
+      "legacy_path": "/api/v1/projects/{pid}/studio/parsing",
+      "canonical": false,
+      "domain": "studio",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v2/projects/{pid}/studio/parsing",
+      "legacy_path": "/api/v1/projects/{pid}/studio/parsing",
+      "canonical": false,
+      "domain": "studio",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "GET",
       "path": "/api/v2/projects/{pid}/writing-checks",
       "legacy_path": "/api/v1/projects/{pid}/writing-checks",
       "canonical": false,
@@ -3148,6 +3967,51 @@
       "canonical": true,
       "domain": "citations",
       "owner": "app.extras",
+      "transport": "json"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/projects/{pid}/studio/status",
+      "legacy_path": "/api/v1/projects/{pid}/studio/status",
+      "canonical": false,
+      "domain": "studio",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/projects/{pid}/studio/zotero",
+      "legacy_path": "/api/v1/projects/{pid}/studio/zotero",
+      "canonical": false,
+      "domain": "studio",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v2/projects/{pid}/studio/zotero",
+      "legacy_path": "/api/v1/projects/{pid}/studio/zotero",
+      "canonical": false,
+      "domain": "studio",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/projects/{pid}/studio/assets",
+      "legacy_path": "/api/v1/projects/{pid}/studio/assets",
+      "canonical": false,
+      "domain": "studio",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/projects/{pid}/studio/assets",
+      "legacy_path": "/api/v1/projects/{pid}/studio/assets",
+      "canonical": false,
+      "domain": "studio",
+      "owner": "app.research_api",
       "transport": "json"
     },
     {
@@ -3314,6 +4178,24 @@
     },
     {
       "method": "GET",
+      "path": "/api/v2/projects/{pid}/writing-plan",
+      "legacy_path": "/api/v1/projects/{pid}/writing-plan",
+      "canonical": false,
+      "domain": "writing-plan",
+      "owner": "app.writing_flow_api",
+      "transport": "json"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v2/projects/{pid}/writing-plan",
+      "legacy_path": "/api/v1/projects/{pid}/writing-plan",
+      "canonical": false,
+      "domain": "writing-plan",
+      "owner": "app.writing_flow_api",
+      "transport": "json"
+    },
+    {
+      "method": "GET",
       "path": "/api/v2/projects/{pid}/ai-autopilot",
       "legacy_path": "/api/v1/projects/{pid}/ai-autopilot",
       "canonical": false,
@@ -3436,6 +4318,15 @@
       "canonical": true,
       "domain": "audit",
       "owner": "app.main",
+      "transport": "json"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v2/projects/{pid}/studio/tags",
+      "legacy_path": "/api/v1/projects/{pid}/studio/tags",
+      "canonical": false,
+      "domain": "studio",
+      "owner": "app.research_api",
       "transport": "json"
     },
     {
@@ -4043,6 +4934,33 @@
     },
     {
       "method": "POST",
+      "path": "/api/v2/projects/{project_id}/research-records/{resource_id}/actions/restore",
+      "legacy_path": "/api/v1/projects/{pid}/studio/records/{identity}/restore",
+      "canonical": true,
+      "domain": "research-records",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/projects/{project_id}/assistant/conversations/{resource_id}/messages",
+      "legacy_path": "/api/v1/projects/{pid}/studio/conversations/{identity}/messages",
+      "canonical": true,
+      "domain": "assistant",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/projects/{project_id}/assistant/conversations/{resource_id}/messages",
+      "legacy_path": "/api/v1/projects/{pid}/studio/conversations/{identity}/messages",
+      "canonical": true,
+      "domain": "assistant",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
       "path": "/api/v2/projects/{project_id}/writing/diagnostics/{record_id}/quality-policy",
       "legacy_path": "/api/v1/projects/{pid}/diagnostics/{rid}/quality-policy",
       "canonical": true,
@@ -4183,6 +5101,24 @@
       "canonical": true,
       "domain": "sync",
       "owner": "app.advanced",
+      "transport": "json"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/projects/{project_id}/research-records/{resource_id}/sync-history",
+      "legacy_path": "/api/v1/projects/{pid}/studio/records/{identity}/sync-history",
+      "canonical": true,
+      "domain": "research-records",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/projects/{project_id}/research-records/{resource_id}/restore-sync",
+      "legacy_path": "/api/v1/projects/{pid}/studio/records/{identity}/restore-sync",
+      "canonical": true,
+      "domain": "research-records",
+      "owner": "app.research_api",
       "transport": "json"
     },
     {
@@ -4348,6 +5284,24 @@
       "transport": "json"
     },
     {
+      "method": "GET",
+      "path": "/api/v2/projects/{project_id}/reading/webpages/{resource_id}/download",
+      "legacy_path": "/api/v1/projects/{pid}/studio/webpages/{identity}/download",
+      "canonical": true,
+      "domain": "reading",
+      "owner": "app.research_api",
+      "transport": "file"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/projects/{project_id}/research-records/{resource_id}/versions",
+      "legacy_path": "/api/v1/projects/{pid}/studio/records/{identity}/versions",
+      "canonical": true,
+      "domain": "research-records",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
       "method": "POST",
       "path": "/api/v2/projects/{project_id}/writing/diagnostics/{record_id}/qualify",
       "legacy_path": "/api/v1/projects/{pid}/diagnostics/{rid}/qualify",
@@ -4408,6 +5362,24 @@
       "canonical": true,
       "domain": "reading",
       "owner": "app.document_reading",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/projects/{project_id}/workspace-intents/{resource_id}/finish",
+      "legacy_path": "/api/v1/projects/{pid}/workspace-intents/{identity}/finish",
+      "canonical": true,
+      "domain": "workspace-intents",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/projects/{project_id}/reading/parallel/{file_id}/annotations",
+      "legacy_path": "/api/v1/projects/{pid}/studio/reader/{fid}/annotations",
+      "canonical": true,
+      "domain": "reading",
+      "owner": "app.research_api",
       "transport": "json"
     },
     {
@@ -4502,6 +5474,24 @@
     },
     {
       "method": "POST",
+      "path": "/api/v2/projects/{project_id}/research-sync/conflicts/{conflict_id}",
+      "legacy_path": "/api/v1/projects/{pid}/research-sync/conflicts/{identity}",
+      "canonical": true,
+      "domain": "research-sync",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/projects/{project_id}/writing/proposals/{resource_id}/adopt",
+      "legacy_path": "/api/v1/projects/{pid}/studio/proposals/{identity}/adopt",
+      "canonical": true,
+      "domain": "writing",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
       "path": "/api/v2/projects/{project_id}/writing/analyses/{artifact_id}/review",
       "legacy_path": "/api/v1/projects/{pid}/writing-analyses/{aid}/review",
       "canonical": true,
@@ -4534,6 +5524,42 @@
       "canonical": true,
       "domain": "reading",
       "owner": "app.document_reading",
+      "transport": "json"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/projects/{project_id}/asset-library/{resource_id}/versions",
+      "legacy_path": "/api/v1/projects/{pid}/asset-library/{identity}/versions",
+      "canonical": true,
+      "domain": "asset-library",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/projects/{project_id}/reading/parallel/{file_id}/translate",
+      "legacy_path": "/api/v1/projects/{pid}/studio/reader/{fid}/translate",
+      "canonical": true,
+      "domain": "reading",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/projects/{project_id}/asset-library/{resource_id}/metadata",
+      "legacy_path": "/api/v1/projects/{pid}/studio/assets/{identity}/metadata",
+      "canonical": true,
+      "domain": "asset-library",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/projects/{project_id}/writing/comments/{resource_id}/reply",
+      "legacy_path": "/api/v1/projects/{pid}/studio/comments/{identity}/reply",
+      "canonical": true,
+      "domain": "writing",
+      "owner": "app.research_api",
       "transport": "json"
     },
     {
@@ -4618,6 +5644,42 @@
       "transport": "json"
     },
     {
+      "method": "PUT",
+      "path": "/api/v2/projects/{project_id}/reading/parallel/{file_id}/progress",
+      "legacy_path": "/api/v1/projects/{pid}/studio/reader/{fid}/progress",
+      "canonical": true,
+      "domain": "reading",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v2/projects/{project_id}/asset-library/{resource_id}/content",
+      "legacy_path": "/api/v1/projects/{pid}/studio/assets/{identity}/content",
+      "canonical": true,
+      "domain": "asset-library",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/projects/{project_id}/assets/canvases/{resource_id}/image",
+      "legacy_path": "/api/v1/projects/{pid}/studio/canvas/{identity}/image",
+      "canonical": true,
+      "domain": "assets",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/projects/{project_id}/parsing/results/{resource_id}/adopt",
+      "legacy_path": "/api/v1/projects/{pid}/studio/parse-results/{identity}/adopt",
+      "canonical": true,
+      "domain": "parsing",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
       "method": "POST",
       "path": "/api/v2/projects/{project_id}/sections/{section_id}/resolve-stale",
       "legacy_path": "/api/v1/projects/{pid}/sections/{sid}/resolve-stale",
@@ -4660,6 +5722,15 @@
       "canonical": true,
       "domain": "rules",
       "owner": "app.rule_rebuild",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/projects/{project_id}/reading/parallel/{file_id}/webpage",
+      "legacy_path": "/api/v1/projects/{pid}/studio/reader/{fid}/webpage",
+      "canonical": true,
+      "domain": "reading",
+      "owner": "app.research_api",
       "transport": "json"
     },
     {
@@ -4723,6 +5794,24 @@
       "canonical": true,
       "domain": "sections",
       "owner": "app.image_generation",
+      "transport": "json"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/projects/{pid}/studio/conversations/{identity}/messages",
+      "legacy_path": "/api/v1/projects/{pid}/studio/conversations/{identity}/messages",
+      "canonical": false,
+      "domain": "studio",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/projects/{pid}/studio/conversations/{identity}/messages",
+      "legacy_path": "/api/v1/projects/{pid}/studio/conversations/{identity}/messages",
+      "canonical": false,
+      "domain": "studio",
+      "owner": "app.research_api",
       "transport": "json"
     },
     {
@@ -4799,6 +5888,24 @@
     },
     {
       "method": "POST",
+      "path": "/api/v2/projects/{project_id}/reading-files/{file_id}/evidence",
+      "legacy_path": "/api/v1/projects/{pid}/reading-files/{fid}/evidence",
+      "canonical": true,
+      "domain": "reading-files",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/projects/{project_id}/reading/parallel/{file_id}/guide",
+      "legacy_path": "/api/v1/projects/{pid}/studio/reader/{fid}/guide",
+      "canonical": true,
+      "domain": "reading",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
       "path": "/api/v2/projects/{pid}/writing-sessions/{sid}/approve-judgment",
       "legacy_path": "/api/v1/projects/{pid}/writing-sessions/{sid}/approve-judgment",
       "canonical": false,
@@ -4849,6 +5956,51 @@
       "canonical": false,
       "domain": "document-reading",
       "owner": "app.document_reading",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/projects/{project_id}/annotations/{resource_id}/notes",
+      "legacy_path": "/api/v1/projects/{pid}/annotations/{identity}/notes",
+      "canonical": true,
+      "domain": "annotations",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/projects/{project_id}/literature/abstract/{record_id}",
+      "legacy_path": "/api/v1/projects/{pid}/studio/abstract/{rid}",
+      "canonical": true,
+      "domain": "literature",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/projects/{pid}/studio/records/{identity}/sync-history",
+      "legacy_path": "/api/v1/projects/{pid}/studio/records/{identity}/sync-history",
+      "canonical": false,
+      "domain": "studio",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/projects/{pid}/studio/records/{identity}/restore-sync",
+      "legacy_path": "/api/v1/projects/{pid}/studio/records/{identity}/restore-sync",
+      "canonical": false,
+      "domain": "studio",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v2/projects/{project_id}/integrations/credentials/{name}",
+      "legacy_path": "/api/v1/projects/{pid}/studio/credentials/{name}",
+      "canonical": true,
+      "domain": "integrations",
+      "owner": "app.research_api",
       "transport": "json"
     },
     {
@@ -4930,6 +6082,42 @@
       "canonical": false,
       "domain": "knowledge",
       "owner": "app.knowledge_api",
+      "transport": "json"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/projects/{project_id}/research-records/{resource_id}",
+      "legacy_path": "/api/v1/projects/{pid}/studio/records/{identity}",
+      "canonical": true,
+      "domain": "research-records",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v2/projects/{project_id}/research-records/{resource_id}",
+      "legacy_path": "/api/v1/projects/{pid}/studio/records/{identity}",
+      "canonical": true,
+      "domain": "research-records",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v2/projects/{project_id}/research-records/{resource_id}",
+      "legacy_path": "/api/v1/projects/{pid}/studio/records/{identity}",
+      "canonical": true,
+      "domain": "research-records",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/projects/{pid}/studio/parse-results/{identity}/adopt",
+      "legacy_path": "/api/v1/projects/{pid}/studio/parse-results/{identity}/adopt",
+      "canonical": false,
+      "domain": "studio",
+      "owner": "app.research_api",
       "transport": "json"
     },
     {
@@ -5077,6 +6265,15 @@
       "transport": "json"
     },
     {
+      "method": "POST",
+      "path": "/api/v2/projects/{project_id}/notes/{resource_id}/proposals",
+      "legacy_path": "/api/v1/projects/{pid}/notes/{identity}/proposals",
+      "canonical": true,
+      "domain": "notes",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
       "method": "GET",
       "path": "/api/v2/projects/{project_id}/writing/sessions/{section_id}",
       "legacy_path": "/api/v1/projects/{pid}/writing-sessions/{sid}",
@@ -5140,6 +6337,15 @@
       "transport": "json"
     },
     {
+      "method": "GET",
+      "path": "/api/v2/projects/{pid}/studio/webpages/{identity}/download",
+      "legacy_path": "/api/v1/projects/{pid}/studio/webpages/{identity}/download",
+      "canonical": false,
+      "domain": "studio",
+      "owner": "app.research_api",
+      "transport": "file"
+    },
+    {
       "method": "PATCH",
       "path": "/api/v2/projects/{project_id}/repositories/{repository_id}",
       "legacy_path": "/api/v1/projects/{pid}/repositories/{rid}",
@@ -5185,6 +6391,42 @@
       "transport": "json"
     },
     {
+      "method": "PUT",
+      "path": "/api/v2/projects/{project_id}/notes/{resource_id}/section",
+      "legacy_path": "/api/v1/projects/{pid}/notes/{identity}/section",
+      "canonical": true,
+      "domain": "notes",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/projects/{pid}/studio/records/{identity}/versions",
+      "legacy_path": "/api/v1/projects/{pid}/studio/records/{identity}/versions",
+      "canonical": false,
+      "domain": "studio",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/projects/{project_id}/asset-library/{resource_id}",
+      "legacy_path": "/api/v1/projects/{pid}/studio/assets/{identity}",
+      "canonical": true,
+      "domain": "asset-library",
+      "owner": "app.research_api",
+      "transport": "file"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/projects/{project_id}/parsing/providers/{file_id}",
+      "legacy_path": "/api/v1/projects/{pid}/studio/parsing/{fid}",
+      "canonical": true,
+      "domain": "parsing",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
       "method": "GET",
       "path": "/api/v2/projects/{project_id}/writing/joint-reviews/{jid}",
       "legacy_path": "/api/v1/projects/{pid}/writing-joint-reviews/{jid}",
@@ -5218,6 +6460,42 @@
       "canonical": true,
       "domain": "knowledge",
       "owner": "app.knowledge_api",
+      "transport": "json"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/projects/{project_id}/reading/parallel/{file_id}",
+      "legacy_path": "/api/v1/projects/{pid}/studio/reader/{fid}",
+      "canonical": true,
+      "domain": "reading",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/projects/{pid}/studio/records/{identity}/restore",
+      "legacy_path": "/api/v1/projects/{pid}/studio/records/{identity}/restore",
+      "canonical": false,
+      "domain": "studio",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/projects/{pid}/studio/assets/{identity}/metadata",
+      "legacy_path": "/api/v1/projects/{pid}/studio/assets/{identity}/metadata",
+      "canonical": false,
+      "domain": "studio",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/projects/{pid}/studio/proposals/{identity}/adopt",
+      "legacy_path": "/api/v1/projects/{pid}/studio/proposals/{identity}/adopt",
+      "canonical": false,
+      "domain": "studio",
+      "owner": "app.research_api",
       "transport": "json"
     },
     {
@@ -5257,12 +6535,48 @@
       "transport": "json"
     },
     {
+      "method": "PUT",
+      "path": "/api/v2/projects/{pid}/studio/assets/{identity}/content",
+      "legacy_path": "/api/v1/projects/{pid}/studio/assets/{identity}/content",
+      "canonical": false,
+      "domain": "studio",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/projects/{pid}/studio/comments/{identity}/reply",
+      "legacy_path": "/api/v1/projects/{pid}/studio/comments/{identity}/reply",
+      "canonical": false,
+      "domain": "studio",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
       "method": "POST",
       "path": "/api/v2/projects/{pid}/diagnostics/{rid}/quality-policy",
       "legacy_path": "/api/v1/projects/{pid}/diagnostics/{rid}/quality-policy",
       "canonical": false,
       "domain": "diagnostics",
       "owner": "app.writing_agent.api",
+      "transport": "json"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/projects/{project_id}/writing/quality/{task_id}",
+      "legacy_path": "/api/v1/projects/{pid}/writing-quality/{tid}",
+      "canonical": true,
+      "domain": "writing",
+      "owner": "app.writing_flow_api",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/projects/{pid}/studio/reader/{fid}/annotations",
+      "legacy_path": "/api/v1/projects/{pid}/studio/reader/{fid}/annotations",
+      "canonical": false,
+      "domain": "studio",
+      "owner": "app.research_api",
       "transport": "json"
     },
     {
@@ -5311,6 +6625,15 @@
       "transport": "file"
     },
     {
+      "method": "POST",
+      "path": "/api/v2/projects/{pid}/studio/canvas/{identity}/image",
+      "legacy_path": "/api/v1/projects/{pid}/studio/canvas/{identity}/image",
+      "canonical": false,
+      "domain": "studio",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
       "method": "GET",
       "path": "/api/v2/projects/{project_id}/snapshots/{snapshot_id}",
       "legacy_path": "/api/v1/projects/{pid}/snapshots/{sid}",
@@ -5353,6 +6676,24 @@
       "canonical": false,
       "domain": "evidence-knowledge",
       "owner": "app.knowledge_units",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/projects/{pid}/studio/reader/{fid}/translate",
+      "legacy_path": "/api/v1/projects/{pid}/studio/reader/{fid}/translate",
+      "canonical": false,
+      "domain": "studio",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/projects/{project_id}/notes/{resource_id}/ai",
+      "legacy_path": "/api/v1/projects/{pid}/studio/notes/{identity}/ai",
+      "canonical": true,
+      "domain": "notes",
+      "owner": "app.research_api",
       "transport": "json"
     },
     {
@@ -5428,6 +6769,15 @@
       "transport": "json"
     },
     {
+      "method": "PUT",
+      "path": "/api/v2/projects/{pid}/studio/reader/{fid}/progress",
+      "legacy_path": "/api/v1/projects/{pid}/studio/reader/{fid}/progress",
+      "canonical": false,
+      "domain": "studio",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
       "method": "GET",
       "path": "/api/v2/projects/{pid}/expenses/evidence/{identity}",
       "legacy_path": "/api/v1/projects/{pid}/expenses/evidence/{identity}",
@@ -5491,6 +6841,15 @@
       "transport": "json"
     },
     {
+      "method": "POST",
+      "path": "/api/v2/projects/{pid}/studio/reader/{fid}/webpage",
+      "legacy_path": "/api/v1/projects/{pid}/studio/reader/{fid}/webpage",
+      "canonical": false,
+      "domain": "studio",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
       "method": "GET",
       "path": "/api/v2/projects/{pid}/writing-joint-reviews/{jid}",
       "legacy_path": "/api/v1/projects/{pid}/writing-joint-reviews/{jid}",
@@ -5506,6 +6865,15 @@
       "canonical": true,
       "domain": "docx",
       "owner": "app.advanced",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/projects/{pid}/studio/notes/{identity}/ai",
+      "legacy_path": "/api/v1/projects/{pid}/studio/notes/{identity}/ai",
+      "canonical": false,
+      "domain": "studio",
+      "owner": "app.research_api",
       "transport": "json"
     },
     {
@@ -5555,6 +6923,51 @@
     },
     {
       "method": "POST",
+      "path": "/api/v2/projects/{pid}/studio/reader/{fid}/guide",
+      "legacy_path": "/api/v1/projects/{pid}/studio/reader/{fid}/guide",
+      "canonical": false,
+      "domain": "studio",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/projects/{pid}/studio/records/{identity}",
+      "legacy_path": "/api/v1/projects/{pid}/studio/records/{identity}",
+      "canonical": false,
+      "domain": "studio",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v2/projects/{pid}/studio/records/{identity}",
+      "legacy_path": "/api/v1/projects/{pid}/studio/records/{identity}",
+      "canonical": false,
+      "domain": "studio",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v2/projects/{pid}/studio/records/{identity}",
+      "legacy_path": "/api/v1/projects/{pid}/studio/records/{identity}",
+      "canonical": false,
+      "domain": "studio",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v2/projects/{pid}/studio/credentials/{name}",
+      "legacy_path": "/api/v1/projects/{pid}/studio/credentials/{name}",
+      "canonical": false,
+      "domain": "studio",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
       "path": "/api/v2/projects/{pid}/thesis-core/{cid}/publish",
       "legacy_path": "/api/v1/projects/{pid}/thesis-core/{cid}/publish",
       "canonical": false,
@@ -5578,6 +6991,15 @@
       "canonical": true,
       "domain": "sync",
       "owner": "app.advanced",
+      "transport": "file"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/projects/{pid}/studio/assets/{identity}",
+      "legacy_path": "/api/v1/projects/{pid}/studio/assets/{identity}",
+      "canonical": false,
+      "domain": "studio",
+      "owner": "app.research_api",
       "transport": "file"
     },
     {
@@ -5671,6 +7093,33 @@
       "transport": "json"
     },
     {
+      "method": "GET",
+      "path": "/api/v2/projects/{pid}/studio/abstract/{rid}",
+      "legacy_path": "/api/v1/projects/{pid}/studio/abstract/{rid}",
+      "canonical": false,
+      "domain": "studio",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/projects/{pid}/writing-quality/{tid}",
+      "legacy_path": "/api/v1/projects/{pid}/writing-quality/{tid}",
+      "canonical": false,
+      "domain": "writing-quality",
+      "owner": "app.writing_flow_api",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/projects/{pid}/studio/parsing/{fid}",
+      "legacy_path": "/api/v1/projects/{pid}/studio/parsing/{fid}",
+      "canonical": false,
+      "domain": "studio",
+      "owner": "app.research_api",
+      "transport": "json"
+    },
+    {
       "method": "PATCH",
       "path": "/api/v2/projects/{pid}/writing-checks/{cid}",
       "legacy_path": "/api/v1/projects/{pid}/writing-checks/{cid}",
@@ -5687,6 +7136,15 @@
       "domain": "exports",
       "owner": "app.main",
       "transport": "file"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/projects/{pid}/studio/reader/{fid}",
+      "legacy_path": "/api/v1/projects/{pid}/studio/reader/{fid}",
+      "canonical": false,
+      "domain": "studio",
+      "owner": "app.research_api",
+      "transport": "json"
     },
     {
       "method": "GET",
@@ -5749,6 +7207,15 @@
       "canonical": true,
       "domain": "continued-tables",
       "owner": "app.advanced",
+      "transport": "json"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/projects/{project_id}/products/{kind}/{resource_id}",
+      "legacy_path": "/api/v1/projects/{pid}/products/{kind}/{identity}",
+      "canonical": true,
+      "domain": "products",
+      "owner": "app.research_api",
       "transport": "json"
     }
   ],

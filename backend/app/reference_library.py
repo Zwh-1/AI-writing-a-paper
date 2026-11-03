@@ -177,18 +177,18 @@ def import_archive(pid, data, filename, expected_sha256=None):
                 if not same['file_id']:
                     linked_meta = {**same['meta'], 'scope': 'full_text', 'archive_member': record['member'], 'archive_sha256': archive_sha, 'original_pages': record['pages']}
                     linked_meta.setdefault('source_citation', meta['citation_raw'])
-                    db.execute('INSERT INTO bibliography_revisions VALUES(?,?,?,?)', (db.uid(), same['id'], db.dumps(same['meta']), db.now()))
-                    db.execute('UPDATE bibliography SET metadata=?,file_id=?,revision=revision+1 WHERE id=?', (db.dumps(linked_meta), original['id'], same['id']))
+                    from .reference_service import save as save_reference
+                    current_reference=db.one('SELECT verification FROM bibliography WHERE id=?',(same['id'],))
+                    save_reference(pid,linked_meta,original['id'],same['id'],current_reference['verification'])
                     same['file_id'] = original['id']
                     same['meta'] = linked_meta
-                    documents.fact_changed(pid, same['id'])
                     linked += 1
                 else:
                     unchanged += 1
                 rid = same['id']
             else:
-                rid = db.uid()
-                db.execute('INSERT INTO bibliography(id,project_id,metadata,file_id,verification,created_at) VALUES(?,?,?,?,?,?)', (rid, pid, db.dumps(meta), original['id'], 'unverified', db.now()))
+                from .reference_service import save as save_reference
+                rid=save_reference(pid,meta,original['id'])['id']
                 existing.append({'id': rid, 'file_id': original['id'], 'meta': meta})
                 imported += 1
             reference_ids.append(rid)

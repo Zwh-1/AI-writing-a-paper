@@ -18,6 +18,8 @@ def revision_permissions(pid,rid,_visited=None):
         a=db.one('SELECT * FROM artifacts WHERE id=? AND project_id=?',(aid,pid))
         if not a:fail('SOURCE_ACCESS_REVOKED','正文中的研究产物不存在',403)
         meta=db.loads(a['metadata'],{})
+        from ..resource_refs import validate
+        validate(pid,meta.get('source_refs',[]),remote=True)
         if meta.get('egress','local_only')=='local_only':fail('SOURCE_ACCESS_REVOKED','正文中的研究产物禁止外发',403)
         if meta.get('source_file_id'):
             if not security.file_allows_remote(meta['source_file_id'],pid):fail('SOURCE_ACCESS_REVOKED','研究产物原件禁止外发',403)
@@ -29,6 +31,10 @@ def revision_permissions(pid,rid,_visited=None):
         for source_revision in meta.get('source_revision_ids',[]):
             stamps.append(revision_permissions(pid,source_revision,visited))
     for dep in db.rows('SELECT * FROM dependencies WHERE revision_id=?',(rid,)):
+        if dep['upstream_type'].startswith('knowledge:'):
+            from ..resource_refs import validate
+            ref={'type':dep['upstream_type'][len('knowledge:'):],'id':dep['upstream_id'],'version':dep['upstream_version']}
+            validate(pid,[ref],remote=True);stamps.append(ref)
         if dep['upstream_type']=='document_reading':
             from ..document_reading import context as reading_context
             reading=reading_context(pid,dep['upstream_id'],remote=True);files.add(reading['file_id']);stamps.append(reading['version'])

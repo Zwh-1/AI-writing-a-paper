@@ -5,7 +5,7 @@ from . import db
 from .config import MAX_FILE,MAX_UNPACKED
 from .security import put_blob,safe_object
 NS={'a':'http://schemas.openxmlformats.org/drawingml/2006/main','p':'http://schemas.openxmlformats.org/presentationml/2006/main','r':'http://schemas.openxmlformats.org/officeDocument/2006/relationships'}
-SUPPORTED={'.pptx','.pdf','.docx','.txt','.md','.csv','.xlsx','.bib','.ris','.json'}
+SUPPORTED={'.pptx','.pdf','.docx','.doc','.txt','.md','.csv','.xlsx','.bib','.ris','.json'}
 def tokens(text):
     text=text.lower()
     try:
@@ -60,6 +60,10 @@ def pptx_pages(data):
             yield {'number':number,'title':parts[0].split('\n')[0][:150] if parts else f'第 {number} 页','text':'\n\n'.join(parts),'images':images,'notes':'\n'.join(notes),'visual':bool(images)}
 
 def parse_pages(data,ext):
+    if ext=='.doc':
+        from .word_conversion import convert_doc
+        yield from parse_pages(convert_doc(data),'.docx')
+        return
     if ext in ('.docx','.xlsx'):
         with zipfile.ZipFile(io.BytesIO(data)) as archive:
             if sum(i.file_size for i in archive.infolist())>MAX_UNPACKED:raise ValueError('文档解压体积超过上限')

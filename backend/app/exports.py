@@ -30,16 +30,12 @@ def renderer():
     if found:return found
     from .office_renderer import capabilities
     return 'office-com' if capabilities()['registered_com'] and capabilities()['powershell'] else None
-def export_project(pid,options,tid=None):
-    reviews.run(pid)
+def export_project(pid,options,tid=None,prepared=None):
+    from .export_service import prepare
+    prepared=prepared or prepare(pid,options)
     from .export_checks import freeze,check_docx,markdown_document
-    writing_report=None
-    with db.transaction():
-        frozen=freeze(pid)
-        has_writing=db.one('SELECT id FROM thesis_core_versions WHERE project_id=? LIMIT 1',(pid,))
-        if has_writing or options.get('mode')=='strict' or options.get('writing_policy')=='strict':
-            from .writing_agent.paper_review import export_report
-            writing_report=export_report(pid,options.get('mode')=='strict' or options.get('writing_policy')=='strict')
+    writing_report=prepared['writing_report']
+    frozen=prepared['snapshot']
     p=frozen['project'];fmt={**DEFAULT_FORMAT,**(frozen['settings'].get('format:'+pid) or {})};sections=frozen['sections'];valid_revisions={x['id'] for x in frozen['revisions'].values()};report_findings=[x for x in frozen['findings'] if not x['revision_id'] or x['revision_id'] in valid_revisions];findings={'findings':report_findings,'summary':{state:sum(x['result']==state for x in report_findings) for state in ('pass','fail','unknown')}}
     from .paper_format import resolve as resolve_format
     format_resolution=resolve_format(pid,package=frozen['package'],settings=frozen['settings'].get('format:'+pid) or {},project=p)
@@ -228,6 +224,9 @@ def export_project(pid,options,tid=None):
             if 'superscript' in marks:run.font.superscript=True
             if 'subscript' in marks:run.font.subscript=True
             if 'code' in marks:run.font.name='Consolas'
+        elif typ=='inlineFormula':
+            from .math_office import convert
+            par._p.append(omml(attrs.get('omml') or convert(attrs.get('latex') or attrs.get('expression',''))))
         elif typ=='citation':
             run=par.add_run(('（'+year_labels.get(attrs.get('citationId'),'?')+'）') if citation_style=='author_year' else ('['+str(numbering.get(attrs.get('citationId'),'?'))+']'));run.font.superscript=citation_style=='numeric' and bool(fmt['reference_superscript'])
         elif typ=='footnote':
@@ -315,7 +314,7 @@ def export_project(pid,options,tid=None):
                 keep_note_with_table(table)
                 note=doc.add_paragraph('注：'+attrs['note']);unindent(note)
         elif typ=='figure':
-            aid=attrs.get('artifactId');artifact=artifacts.get(aid)
+            aid=attrs.get('artifactId');artifact=artifacts.get(attrs.get('assetVersionId') or aid)
             if not artifact or not artifact['sha256']: raise ValueError('图片资源缺失')
             try:
                 from PIL import Image
@@ -332,6 +331,9 @@ def export_project(pid,options,tid=None):
         elif typ=='formula':
             para=doc.add_paragraph()
             if attrs.get('omml'):para._p.append(omml(attrs['omml']))
+            elif attrs.get('latex') or attrs.get('expression'):
+                from .math_office import convert
+                para._p.append(omml(convert(attrs.get('latex') or attrs.get('expression'))))
             else:
                 math=OxmlElement('m:oMath');run=OxmlElement('m:r');t=OxmlElement('m:t');t.text=attrs.get('expression','');run.append(t);math.append(run);para._p.append(math)
         else:
@@ -432,9 +434,13 @@ def export_project(pid,options,tid=None):
     for item in snapshots:
         for node in documents.nodes(item['document']):
             if node['type']=='figure':
-                artifact=artifacts.get(node.get('attrs',{}).get('artifactId'))
+                artifact=artifacts.get(node.get('attrs',{}).get('assetVersionId') or node.get('attrs',{}).get('artifactId'))
                 if artifact and artifact['sha256']:
-                    with Image.open(safe_object(artifact['sha256'])) as image:image.convert('RGB').save(folder/('图-'+artifact['id']+'.png'))
+                    version_name='图-'+(node.get('attrs',{}).get('assetVersionId') or artifact['id'])+'.png'
+                    with Image.open(safe_object(artifact['sha256'])) as image:image.convert('RGB').save(folder/version_name)
+                    legacy_name=folder/('图-'+artifact['id']+'.png')
+                    if not legacy_name.exists():legacy_name.write_bytes((folder/version_name).read_bytes())
+    (folder/'研究过程与资产版本.json').write_text(db.dumps(frozen.get('research_trace',{})),encoding='utf-8')
     bundle=folder/'论文交付包.zip'
     with zipfile.ZipFile(bundle,'w',zipfile.ZIP_DEFLATED) as z:
         for path in folder.iterdir():

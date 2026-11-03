@@ -16,11 +16,11 @@ def model(monkeypatch,transform=lambda row:row['text']):
     return calls
 
 
-def execute(pid,sid,revision,target_ids=()):
+def execute(pid,sid,revision,target_ids=(),expected_status='succeeded'):
     job=tasks.enqueue(pid,'write',{'section_id':sid,'operation':'polish','base_revision_id':revision,'target_node_ids':list(target_ids)})
     assert tasks.run_one()
     result=db.one('SELECT * FROM tasks WHERE id=?',(job['id'],))
-    assert result['status']=='succeeded',result['error']
+    assert result['status']==expected_status,result['error']
     return job,db.loads(result['result'])
 
 
@@ -95,7 +95,7 @@ def test_polish_preserves_inline_citations_footnotes_formatting_and_outer_blocks
 @pytest.mark.parametrize('replacement',['响应为43毫秒，尚未部署。','响应为42秒，尚未部署。','响应为42毫秒，已经部署。',' '])
 def test_polish_rejects_changed_numbers_or_completion_state(client,monkeypatch,replacement):
     pid=project(client);manual_package(client,pid);sid=section(client,pid);base=save(client,sid,'响应为42毫秒，尚未部署。').json()
-    model(monkeypatch,lambda row:replacement);job,result=execute(pid,sid,base['id'])
+    model(monkeypatch,lambda row:replacement);job,result=execute(pid,sid,base['id'],expected_status='failed')
     assert result['document'] is None and not result['polish_validation']['passed']
     assert result['validation_error'] and result['raw_text']
     response=client.post(f'/api/v1/sections/{sid}/accept',json={'task_id':job['id'],'base_revision_id':base['id']})

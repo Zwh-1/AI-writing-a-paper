@@ -1,8 +1,4 @@
 import {
-  ArrowRight,
-  BookOpen,
-  FolderOpen,
-  ShieldCheck,
   GitBranch,
   X,
 } from "lucide-react";
@@ -13,34 +9,16 @@ import type { ReactNode } from "react";
 import { createContext, useContext, useEffect, useState } from "react";
 import WorkspaceDialog from "./WorkspaceDialog";
 import ExpenseLedger from "../ExpenseLedger";
+import WorkspaceNavigation from "./WorkspaceNavigation";
+import { workspaceForPage } from "./projectNavigation";
 import "./sourceWorkspace.css";
 
-const destinations = [
-  {
-    page: "materials" as const,
-    title: "资料中心",
-    subtitle: "原件、用途与解析",
-    Icon: FolderOpen,
-    count: "active_files",
-    unit: "份原件",
-  },
-  {
-    page: "rules" as const,
-    title: "论文规则",
-    subtitle: "适用要求与发布",
-    Icon: ShieldCheck,
-    count: "eligible_rules",
-    unit: "条可纳入",
-  },
-  {
-    page: "references" as const,
-    title: "文献与知识",
-    subtitle: "书目、阅读与综合",
-    Icon: BookOpen,
-    count: "references",
-    unit: "篇书目",
-  },
-];
+const sourceWorkspace = workspaceForPage("materials")!;
+const sourceCounts: Record<string, { key: string; unit: string }> = {
+  materials: { key: "active_files", unit: "份原件" },
+  rules: { key: "eligible_rules", unit: "条可纳入" },
+  references: { key: "references", unit: "篇书目" },
+};
 
 type SourceResource = ReturnType<typeof useWorkspaceResource<Row>>;
 const SourceData = createContext<SourceResource | null>(null);
@@ -108,46 +86,31 @@ export function SourceWorkspaceNavigation({
   const billing = resource.data?.billing;
   const blocked = !!billing?.paid_blocked;
   return (
-    <div className="source-workspace-nav" aria-label="资料规则文献联动">
-      <div className="source-workspace-intro">
-        <span>
-          <GitBranch size={14} /> 同一份原件，贯穿整理、规则和研究
-        </span>
-        <small>分类和发布状态分别核对</small>
-      </div>
-      <div className="source-destinations">
-        {destinations.map(({ page, title, subtitle, Icon, count, unit }) => (
-          <button
-            key={page}
-            type="button"
-            aria-current={current === page ? "page" : undefined}
-            onClick={() => {
-              if (page !== current)
-                navigateSources(pid, page, {
-                  view:
-                    page === "references"
-                      ? "library"
-                      : page === "rules"
-                        ? "catalog"
-                        : "library",
-                });
-            }}
-          >
-            <span className="source-destination-icon">
-              <Icon size={19} />
-            </span>
-            <span className="source-destination-copy">
-              <strong>{title}</strong>
-              <small>{subtitle}</small>
-            </span>
-            <span className="source-destination-count">
-              {resource.data ? resource.data.counts[count] : "—"}
-              <small>{unit}</small>
-            </span>
-            {current !== page && <ArrowRight size={14} />}
-          </button>
-        ))}
-      </div>
+    <WorkspaceNavigation
+      className="source-workspace-nav"
+      label="资料规则文献联动"
+      current={current}
+      introduction={
+        <>
+          <GitBranch size={14} /> {sourceWorkspace.description}
+        </>
+      }
+      note={sourceWorkspace.note}
+      destinations={sourceWorkspace.pages.map((destination) => ({
+        ...destination,
+        metadata: (
+          <>
+            {resource.data ? resource.data.counts[sourceCounts[destination.id].key] : "—"}
+            <small>{sourceCounts[destination.id].unit}</small>
+          </>
+        ),
+      }))}
+      onNavigate={(page) =>
+        navigateSources(pid, page as SourcePage, {
+          view: page === "rules" ? "catalog" : "library",
+        })
+      }
+    >
       {blocked && (
         <div className="source-billing-note">
           <p>
@@ -189,7 +152,7 @@ export function SourceWorkspaceNavigation({
           </button>
         </p>
       )}
-    </div>
+    </WorkspaceNavigation>
   );
 }
 

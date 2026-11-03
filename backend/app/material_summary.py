@@ -98,7 +98,9 @@ def source(fid):
     f=db.one('SELECT * FROM files WHERE id=?',(fid,))
     if not f or not f['active']:raise HTTPException(404,'资料不存在或已停用')
     pages=db.rows('SELECT id,page_number,title,text,notes FROM pages WHERE file_id=? ORDER BY page_number',(fid,))
-    return f,pages,digest({'sha256':f['sha256'],'pages':pages})
+    from .content_view import summary_pages
+    pages,parse_id=summary_pages(f,pages)
+    return f,pages,digest({'sha256':f['sha256'],'pages':pages,**({'parse_id':parse_id} if parse_id else {})})
 
 def status(fid, budget_snapshot=None):
     f,pages,fingerprint=source(fid)
@@ -250,6 +252,8 @@ def generate(task,payload):
             actual_model=' + '.join(sorted(used_models)) or cfg['model']
             result={**nodes[0],'models_used':sorted(used_models),'covered_pages':sorted(covered),'empty_pages':[p['page_number'] for p in pages if p['page_number'] not in covered],'total_pages':len(pages),'requires_human_review':True}
             db.execute('INSERT OR REPLACE INTO material_summaries VALUES(?,?,?,?,?,?,?)',(fid,fingerprint,signature,db.dumps(result),actual_model,task['id'],db.now()))
+            from .knowledge_lineage import changed
+            changed(f['project_id'],'summary',fid,'资料总结已更新，复用内容需复查')
         return {'file_id':fid,'model':actual_model,'covered_pages':len(covered),'cached':False}
 
 

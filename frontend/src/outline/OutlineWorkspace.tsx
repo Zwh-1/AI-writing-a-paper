@@ -1,4 +1,4 @@
-import { useRef, useState, type FormEvent } from "react";
+import { useRef, useState, type FormEvent, type ReactNode } from "react";
 import {
   ArrowUpRight,
   BookOpen,
@@ -9,6 +9,7 @@ import {
   Sparkles,
 } from "lucide-react";
 import { OutlineManager } from "../Completion";
+import ProductLink from '../products/ProductLink';
 import { send } from "../client";
 import WorkspaceDialog from "../workspace/WorkspaceDialog";
 import { useWorkspaceResource } from "../workspace/useWorkspaceResource";
@@ -34,6 +35,7 @@ type Props = {
   tick: number;
   act: (fn: () => Promise<any>, success?: string) => Promise<any>;
   onWrite: (sectionId: string) => void;
+  navigation?: ReactNode;
 };
 
 const sectionKinds = {
@@ -226,7 +228,7 @@ function SectionPlanDialog({
   );
 }
 
-export default function OutlineWorkspace({ pid, tick, act, onWrite }: Props) {
+export default function OutlineWorkspace({ pid, tick, act, onWrite, navigation }: Props) {
   const {
     data: sections,
     error,
@@ -259,9 +261,7 @@ export default function OutlineWorkspace({ pid, tick, act, onWrite }: Props) {
       <header className="page-title outline-heading">
         <div>
           <div className="eyebrow">PAPER WORKBENCH</div>
-          <h1>
-            让每一章都有<span>明确任务。</span>
-          </h1>
+          <h1>提纲与计划</h1>
           <p>明确写作目标、篇幅与前置材料，再从准备充分的章节开始。</p>
         </div>
         <div className="actions" aria-label="提纲操作">
@@ -341,6 +341,9 @@ export default function OutlineWorkspace({ pid, tick, act, onWrite }: Props) {
           </button>
         </div>
       </header>
+
+      {navigation}
+      <div className="studio-toolbar"><ProductLink pid={pid}/></div>
 
       <OutlineManager pid={pid} tick={tick} act={act} />
 

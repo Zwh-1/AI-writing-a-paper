@@ -1,0 +1,58 @@
+services:
+  workbench:
+    build:
+      context: ..
+      dockerfile: deployment/workbench.Dockerfile
+    ports:
+      - "127.0.0.1:8765:8765"
+    environment:
+      PAPER_DATA_DIR: /data
+      PAPER_CONTAINER_DEPLOYMENT: "1"
+      PAPER_BIND: "0.0.0.0"
+      PAPER_SESSION_DIR: /data/runtime
+      PAPER_CREDENTIAL_KEY_FILE: /run/secrets/credential_key
+    secrets:
+      - credential_key
+    volumes:
+      - workbench-data:/data
+      - workbench-runtime:/app/.runtime
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD","python","-c","import urllib.request;urllib.request.urlopen('http://127.0.0.1:8765/api/v1/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+  worker:
+    build:
+      context: ..
+      dockerfile: deployment/workbench.Dockerfile
+    command: ["worker"]
+    environment:
+      PAPER_DATA_DIR: /data
+      PAPER_CREDENTIAL_KEY_FILE: /run/secrets/credential_key
+    secrets:
+      - credential_key
+    volumes:
+      - workbench-data:/data
+      - workbench-runtime:/app/.runtime
+    restart: unless-stopped
+  surya:
+    profiles: ["ocr"]
+    build:
+      context: ..
+      dockerfile: deployment/surya.Dockerfile
+      args:
+        TORCH_CHANNEL: cpu
+    environment:
+      SURYA_DATA_ROOT: /data/surya
+    volumes:
+      - surya-data:/data
+    expose: ["8769"]
+    restart: unless-stopped
+secrets:
+  credential_key:
+    file: ./private/credential.key
+volumes:
+  workbench-data:
+  workbench-runtime:
+  surya-data:

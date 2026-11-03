@@ -1,0 +1,15 @@
+/* Each grouped page uses the main shell's spacing, like the source workspace. */
+main > .wa-page,
+main > .research-studio,
+main > .product-workspace {
+  min-width: 0;
+  max-width: none;
+  margin: 0;
+  padding: 0;
+}
+
+.sidebar nav > button:focus-visible,
+.sidebar-bottom > button:focus-visible {
+  outline: 2px solid #27715c;
+  outline-offset: 2px;
+}

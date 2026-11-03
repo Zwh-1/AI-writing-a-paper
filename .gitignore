@@ -41,3 +41,6 @@ docs/**
 
 # Public route manifests contain API paths and owners only.
 !docs/api-contract-v2.json
+
+# Build copies of formula fonts come from the pinned npm dependency.
+frontend/public/mathlive-fonts/

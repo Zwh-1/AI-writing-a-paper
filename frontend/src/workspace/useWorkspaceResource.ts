@@ -32,5 +32,13 @@ export function useWorkspaceResource<T>(path: string, tick: number) {
     void load();
     return () => request.current?.abort();
   }, [load, tick]);
+  useEffect(() => {
+    const changed=(event:Event)=>{
+      const pid=(event as CustomEvent).detail?.project_id;
+      if(path&&(!pid||path.includes('/projects/'+pid+'/')||!path.startsWith('/projects/')))void load();
+    };
+    window.addEventListener('paper-resource-changed',changed);
+    return()=>window.removeEventListener('paper-resource-changed',changed);
+  },[path,load]);
   return { data, error, loading, load };
 }

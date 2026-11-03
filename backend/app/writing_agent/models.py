@@ -1,5 +1,6 @@
 from typing import Literal
 from pydantic import BaseModel,ConfigDict,Field
+from ..schemas import ClaimSpan,CitationIntent
 
 class Strict(BaseModel):model_config=ConfigDict(extra='forbid')
 class JudgmentClaim(Strict):
@@ -20,6 +21,8 @@ class DraftParagraph(Strict):
     text:str=Field(min_length=1,max_length=20000)
     reference_ids:list[str]=Field(default_factory=list,max_length=30)
     evidence_ids:list[str]=Field(default_factory=list,max_length=30)
+    claim_spans:list[ClaimSpan]=Field(default_factory=list,max_length=100)
+    citation_intents:list[CitationIntent]=Field(default_factory=list,max_length=100)
 class Draft(Strict):
     paragraphs:list[DraftParagraph]=Field(min_length=1,max_length=40)
     missing_materials:list[str]=Field(default_factory=list,max_length=30)

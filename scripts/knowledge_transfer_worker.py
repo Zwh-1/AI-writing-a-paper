@@ -9,6 +9,7 @@ def remap(value,mapping):
     if not mapping:return value
     if isinstance(value,str):
         if value in mapping:return mapping[value]
+        if value.startswith('unit:') and value[5:] in mapping:return 'unit:'+mapping[value[5:]]
         if value[:1] in ('{','['):
             try:return db.dumps(remap(json.loads(value),mapping))
             except ValueError:pass
@@ -171,7 +172,12 @@ def main():
         if mode=='fork':
             # Only this isolated staging DB is changed; original histories are
             # retained in the verified archive and the final import receipt.
-            with db.transaction():rebase(pid)
+            with db.transaction():
+                rebase(pid)
+                from app.resource_registry import rebase_research
+                rebase_research(pid)
+        from app.research_relations import backfill
+        backfill(pid)
         from app.parsers import tokens
         with db.transaction():
             for row in db.rows('SELECT id,text FROM sources'):db.execute('INSERT INTO source_fts VALUES(?,?)',(row['id'],tokens(row['text'])))

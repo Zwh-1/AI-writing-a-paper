@@ -5,7 +5,7 @@ from . import db, security
 from . import knowledge_lineage as lineage
 
 NAMESPACES={'literature','project','guidance'}
-KINDS={'document','question','concept','method','system','module','dataset','metric','environment','result','section','rule'}
+KINDS={'document','author','keyword','question','concept','method','system','module','dataset','metric','environment','result','section','rule'}
 
 def namespace(value):
     if value not in NAMESPACES:lineage.fail('INVALID_NAMESPACE','知识范围无效',422)

@@ -6,13 +6,13 @@ from . import evidence
 def assemble(pid,sid,contract_id,profile,remote=True,evidence_ids=None,operation='generate'):
     p=security.require_project(pid);s=section(sid,pid);head=state(pid);contract=owned('contract',contract_id,pid);c=db.loads(contract['content_json'],{})
     if contract['section_id']!=sid:fail('INVALID_CONTRACT','任务不属于当前章节')
-    if not head['core_version_id'] or not head['target_snapshot_id']:fail('PROJECT_NOT_READY','请先发布论文核心并选择代码快照')
-    core=owned('core',head['core_version_id'],pid);snapshot=owned('snapshot',head['target_snapshot_id'],pid);core_content=db.loads(core['content_json'],{})
+    if not head['core_version_id']:fail('PROJECT_NOT_READY','请先发布论文核心')
+    core=owned('core',head['core_version_id'],pid);snapshot=owned('snapshot',head['target_snapshot_id'],pid) if head['target_snapshot_id'] else None;core_content=db.loads(core['content_json'],{})
     for cid in [*core_content.get('claim_versions',[]),*c.get('claim_versions',[])]:
         owned('claim',cid,pid)
         for link in db.rows('SELECT evidence_id FROM claim_evidence_links WHERE claim_version_id=?',(cid,)):
             if remote and not evidence.allowed_remote(pid,link['evidence_id']):fail('SOURCE_ACCESS_REVOKED','核心或任务引用了禁止外发的论断依据',403)
-    if snapshot['state']!='ready':fail('SNAPSHOT_UNSTABLE','当前来源快照不稳定')
+    if snapshot and snapshot['state']!='ready':fail('SNAPSHOT_UNSTABLE','当前来源快照不稳定')
     package=db.one('SELECT * FROM rule_packages WHERE id=? AND project_id=?',(p['rule_package_id'],pid))
     if not package:fail('RULE_PACKAGE_REQUIRED','请先发布论文规则包')
     rr=rules.applicable(package,s,operation);rr=[r for r in rr if r['category']!='format']
@@ -76,6 +76,13 @@ def assemble(pid,sid,contract_id,profile,remote=True,evidence_ids=None,operation
     payload['project_inputs']={'rule_package_id':package['id'],'rule_ids':[r['id'] for r in rr],'evidence_ids':[e['id'] for e in ee],'reference_ids':[r['id'] for r in references],'material_evidence_ids':[e['id'] for e in ee if e['kind'] in ('material_observation','literature')]}
     manifest={'project_id':pid,'section_id':sid,'project_state_revision':head['revision'],'core_version_id':head['core_version_id'],'target_snapshot_id':head['target_snapshot_id'],'contract_version_id':contract_id,'rule_package_id':p['rule_package_id'],'evidence_versions':{e['id']:e['origin_version'] for e in ee},'fact_versions':{f['id']:f['revision'] for f in facts},'related_revisions':versions,'base_revision_id':s['current_revision_id'],'rule_ids':[r['id'] for r in rr],'file_ids':sorted(file_ids),'remote':remote,'profile_fingerprint':profile['route_fingerprint'],'prompt_version':'agent.v1','schema_version':'agent.v1','permissions_hash':digest([(e['id'],evidence.allowed_remote(pid,e['id'])) for e in ee])}
     payload.update(continuity);manifest.update(continuity_manifest);manifest['terminology_hash']=digest(payload['terminology'])
+    from ..section_materials import snapshot as material_snapshot
+    from ..resource_refs import source_files
+    product_inputs,material_inputs=material_snapshot(pid,sid,remote)
+    manifest['section_materials']=material_inputs
+    payload['research_products']=[{key:value[key] for key in ('title','text','source_ref','kind','classification')} for value in product_inputs]
+    manifest['resource_refs']=[value['source_ref'] for value in product_inputs]
+    manifest['file_ids']=sorted(set(manifest['file_ids'])|set(source_files(pid,manifest['resource_refs'])))
     from ..source_payload import compact_reference_metadata
     payload['evidence']=[evidence.for_model(e) for e in ee];payload['references']=[{**{k:r[k] for k in ('id','source_ids','knowledge_unit_ids','document_reading_ids','verification')},'metadata':compact_reference_metadata(r['metadata'])} for r in references]
     manifest['reference_metadata_hashes']={r['id']:digest(r['metadata']) for r in references}
@@ -105,10 +112,13 @@ def assemble(pid,sid,contract_id,profile,remote=True,evidence_ids=None,operation
     for cid in [*core_content.get('claim_versions',[]),*c.get('claim_versions',[])]:pinned.update(row['evidence_id'] for row in db.rows('SELECT evidence_id FROM claim_evidence_links WHERE claim_version_id=?',(cid,)))
     pinned.update(c.get('required_evidence_ids',[]));manifest['pinned_evidence_ids']=sorted(pinned)
     from pathlib import Path
-    binding=owned('repository',snapshot['binding_id'],pid)
-    paths=db.rows('SELECT relative_path FROM repository_snapshot_files WHERE snapshot_id=? ORDER BY relative_path',(snapshot['id'],))
-    entry_paths=[row['relative_path'] for row in paths if row['relative_path'].count('/')<=1 and (row['relative_path'].lower().endswith(('readme.md','package.json','pom.xml','build.gradle','requirements.txt')))]
-    payload['repository']={'snapshot_id':snapshot['id'],'head_commit':snapshot.get('head_commit'),'project_directory_name':Path(binding['root_path_local']).name,'entry_paths':entry_paths[:12]}
+    if snapshot:
+        binding=owned('repository',snapshot['binding_id'],pid)
+        paths=db.rows('SELECT relative_path FROM repository_snapshot_files WHERE snapshot_id=? ORDER BY relative_path',(snapshot['id'],))
+        entry_paths=[row['relative_path'] for row in paths if row['relative_path'].count('/')<=1 and (row['relative_path'].lower().endswith(('readme.md','package.json','pom.xml','build.gradle','requirements.txt')))]
+        payload['repository']={'snapshot_id':snapshot['id'],'head_commit':snapshot.get('head_commit'),'project_directory_name':Path(binding['root_path_local']).name,'entry_paths':entry_paths[:12]}
+    else:
+        payload['repository']={'snapshot_id':None,'available':False,'entry_paths':[],'scope_note':'当前为资料写作；可检索文献、规则、笔记和正文，未提供代码或执行证据。'}
     return payload,manifest
 
 def share_exact_code_text(items):
@@ -152,14 +162,14 @@ def save_context(step_id,payload,manifest,system,cfg):
     from ..writing_continuity import fit_optional
     fit_optional(payload,manifest,lambda:estimate_payload()+reserve<=limit)
     serialized=db.dumps(payload)
-    for profile in ('','gpt-fallback','material-summary'):
-        key=security.get_key(profile)
-        if key and len(key)>12 and key in serialized:fail('SECRET_IN_CONTEXT','输入中出现已配置凭据，已阻止外发',403)
     from .identifiers import encode
     model_payload,_=encode(payload,manifest)
     frame={'messages':[{'role':'user','content':db.dumps(model_payload)}],'tools':[]}
     estimate=token_upper_bound(system,db.dumps(frame))
     if estimate+reserve>limit:fail('CONTEXT_BUDGET_EXCEEDED','完整论文正文、必要规则和证据超过预算；未截断全文，请调整已验证的接口上下文配置或缩小项目资料范围',input_estimate=estimate,reserved_output=reserve,limit=limit)
+    for profile in ('','gpt-fallback','material-summary'):
+        key=security.get_key(profile)
+        if key and len(key)>12 and key in serialized:fail('SECRET_IN_CONTEXT','输入中出现已配置凭据，已阻止外发',403)
     identity=db.uid();budget={'input_estimate':estimate,'reserved_generated_total':reserve,'context_limit':limit,'estimate_method':'utf8_bytes_plus_protocol_reserve','reasoning_and_visible_share_limit':'provider_specific_not_double_counted'}
     db.execute('INSERT INTO writing_contexts VALUES(?,?,?,?,?,?,?)',(identity,step_id,blob(manifest),blob(payload),digest(payload),db.dumps(budget),manifest.get('permissions_hash','')))
     return identity

@@ -177,3 +177,33 @@ def test_v2_session_alias_and_unified_settings_use_current_frontend_contract(cli
         settings = fresh.get('/api/v2/deepseek/settings')
         assert settings.status_code == 200, settings.text
         assert settings.json()['data']['strategy']['mode'] == 'manual'
+
+
+def test_switch_autobinds_pricing_without_manual_tariff(client, monkeypatch):
+    """切换到一个未导入报价的接口时，自动绑定家族默认计价依据，计价前置校验应通过。"""
+    from app import expense_evidence as expense
+    monkeypatch.setattr(expense, 'DEFAULT_POLICY', {'require_pricing_basis': True, 'block_on_unresolved': False})
+    pid = project(client)
+    original = initialize(client)['active_endpoint_id']
+    second = create(client, name='备用接口', key='fake-second-key',
+                    base_url='https://second.example/v1', model='deepseek-second')
+    # 切换前 preflight 应阻止（当前接口没有绑定依据）。
+    cfg = provider.config()
+    key = security.get_key()
+    with pytest.raises(Exception):
+        expense.preflight(pid, expense.resolve_config(pid, cfg, key), key)
+    # 切换到新接口 → 自动绑定计价依据。
+    response = client.post(f"/api/v1/deepseek/endpoints/{second['id']}/activate")
+    assert response.status_code == 200
+    cfg = provider.config()
+    assert cfg.get('input_price') is not None
+    assert cfg.get('output_price') is not None
+    assert cfg.get('expense_pricing_basis') is not None
+    # 计价前置校验现在应通过（不再报"缺少计价依据"）。
+    proof = expense.preflight(pid, expense.resolve_config(pid, cfg, security.get_key()), security.get_key())
+    assert proof is not None
+    assert proof.get('estimate_only') is True
+    # 切回原接口同样应自动绑定。
+    assert client.post(f'/api/v1/deepseek/endpoints/{original}/activate').status_code == 200
+    cfg = provider.config()
+    assert cfg.get('expense_pricing_basis') is not None

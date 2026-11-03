@@ -1,5 +1,5 @@
 param([int]$Port=8765,[string]$DataDirectory='',[switch]$NoBrowser,[switch]$SkipSeed,[switch]$Stop,[switch]$PrepareResources)
-if ($PSVersionTable.PSVersion.ToString() -cne '7.6.5' -or $PSVersionTable.PSEdition -cne 'Core') { throw 'Required PowerShell 7.6.5 Core. No version fallback is permitted.' }
+if ($PSVersionTable.PSVersion -le [version]'7.6.0' -or $PSVersionTable.PSEdition -ne 'Core') { throw 'Requires PowerShell > 7.6.0 Core' }
 $ErrorActionPreference='Stop'
 $taskPortableRoot=Split-Path -Parent $PSScriptRoot
 $taskPortableShell=Join-Path $taskPortableRoot '.runtime\powershell'

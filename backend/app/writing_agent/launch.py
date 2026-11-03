@@ -6,7 +6,7 @@ from ..source_payload import token_upper_bound
 from . import profiles,context,tools,prompts,contracts
 from .common import state,section
 
-PHASE_SCOPE='本阶段只调查和判定代码命题及其必要前提；保留明确的章节依赖。完整正文表达与可选邻接内容在后续生成、语义、衔接阶段检查，不能在本阶段声称已通读它们。'
+PHASE_SCOPE='本阶段调查和判定当前章节命题及其必要前提；文献、规范、笔记与项目证据按实际可用来源读取，只有代码工具需要代码快照。保留明确的章节依赖。完整正文表达与可选邻接内容在后续生成、语义、衔接阶段检查，不能在本阶段声称已通读它们。'
 
 def preflight(pid,sid,profile_id=None,budget_limit=None):
     p=security.require_project(pid);s=section(sid,pid);head=state(pid)

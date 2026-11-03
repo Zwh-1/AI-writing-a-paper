@@ -1,5 +1,5 @@
 import { apiUrl } from "../client";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   BookOpen,
   FileText,
@@ -11,6 +11,7 @@ import {
   Settings2,
 } from "lucide-react";
 import { useWorkspaceResource } from "../workspace/useWorkspaceResource";
+import ProductLink from '../products/ProductLink';
 import type { Row, SourceRenderer, WorkspaceAction } from "../workspace/types";
 import {
   ArchiveImportDialog,
@@ -22,6 +23,10 @@ import {
 import "./referencesWorkspace.css";
 import "./referenceWorkbench.css";
 import ReferenceLibrary from "./ReferenceLibrary";
+import ConnectedLiterature from "./ConnectedLiterature";
+import Reader from "../reading/Reader";
+import { StudioChat, StudioNotes } from "../assistant/ChatNotes";
+import { useWorkspaceLocation } from "../workspace/WorkspaceContext";
 import TermsWorkbench from "./TermsWorkbench";
 import { ReferenceTitles } from "./ReferenceWorkbenchParts";
 import { KnowledgeBasePanel, KnowledgeDocumentDialog } from "./KnowledgeBase";
@@ -45,10 +50,25 @@ import {
 } from "../workspace/sourceNavigation";
 
 type ReferenceView =
-  "library" | "reading" | "evidence" | "knowledge" | "terms" | "manage";
+  | "library"
+  | "reading"
+  | "evidence"
+  | "knowledge"
+  | "terms"
+  | "manage"
+  | "parallel"
+  | "intake"
+  | "discover"
+  | "assistant"
+  | "notes";
 const referenceTabs = [
   { key: "library", label: "文献书目", icon: BookOpen },
   { key: "reading", label: "问题阅读", icon: FileText },
+  { key: "parallel", label: "对照阅读", icon: BookOpen },
+  { key: "intake", label: "文献接入", icon: Plus },
+  { key: "discover", label: "文献发现", icon: BookOpen },
+  { key: "assistant", label: "学术对话", icon: FileText },
+  { key: "notes", label: "思维随记", icon: FileText },
   { key: "evidence", label: "原文与证据", icon: ScanText },
   { key: "knowledge", label: "图谱与Wiki", icon: GitBranch },
   { key: "terms", label: "统一术语", icon: Languages },
@@ -67,6 +87,14 @@ function ReferencesWorkspaceContent({
   renderSource: SourceRenderer;
 }) {
   const route = useSourceLocation(pid, "references", "library");
+  const workspace = useWorkspaceLocation(pid, "references");
+  useEffect(() => {
+    if (workspace.location.view)
+      route.update({
+        view: workspace.location.view,
+        fileId: workspace.location.fileId,
+      });
+  }, [workspace.location]);
   const sourceMetadata = useSourceMetadata();
   const sourceResource = useSourceWorkspaceResource();
   const files = {
@@ -125,6 +153,7 @@ function ReferencesWorkspaceContent({
           description="管理文献，围绕问题阅读，让每一条认识都能回到原文。"
           actions={
             <>
+              <ProductLink pid={pid}/>
               <button
                 className="btn"
                 onClick={() => {
@@ -226,6 +255,27 @@ function ReferencesWorkspaceContent({
             </button>
           </div>
         )}
+        {view === "intake" && <ConnectedLiterature pid={pid} tick={tick} />}
+        {view === "discover" && (
+          <ConnectedLiterature pid={pid} tick={tick} discover />
+        )}
+        {view === "parallel" && (
+          <Reader
+            pid={pid}
+            files={files.data || []}
+            initialFile={route.location.fileId}
+            initialUnit={workspace.location.unitId}
+          />
+        )}
+        {view === "assistant" && (
+          <StudioChat
+            pid={pid}
+            files={files.data || []}
+            assets={[]}
+            initialFile={route.location.fileId}
+          />
+        )}
+        {view === "notes" && <StudioNotes pid={pid} tick={tick} />}
         {(view === "knowledge" || view === "manage") && (
           <section
             role="tabpanel"
@@ -383,7 +433,9 @@ function ReferencesWorkspaceContent({
                 <p>{latest.warnings?.join(" ")}</p>
                 <a
                   className="btn"
-                  href={apiUrl(`/projects/${pid}/references/archives/${latest.sha256}/download`)}
+                  href={apiUrl(
+                    `/projects/${pid}/references/archives/${latest.sha256}/download`,
+                  )}
                 >
                   下载原始文献包
                 </a>

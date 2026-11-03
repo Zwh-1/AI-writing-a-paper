@@ -8,9 +8,10 @@ VERSION='whole_source_retrieval.v1'
 
 def frame(payload,manifest,system,cfg):
     if manifest.get('stage')=='investigate':
-        from .tools import schemas
-        catalog=schemas(include_knowledge=bool(manifest.get('knowledge_refs')))
-        return system,{'messages':[{'role':'user','content':db.dumps({'context':payload,'available_tools':catalog})}],'tools':catalog if cfg.get('tool_mode')=='native' else []}
+        from .tools import investigation_catalog,investigation_system
+        catalog=investigation_catalog(native=cfg.get('tool_mode')=='native',include_knowledge=bool(manifest.get('knowledge_refs')),include_code=bool(manifest.get('target_snapshot_id')))
+        native=cfg.get('tool_mode')=='native'
+        return investigation_system(system,manifest.get('target_snapshot_id')),{'messages':[{'role':'user','content':db.dumps({'context':payload} if native else {'context':payload,'available_tools':catalog})}],'tools':catalog if native else []}
     from .identifiers import encode
     from .provider_adapter import ALIAS_NOTE
     encoded,aliases=encode(payload,manifest)

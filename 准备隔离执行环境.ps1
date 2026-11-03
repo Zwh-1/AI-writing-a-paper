@@ -1,6 +1,6 @@
 param([switch]$OpenDesktop)
 $taskVersion=$PSVersionTable.PSVersion.ToString();$taskEdition=$PSVersionTable.PSEdition
-if($taskVersion -cne '7.6.5' -or $taskEdition -cne 'Core'){throw 'Required PowerShell 7.6.5 Core'}
+if ($PSVersionTable.PSVersion -le [version]'7.6.0' -or $PSVersionTable.PSEdition -ne 'Core') { throw 'Requires PowerShell > 7.6.0 Core' }
 $ErrorActionPreference='Stop';$taskDocker=Get-Command docker -ErrorAction SilentlyContinue
 if(-not $taskDocker){throw '本机尚未安装Docker，请先安装并启动Docker Desktop的Linux容器引擎。'}
 $taskPrincipal=[Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())

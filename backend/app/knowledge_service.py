@@ -49,7 +49,7 @@ def search(pid, query, limit=10, remote=False, collection='all', include_units=T
         available=[u for u in available if u['file_id'] in file_ids]
     cfg = retrieval.config(pid)
     combined=bool(available and include_units and collection!='originals')
-    original = reference_knowledge.search(pid, query, min(100,max(limit,int(cfg['candidate_k']))) if combined else limit, remote,**({'file_ids':file_ids} if file_ids else {}),**({'rerank_override':'fusion'} if combined else {}))
+    original = reference_knowledge.search_legacy(pid, query, min(100,max(limit,int(cfg['candidate_k']))) if combined else limit, remote,**({'file_ids':file_ids} if file_ids else {}),**({'rerank_override':'fusion'} if combined else {}))
     by_id = {r['id']: r for r in available}
     raw = []
     for hit in original['items']:
@@ -58,6 +58,8 @@ def search(pid, query, limit=10, remote=False, collection='all', include_units=T
         related = [u for u in available if u['file_id'] == hit['file_id'] and u['locator'].get('page') == hit.get('page_number') and
                    (u['locator'].get('source_id') == hit['id'] or hit['text'].strip() in u['text'] or u['text'].strip() in hit['text'])]
         candidate = next((u for u in related if u['origin'] == hit.get('method')), related[0] if related else None)
+        if collection!='originals' and candidate is None and any(u['file_id']==hit['file_id'] for u in available):
+            continue
         if collection == 'reviewed' and candidate is None:
             continue
         raw.append({**hit, 'knowledge_unit_id': candidate['id'] if candidate else None, 'unit_hash': candidate['content_hash'] if candidate else None,

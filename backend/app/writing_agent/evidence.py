@@ -98,6 +98,9 @@ def allowed_remote(pid,eid,_ancestors=None):
         a=db.one('SELECT * FROM artifacts WHERE id=? AND project_id=?',(e['origin_id'],pid))
         if not a:return False
         m=db.loads(a['metadata'],{})
+        from ..resource_refs import validate as validate_resources
+        try:validate_resources(pid,m.get('source_refs',[]),remote=True)
+        except __import__('fastapi').HTTPException:return False
         if m.get('egress','local_only')=='local_only':return False
         for key in ('snapshot_id','target_snapshot_id'):
             if m.get(key):

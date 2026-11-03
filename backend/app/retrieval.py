@@ -6,6 +6,11 @@ from .config import ROOT
 _LOCK=threading.RLock();_MODELS={}
 _QUERY_VECTORS=OrderedDict()
 _RERANK_SCORES=OrderedDict()
+_DENSE_MATRICES=OrderedDict()
+_MODEL_LOCKS={}
+_INFERENCE_LOCKS={}
+_QUERY_LOCKS=[threading.RLock() for _ in range(32)]
+_MATRIX_CACHE_BYTES=96*1024*1024
 DEFAULT_MODEL='BAAI/bge-small-zh-v1.5'
 
 def config(pid):return {'enabled':False,'model':DEFAULT_MODEL,'candidate_k':40,'rerank':'fusion','cross_encoder':'BAAI/bge-reranker-base',**db.setting('retrieval:'+pid,{})}
@@ -14,7 +19,12 @@ def model_instance(name,download=False,cross=False):
     initial=model_install.status(name)
     key=(name,cross,initial['fingerprint'])
     with _LOCK:
-        if key not in _MODELS:
+        cached=_MODELS.get(key)
+        guard=_MODEL_LOCKS.setdefault((name,cross),threading.RLock())
+    if cached is not None:return cached
+    with guard:
+        with _LOCK:cached=_MODELS.get(key)
+        if cached is None:
             from fastembed import TextEmbedding
             from fastembed.rerank.cross_encoder import TextCrossEncoder
             cls=TextCrossEncoder if cross else TextEmbedding
@@ -22,12 +32,22 @@ def model_instance(name,download=False,cross=False):
             local=model_install.status(name)
             if download and not local['ready']:model_install.download(name);local=model_install.status(name)
             if not local['ready']:raise ValueError('本地模型尚未安装，请先下载并校验模型文件')
-            _MODELS[key]=cls(model_name=name,cache_dir=str(ROOT/'.runtime/models'),specific_model_path=local['path'],local_files_only=True,threads=2)
-        return _MODELS[key]
+            key=(name,cross,local['fingerprint'])
+            with _LOCK:cached=_MODELS.get(key)
+            if cached is None:
+                cached=cls(model_name=name,cache_dir=str(ROOT/'.runtime/models'),specific_model_path=local['path'],local_files_only=True,threads=2)
+                with _LOCK:_MODELS[key]=cached
+        return cached
+
+
+def _inference_lock(name,cross=False):
+    with _LOCK:return _INFERENCE_LOCKS.setdefault((name,cross),threading.RLock())
 
 def embed(texts,name):
     import numpy as np
-    values=[np.asarray(v,dtype=np.float32) for v in model_instance(name).embed(texts,batch_size=16)]
+    model=model_instance(name)
+    with _inference_lock(name):
+        values=[np.asarray(v,dtype=np.float32) for v in model.embed(texts,batch_size=16)]
     for v in values:
         if v.ndim!=1 or not np.isfinite(v).all() or not float(np.linalg.norm(v)):raise ValueError('语义模型返回无效向量')
     return values
@@ -40,11 +60,17 @@ def query_embedding(query,name):
     """
     key=(model_key(name),query)
     with _LOCK:
-        if key not in _QUERY_VECTORS:
-            _QUERY_VECTORS[key]=embed([query],name)[0].copy()
+        cached=_QUERY_VECTORS.get(key)
+        if cached is not None:
+            _QUERY_VECTORS.move_to_end(key);return cached.copy()
+    with _QUERY_LOCKS[hash(key)%len(_QUERY_LOCKS)]:
+        with _LOCK:cached=_QUERY_VECTORS.get(key)
+        if cached is not None:return cached.copy()
+        value=embed([query],name)[0].copy()
+        with _LOCK:
+            _QUERY_VECTORS[key]=value
             while len(_QUERY_VECTORS)>128:_QUERY_VECTORS.popitem(last=False)
-        _QUERY_VECTORS.move_to_end(key)
-        return _QUERY_VECTORS[key].copy()
+        return value.copy()
 
 def embedding_text(source):
     ext=source.get('extension','');location='段落组' if ext=='.docx' else '资料块/工作表' if ext in ('.txt','.md','.csv','.xlsx') else '原页'
@@ -85,22 +111,96 @@ def cross_encoder_rerank(query,candidates,model):
     fingerprint=model_key(model)
     texts=[embedding_text(item) for item in candidates]
     keys=[(fingerprint,query,hashlib.sha256(text.encode()).hexdigest()) for text in texts]
-    with _LOCK:
-        hits=[key in _RERANK_SCORES for key in keys]
-        missing={key:text for key,text in zip(keys,texts) if key not in _RERANK_SCORES}
+    with _LOCK:hits=[key in _RERANK_SCORES for key in keys]
+    # One model instance performs one inference at a time; unrelated models and
+    # query-cache lookups do not wait behind this potentially long CPU call.
+    with _inference_lock(model,cross=True):
+        with _LOCK:
+            available={key:_RERANK_SCORES[key] for key in keys if key in _RERANK_SCORES}
+        missing={key:text for key,text in zip(keys,texts) if key not in available}
         if missing:
             scorer=model_instance(model,cross=True)
             values=list(scorer.rerank(query,list(missing.values()),batch_size=8))
             if len(values)!=len(missing):raise ValueError('重排模型返回的分数数量与候选数量不一致')
             scores=[float(value) for value in values]
             if any(not math.isfinite(score) for score in scores):raise ValueError('重排模型返回了无效相关性分数')
-            for key,score in zip(missing,scores):_RERANK_SCORES[key]=score
-        scores=[_RERANK_SCORES[key] for key in keys]
-        for key in keys:_RERANK_SCORES.move_to_end(key)
-        while len(_RERANK_SCORES)>2048:_RERANK_SCORES.popitem(last=False)
+            available.update(zip(missing,scores))
+        scores=[available[key] for key in keys]
+        with _LOCK:
+            for key in keys:
+                _RERANK_SCORES[key]=available[key];_RERANK_SCORES.move_to_end(key)
+            while len(_RERANK_SCORES)>2048:_RERANK_SCORES.popitem(last=False)
     ranked=[{**item,'rerank_score':score,'rank':-score,'rerank_cache_hit':hit} for item,score,hit in zip(candidates,scores,hits)]
     ranked.sort(key=lambda item:(-item['rerank_score'],item['fusion_rank']))
     return [{**item,'rerank_rank':position} for position,item in enumerate(ranked,1)]
+
+
+def _normalized_matrix(pid,namespace,rows,dimension):
+    """Cache immutable numeric work only; current rows/permissions stay outside.
+
+    The signature includes current embedding text and actual vector bytes, so
+    replacement indexes, edited metadata and in-place repairs invalidate it.
+    """
+    import numpy as np
+    signature=hashlib.sha256();candidates=[]
+    for row in sorted(rows,key=lambda item:item['id']):
+        expected=hashlib.sha256(embedding_text(row).encode()).hexdigest()
+        if row['text_hash']!=expected:continue
+        raw=row['vector']
+        signature.update((str(row['id'])+'\0'+expected+'\0'+str(row['dimension'])+'\0').encode())
+        signature.update(hashlib.sha256(raw).digest())
+        candidates.append(row)
+    key=(str(db.DB_PATH),pid,namespace,dimension,signature.hexdigest())
+    with _LOCK:
+        cached=_DENSE_MATRICES.get(key)
+        if cached is not None:
+            _DENSE_MATRICES.move_to_end(key)
+            by_id={row['id']:row for row in candidates}
+            return [by_id[identity] for identity in cached[0]],cached[1],True
+    selected=[];vectors=[]
+    for row in candidates:
+        if not isinstance(row['dimension'],int) or row['dimension']!=dimension:continue
+        if len(row['vector'])!=dimension*np.dtype(np.float32).itemsize:continue
+        vector=np.frombuffer(row['vector'],dtype=np.float32)
+        if not np.isfinite(vector).all():continue
+        norm=float(np.linalg.norm(vector))
+        if not math.isfinite(norm) or not norm:continue
+        selected.append(row);vectors.append(vector/norm)
+    matrix=np.stack(vectors).astype(np.float32,copy=False) if vectors else np.empty((0,dimension),dtype=np.float32)
+    matrix.setflags(write=False)
+    if matrix.nbytes<=_MATRIX_CACHE_BYTES//2:
+        with _LOCK:
+            # Each project/model keeps one current snapshot. Historical matrices
+            # cannot accumulate after frequent document edits.
+            stale=[old for old in _DENSE_MATRICES if old[:3]==key[:3] and old!=key]
+            for old in stale:_DENSE_MATRICES.pop(old,None)
+            _DENSE_MATRICES[key]=([row['id'] for row in selected],matrix)
+            while len(_DENSE_MATRICES)>8 or sum(value[1].nbytes for value in _DENSE_MATRICES.values())>_MATRIX_CACHE_BYTES:
+                _DENSE_MATRICES.popitem(last=False)
+    return selected,matrix,False
+
+
+def _dense_top_k(matrix,query_vector,rows,limit):
+    """Vectorized cosine and partial TopK with deterministic source-ID ties."""
+    import numpy as np
+    query=np.asarray(query_vector,dtype=np.float32)
+    norm=float(np.linalg.norm(query))
+    if query.ndim!=1 or not np.isfinite(query).all() or not math.isfinite(norm) or not norm:
+        raise ValueError('查询模型返回无效向量')
+    scores=matrix@(query/norm)
+    count=min(len(rows),limit)
+    if not count:return []
+    if count<len(rows):
+        shortlist=np.argpartition(-scores,count-1)[:count]
+        boundary=float(scores[shortlist].min())
+        above=np.flatnonzero(scores>boundary).tolist()
+        tied=np.flatnonzero(scores==boundary).tolist()
+        # Matrix rows are ordered by source identity, including boundary ties.
+        indexes=above+tied[:count-len(above)]
+    else:indexes=list(range(len(rows)))
+    indexes.sort(key=lambda index:(-float(scores[index]),rows[index]['id']))
+    return [{**{key:value for key,value in rows[index].items() if key!='vector'},
+             'semantic_score':float(scores[index])} for index in indexes]
 
 
 def hybrid(pid,query,kind='research',limit=12,remote=False,force=False,knowledge=False,rerank_override=None,file_ids=None):
@@ -136,20 +236,18 @@ def hybrid(pid,query,kind='research',limit=12,remote=False,force=False,knowledge
     if not eligible:
         return {'items':[],'candidates':[],'mode':'no_eligible_materials','warnings':['没有当前范围内可用的资料，需补充材料或核对外发权限'],'coverage':{'indexed':0,'eligible':0},'pipeline':pipeline,'timings_ms':timings}
     import numpy as np
-    stage_start=time.perf_counter();query_vector=query_embedding(query,cfg['model'])
-    vector_rows=db.rows('SELECT s.*,f.name,f.role,f.egress,f.extension,f.active,p.page_number,p.title AS page_title,p.review_state,v.vector,v.dimension,v.text_hash FROM neural_vectors v JOIN sources s ON s.id=v.source_id JOIN files f ON f.id=s.file_id LEFT JOIN pages p ON p.id=s.page_id WHERE f.project_id=? AND f.active=1 AND v.model=? '+scope,(pid,model_key(cfg['model'])))
-    semantic=[]
-    for row in vector_rows:
-        if file_ids and row['file_id'] not in file_ids:continue
-        if not eligible_source(row):continue
-        if row['text_hash']!=hashlib.sha256(embedding_text(row).encode()).hexdigest():continue
-        vector=np.frombuffer(row.pop('vector'),dtype=np.float32)
-        if len(vector)!=len(query_vector) or not np.isfinite(vector).all() or not float(np.linalg.norm(vector)):continue
-        row['semantic_score']=float(vector@query_vector/(np.linalg.norm(vector)*np.linalg.norm(query_vector)));semantic.append(row)
+    stage_start=time.perf_counter();query_vector=query_embedding(query,cfg['model']);namespace=model_key(cfg['model'])
+    vector_rows=db.rows('SELECT s.*,f.name,f.role,f.egress,f.extension,f.active,p.page_number,p.title AS page_title,p.review_state,v.vector,v.dimension,v.text_hash FROM neural_vectors v JOIN sources s ON s.id=v.source_id JOIN files f ON f.id=s.file_id LEFT JOIN pages p ON p.id=s.page_id WHERE f.project_id=? AND f.active=1 AND v.model=? '+scope,(pid,namespace))
+    allowed={row['id'] for row in eligible}
+    vector_rows=[row for row in vector_rows if row['id'] in allowed]
+    matrix_start=time.perf_counter()
+    semantic,matrix,matrix_cache_hit=_normalized_matrix(pid,namespace,vector_rows,len(query_vector))
+    timings['dense_matrix']=round((time.perf_counter()-matrix_start)*1000,3)
     if not semantic:raise ValueError('没有当前模型版本的有效语义索引，请先建立或恢复索引')
-    semantic.sort(key=lambda row:(-row['semantic_score'],row['id']))
-    dense=semantic[:pool];timings['dense']=round((time.perf_counter()-stage_start)*1000,3)
-    pipeline['dense']={'status':'completed','candidates':len(dense),'eligible':len(eligible),'indexed':len(semantic),'limit':pool,'model':cfg['model']}
+    score_start=time.perf_counter();dense=_dense_top_k(matrix,query_vector,semantic,pool)
+    timings['dense_top_k']=round((time.perf_counter()-score_start)*1000,3)
+    timings['dense']=round((time.perf_counter()-stage_start)*1000,3)
+    pipeline['dense']={'status':'completed','candidates':len(dense),'eligible':len(eligible),'indexed':len(semantic),'limit':pool,'model':cfg['model'],'matrix_cache_hit':matrix_cache_hit,'vectorized_top_k':True,'cache_scope':'project_model_source_versions_numeric_only'}
     stage_start=time.perf_counter();merged=reciprocal_rank_fusion(keyword,dense,pool)
     timings['rrf']=round((time.perf_counter()-stage_start)*1000,3)
     pipeline['rrf']={'status':'completed','candidates':len(merged),'rank_constant':60}

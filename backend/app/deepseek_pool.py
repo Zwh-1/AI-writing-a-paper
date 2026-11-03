@@ -136,19 +136,30 @@ def endpoint_key_status(endpoint):
 
 
 def _endpoint_to_provider(endpoint):
-    """Build a provider config dict for a single endpoint."""
+    """Build a provider config dict for a single endpoint.
+
+    Carries the adaptive pricing basis (expense_pricing_basis, pricing_source)
+    through so a freshly switched endpoint is accepted by the expense preflight
+    without a manual tariff import.
+    """
     return {
         **provider.DEFAULT,
         **{k: endpoint.get(k) for k in provider.DEFAULT if k in endpoint and endpoint.get(k) is not None},
         'base_url': endpoint.get('base_url', provider.DEFAULT['base_url']),
         'protocol': endpoint.get('protocol', 'openai'),
         'model': endpoint.get('model', provider.DEFAULT['model']),
+        # Adaptive pricing metadata survives the conversion.
+        **{k: endpoint[k] for k in ('expense_pricing_basis', 'pricing_source')
+           if endpoint.get(k) is not None},
     }
 
 
 def _validate_endpoint(endpoint):
     """Validate a single endpoint dict; returns the cleaned dict."""
     allowed = {k: endpoint.get(k) for k in ENDPOINT_FIELDS if k in endpoint}
+    # 修正可能存在的首尾空格，避免 base_url 带空格导致请求失败
+    if 'base_url' in allowed and isinstance(allowed['base_url'], str):
+        allowed['base_url'] = allowed['base_url'].strip()
     url = urlsplit(str(allowed.get('base_url', '')).rstrip('/'))
     if url.scheme != 'https' or not url.hostname or url.username or url.password:
         raise HTTPException(422, 'DeepSeek 端点须使用不含凭据的 HTTPS 地址')

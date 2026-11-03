@@ -25,7 +25,8 @@ WRITING = {"writing-state": "state", "writing-link": "model-link", "writing-boot
     "writing-analyses": "analyses", "writing-coverage": "coverage", "writing-reviews": "reviews",
     "writing-export-report": "export-report", "writing-stale-reasons": "stale-reasons",
     "writing-checks": "checks", "writing-billing": "billing", "writing-quality-policies": "quality-policies",
-    "writing-operations": "operations", "writing-live": "live", "diagnostics": "diagnostics",
+    "writing-operations": "operations", "writing-live": "live", "writing-retrieval": "retrieval",
+    "writing-flow": "flow", "writing-plan": "argument-plan", "writing-quality": "quality", "diagnostics": "diagnostics",
     "diagnostic-dataset": "diagnostic-dataset", "diagnostic-rubric": "diagnostic-rubric",
     "diagnostic-comparisons": "diagnostic-comparisons", "paper-writing": "papers"}
 PROFILES = {"/settings": "/model-profiles/primary", "/material-summary/settings": "/model-profiles/material-summary",
@@ -55,6 +56,16 @@ def canonical_suffix(suffix, service):
     match = re.match(r"^(/projects/\{pid\}/)([^/]+)(.*)$", suffix)
     if match:
         prefix, resource, tail = match.groups()
+        if resource == 'studio':
+            capability = tail.lstrip('/').split('/',1)[0]
+            routes = {'library':'literature/library','imports':'literature/imports','tags':'literature/tags','zotero':'literature/zotero',
+                'openalex':'literature/discovery','abstract':'literature/abstract','reader':'reading/parallel','webpages':'reading/webpages',
+                'records':'research-records','assets':'asset-library','conversations':'assistant/conversations','notes':'notes',
+                'completion':'writing/completion','comments':'writing/comments','proposals':'writing/proposals','canvas':'assets/canvases',
+                'exports':'exports/formats','deletion':'literature/deletion','parsing':'parsing/providers','parse-results':'parsing/results',
+                'credentials':'integrations/credentials','metadata-graph':'knowledge/metadata-graph','execution':'execution','status':'research/status'}
+            if capability in routes:
+                return prefix + routes[capability] + tail[len('/'+capability):]
         if resource in WRITING:
             return prefix + "writing/" + WRITING[resource] + tail
         domains = {"evidence-knowledge": "knowledge/sources", "knowledge-base": "knowledge/search-index",

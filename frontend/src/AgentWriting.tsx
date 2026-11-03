@@ -1,4 +1,4 @@
-import {useEffect,useState} from 'react';
+import {useEffect,useState,type ReactNode} from 'react';
 import {get,post,label,useResource,Row} from './writingShared';
 import RepositoryEvidence from './RepositoryEvidence';
 import ThesisCore from './ThesisCore';
@@ -7,8 +7,9 @@ import WritingSessionPanel from './WritingSessionPanel';
 import './writingAgent.css';
 import JointReviewPanel from './JointReviewPanel';
 import StaleReasonsPanel from './StaleReasonsPanel';
+import './workspace/workspace.css';
 
-export default function AgentWriting({pid,tick,onOpenEditor,onOpenResearch,onOpenProject,onOpenSettings,onOpenRules}:{pid:string;tick:number;onOpenEditor?:(sid:string)=>void;onOpenResearch?:()=>void;onOpenProject?:()=>void;onOpenSettings?:()=>void;onOpenRules?:()=>void}){
+export default function AgentWriting({pid,tick,onOpenEditor,onOpenResearch,onOpenProject,onOpenSettings,onOpenRules,navigation}:{pid:string;tick:number;onOpenEditor?:(sid:string)=>void;onOpenResearch?:()=>void;onOpenProject?:()=>void;onOpenSettings?:()=>void;onOpenRules?:()=>void;navigation?:ReactNode}){
   const [tab,T]=useState('setup'),[epoch,E]=useState(0),[error,ERR]=useState(''),[busy,B]=useState(false),[sid,SID]=useState(localStorage.getItem('paper_section')??''),[profile,P]=useState(''),[session,SE]=useState(''),[budget,BU]=useState(12),[report,R]=useState<Row|null>(null);
   const [paperNote,PN]=useState(''),[readAll,RA]=useState(false),[verifyProfile,VP]=useState('');
   const [budgetEdited,BE]=useState(false);
@@ -29,7 +30,8 @@ export default function AgentWriting({pid,tick,onOpenEditor,onOpenResearch,onOpe
   useEffect(()=>{if(session||!sid||!Array.isArray(sessions.data))return;const latest=sessions.data.find((s:Row)=>s.section_id===sid);if(latest)SE(latest.id);},[sessions.data,sid,session]);
   async function act(fn:()=>Promise<any>){B(true);try{await fn();ERR('');refresh();}catch(e){ERR((e as Error).message);}finally{B(false);}}
   const props={pid,epoch:version,onChange:refresh,onError:ERR,onOpenResearch,onSelectSection:(sectionId:string)=>{SID(sectionId);SE('');T('writing');},modelReady:link.data?Boolean(link.data.model?.configured??currentProfiles.length>0):undefined,modelError:link.error,onConfigureModel:()=>T('writing')};
-  return <div className="wa-page"><header><div><h2>有据写作</h2><p>以研究事实、冻结代码和资料为依据，先建立章节任务，再生成候选，最后回到正文核验。</p></div><div className="wa-actions"><button onClick={onOpenResearch}>查看研究与成果</button>{sid&&<button onClick={()=>onOpenEditor?.(sid)}>打开当前章节正文</button>}</div></header>
+  return <div className="wa-page"><header className="workspace-heading"><div><h1>有据写作</h1><p>以研究事实、冻结代码和资料为依据，先建立章节任务，再生成候选，最后回到正文核验。</p></div><div className="wa-actions actions"><button onClick={onOpenResearch}>查看研究与成果</button>{sid&&<button onClick={()=>onOpenEditor?.(sid)}>打开当前章节正文</button>}</div></header>
+    {navigation}
     <nav className="wa-tabs" aria-label="有据写作功能">{[['setup','当前项目'],['sources','项目代码与证据'],['writing','本节写作与核验'],['diagnostics','模型诊断'],['paper','全文与交付']].map(([id,name])=><button key={id} className={tab===id?'active':''} onClick={()=>T(id)}>{name}</button>)}</nav>
     {error&&<div className="wa-error" role="alert">{error}<button aria-label="关闭错误" onClick={()=>ERR('')}>×</button></div>}
     {tab==='setup'&&<ThesisCore {...props}/>}

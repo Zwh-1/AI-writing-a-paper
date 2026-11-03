@@ -210,6 +210,13 @@ export const API_ROUTES: readonly (readonly [string, string, readonly string[]])
     ]
   ],
   [
+    "/projects/{pid}/studio/abstract/translate",
+    "/projects/{project_id}/literature/abstract/translate",
+    [
+      "POST"
+    ]
+  ],
+  [
     "/projects/{pid}/knowledge-base/search",
     "/projects/{project_id}/knowledge/search-index/search",
     [
@@ -246,6 +253,27 @@ export const API_ROUTES: readonly (readonly [string, string, readonly string[]])
     ]
   ],
   [
+    "/projects/{pid}/studio/openalex/search",
+    "/projects/{project_id}/literature/discovery/search",
+    [
+      "POST"
+    ]
+  ],
+  [
+    "/projects/{pid}/studio/openalex/import",
+    "/projects/{project_id}/literature/discovery/import",
+    [
+      "POST"
+    ]
+  ],
+  [
+    "/projects/{pid}/studio/deletion/preview",
+    "/projects/{project_id}/literature/deletion/preview",
+    [
+      "POST"
+    ]
+  ],
+  [
     "/projects/{pid}/evidence-knowledge/citations",
     "/projects/{project_id}/knowledge/sources/citations",
     [
@@ -257,6 +285,13 @@ export const API_ROUTES: readonly (readonly [string, string, readonly string[]])
     "/projects/{project_id}/writing/diagnostic-dataset",
     [
       "GET"
+    ]
+  ],
+  [
+    "/projects/{pid}/writing-retrieval/validate",
+    "/projects/{project_id}/writing/retrieval/validate",
+    [
+      "POST"
     ]
   ],
   [
@@ -274,8 +309,29 @@ export const API_ROUTES: readonly (readonly [string, string, readonly string[]])
     ]
   ],
   [
+    "/projects/{pid}/writing-retrieval/prepare",
+    "/projects/{project_id}/writing/retrieval/prepare",
+    [
+      "POST"
+    ]
+  ],
+  [
     "/projects/{pid}/paper-visuals/explanation-draft",
     "/projects/{project_id}/visuals/explanation-draft",
+    [
+      "POST"
+    ]
+  ],
+  [
+    "/projects/{pid}/studio/parsing/health",
+    "/projects/{project_id}/parsing/providers/health",
+    [
+      "GET"
+    ]
+  ],
+  [
+    "/projects/{pid}/studio/metadata-graph",
+    "/projects/{project_id}/knowledge/metadata-graph",
     [
       "POST"
     ]
@@ -302,6 +358,13 @@ export const API_ROUTES: readonly (readonly [string, string, readonly string[]])
     ]
   ],
   [
+    "/projects/{pid}/writing-retrieval/search",
+    "/projects/{project_id}/writing/retrieval/search",
+    [
+      "POST"
+    ]
+  ],
+  [
     "/projects/{pid}/evidence-knowledge/search",
     "/projects/{project_id}/knowledge/sources/search",
     [
@@ -314,6 +377,13 @@ export const API_ROUTES: readonly (readonly [string, string, readonly string[]])
     [
       "PUT",
       "DELETE"
+    ]
+  ],
+  [
+    "/projects/{pid}/studio/zotero/oauth",
+    "/projects/{project_id}/literature/zotero/oauth",
+    [
+      "POST"
     ]
   ],
   [
@@ -338,6 +408,20 @@ export const API_ROUTES: readonly (readonly [string, string, readonly string[]])
     ]
   ],
   [
+    "/projects/{pid}/studio/imports/url",
+    "/projects/{project_id}/literature/imports/url",
+    [
+      "POST"
+    ]
+  ],
+  [
+    "/projects/{pid}/studio/zotero/sync",
+    "/projects/{project_id}/literature/zotero/sync",
+    [
+      "POST"
+    ]
+  ],
+  [
     "/projects/{pid}/expenses/export",
     "/projects/{project_id}/billing/entries/export",
     [
@@ -345,10 +429,24 @@ export const API_ROUTES: readonly (readonly [string, string, readonly string[]])
     ]
   ],
   [
+    "/projects/{pid}/writing-retrieval/read",
+    "/projects/{project_id}/writing/retrieval/read",
+    [
+      "POST"
+    ]
+  ],
+  [
     "/projects/{pid}/knowledge-base",
     "/projects/{project_id}/knowledge/search-index",
     [
       "GET"
+    ]
+  ],
+  [
+    "/projects/{pid}/studio/exports/latex",
+    "/projects/{project_id}/exports/formats/latex",
+    [
+      "POST"
     ]
   ],
   [
@@ -380,6 +478,22 @@ export const API_ROUTES: readonly (readonly [string, string, readonly string[]])
     ]
   ],
   [
+    "/projects/{pid}/writing-flow/settings",
+    "/projects/{project_id}/writing/flow/settings",
+    [
+      "GET",
+      "PUT"
+    ]
+  ],
+  [
+    "/projects/{pid}/writing-plan",
+    "/projects/{project_id}/writing/argument-plan",
+    [
+      "GET",
+      "PUT"
+    ]
+  ],
+  [
     "/projects/{pid}/paper-writing/study",
     "/projects/{project_id}/writing/papers/study",
     [
@@ -387,8 +501,22 @@ export const API_ROUTES: readonly (readonly [string, string, readonly string[]])
     ]
   ],
   [
+    "/projects/{pid}/writing-flow/metrics",
+    "/projects/{project_id}/writing/flow/metrics",
+    [
+      "GET"
+    ]
+  ],
+  [
     "/format-profiles/{profile}/activate",
     "/format-profiles/{profile}/actions/activate",
+    [
+      "POST"
+    ]
+  ],
+  [
+    "/projects/{pid}/studio/deletion",
+    "/projects/{project_id}/literature/deletion",
     [
       "POST"
     ]
@@ -416,6 +544,20 @@ export const API_ROUTES: readonly (readonly [string, string, readonly string[]])
     ]
   ],
   [
+    "/projects/{pid}/studio/library",
+    "/projects/{project_id}/literature/library",
+    [
+      "GET"
+    ]
+  ],
+  [
+    "/projects/{pid}/studio/completion",
+    "/projects/{project_id}/writing/completion",
+    [
+      "POST"
+    ]
+  ],
+  [
     "/projects/{pid}/writing-link",
     "/projects/{project_id}/writing/model-link",
     [
@@ -427,6 +569,36 @@ export const API_ROUTES: readonly (readonly [string, string, readonly string[]])
     "/projects/{project_id}/writing/operations",
     [
       "GET"
+    ]
+  ],
+  [
+    "/projects/{pid}/studio/zotero",
+    "/projects/{project_id}/literature/zotero",
+    [
+      "GET",
+      "PUT"
+    ]
+  ],
+  [
+    "/projects/{pid}/studio/parsing",
+    "/projects/{project_id}/parsing/providers",
+    [
+      "GET",
+      "PUT"
+    ]
+  ],
+  [
+    "/projects/{pid}/studio/execution/results",
+    "/projects/{project_id}/execution/results",
+    [
+      "GET"
+    ]
+  ],
+  [
+    "/projects/{pid}/studio/execution/install",
+    "/projects/{project_id}/execution/install",
+    [
+      "POST"
     ]
   ],
   [
@@ -479,6 +651,29 @@ export const API_ROUTES: readonly (readonly [string, string, readonly string[]])
     ]
   ],
   [
+    "/projects/{pid}/studio/records",
+    "/projects/{project_id}/research-records",
+    [
+      "GET",
+      "POST"
+    ]
+  ],
+  [
+    "/projects/{pid}/studio/comments",
+    "/projects/{project_id}/writing/comments",
+    [
+      "GET",
+      "POST"
+    ]
+  ],
+  [
+    "/projects/{pid}/studio/execution/health",
+    "/projects/{project_id}/execution/health",
+    [
+      "GET"
+    ]
+  ],
+  [
     "/projects/{pid}/writing-profiles",
     "/projects/{project_id}/writing/profiles",
     [
@@ -521,6 +716,20 @@ export const API_ROUTES: readonly (readonly [string, string, readonly string[]])
     "/projects/{project_id}/visuals/ai-tasks",
     [
       "POST"
+    ]
+  ],
+  [
+    "/projects/{pid}/studio/status",
+    "/projects/{project_id}/research/status",
+    [
+      "GET"
+    ]
+  ],
+  [
+    "/projects/{pid}/studio/tags",
+    "/projects/{project_id}/literature/tags",
+    [
+      "PUT"
     ]
   ],
   [
@@ -581,6 +790,14 @@ export const API_ROUTES: readonly (readonly [string, string, readonly string[]])
     ]
   ],
   [
+    "/projects/{pid}/studio/assets",
+    "/projects/{project_id}/asset-library",
+    [
+      "GET",
+      "POST"
+    ]
+  ],
+  [
     "/projects/{pid}/writing-state",
     "/projects/{project_id}/writing/state",
     [
@@ -616,6 +833,15 @@ export const API_ROUTES: readonly (readonly [string, string, readonly string[]])
       "GET",
       "POST",
       "PUT"
+    ]
+  ],
+  [
+    "/projects/{pid}/studio/execution",
+    "/projects/{project_id}/execution",
+    [
+      "GET",
+      "PUT",
+      "POST"
     ]
   ],
   [
@@ -746,6 +972,21 @@ export const API_ROUTES: readonly (readonly [string, string, readonly string[]])
     ]
   ],
   [
+    "/projects/{pid}/studio/records/{identity}/restore",
+    "/projects/{project_id}/research-records/{resource_id}/actions/restore",
+    [
+      "POST"
+    ]
+  ],
+  [
+    "/projects/{pid}/studio/conversations/{identity}/messages",
+    "/projects/{project_id}/assistant/conversations/{resource_id}/messages",
+    [
+      "GET",
+      "POST"
+    ]
+  ],
+  [
     "/projects/{pid}/diagnostics/{rid}/quality-policy",
     "/projects/{project_id}/writing/diagnostics/{record_id}/quality-policy",
     [
@@ -837,6 +1078,20 @@ export const API_ROUTES: readonly (readonly [string, string, readonly string[]])
     ]
   ],
   [
+    "/projects/{pid}/studio/records/{identity}/sync-history",
+    "/projects/{project_id}/research-records/{resource_id}/sync-history",
+    [
+      "GET"
+    ]
+  ],
+  [
+    "/projects/{pid}/studio/records/{identity}/restore-sync",
+    "/projects/{project_id}/research-records/{resource_id}/restore-sync",
+    [
+      "POST"
+    ]
+  ],
+  [
     "/projects/{pid}/writing-sessions/{sid}/reparse-draft",
     "/projects/{project_id}/writing/sessions/{section_id}/reparse-draft",
     [
@@ -921,6 +1176,20 @@ export const API_ROUTES: readonly (readonly [string, string, readonly string[]])
     ]
   ],
   [
+    "/projects/{pid}/studio/webpages/{identity}/download",
+    "/projects/{project_id}/reading/webpages/{resource_id}/download",
+    [
+      "GET"
+    ]
+  ],
+  [
+    "/projects/{pid}/studio/records/{identity}/versions",
+    "/projects/{project_id}/research-records/{resource_id}/versions",
+    [
+      "GET"
+    ]
+  ],
+  [
     "/projects/{pid}/diagnostics/{rid}/qualify",
     "/projects/{project_id}/writing/diagnostics/{record_id}/qualify",
     [
@@ -944,6 +1213,13 @@ export const API_ROUTES: readonly (readonly [string, string, readonly string[]])
   [
     "/projects/{pid}/document-reading/sessions/{identity}/findings",
     "/projects/{project_id}/reading/sessions/{resource_id}/findings",
+    [
+      "POST"
+    ]
+  ],
+  [
+    "/projects/{pid}/studio/reader/{fid}/annotations",
+    "/projects/{project_id}/reading/parallel/{file_id}/annotations",
     [
       "POST"
     ]
@@ -984,6 +1260,13 @@ export const API_ROUTES: readonly (readonly [string, string, readonly string[]])
     ]
   ],
   [
+    "/projects/{pid}/studio/proposals/{identity}/adopt",
+    "/projects/{project_id}/writing/proposals/{resource_id}/adopt",
+    [
+      "POST"
+    ]
+  ],
+  [
     "/projects/{pid}/writing-analyses/{aid}/review",
     "/projects/{project_id}/writing/analyses/{artifact_id}/review",
     [
@@ -993,6 +1276,27 @@ export const API_ROUTES: readonly (readonly [string, string, readonly string[]])
   [
     "/projects/{pid}/document-reading/sessions/{identity}/review",
     "/projects/{project_id}/reading/sessions/{resource_id}/review",
+    [
+      "POST"
+    ]
+  ],
+  [
+    "/projects/{pid}/studio/reader/{fid}/translate",
+    "/projects/{project_id}/reading/parallel/{file_id}/translate",
+    [
+      "POST"
+    ]
+  ],
+  [
+    "/projects/{pid}/studio/assets/{identity}/metadata",
+    "/projects/{project_id}/asset-library/{resource_id}/metadata",
+    [
+      "GET"
+    ]
+  ],
+  [
+    "/projects/{pid}/studio/comments/{identity}/reply",
+    "/projects/{project_id}/writing/comments/{resource_id}/reply",
     [
       "POST"
     ]
@@ -1012,6 +1316,34 @@ export const API_ROUTES: readonly (readonly [string, string, readonly string[]])
     ]
   ],
   [
+    "/projects/{pid}/studio/reader/{fid}/progress",
+    "/projects/{project_id}/reading/parallel/{file_id}/progress",
+    [
+      "PUT"
+    ]
+  ],
+  [
+    "/projects/{pid}/studio/assets/{identity}/content",
+    "/projects/{project_id}/asset-library/{resource_id}/content",
+    [
+      "PUT"
+    ]
+  ],
+  [
+    "/projects/{pid}/studio/canvas/{identity}/image",
+    "/projects/{project_id}/assets/canvases/{resource_id}/image",
+    [
+      "POST"
+    ]
+  ],
+  [
+    "/projects/{pid}/studio/parse-results/{identity}/adopt",
+    "/projects/{project_id}/parsing/results/{resource_id}/adopt",
+    [
+      "POST"
+    ]
+  ],
+  [
     "/projects/{pid}/document-reading/documents/{fid}/outline",
     "/projects/{project_id}/reading/documents/{file_id}/outline",
     [
@@ -1021,6 +1353,13 @@ export const API_ROUTES: readonly (readonly [string, string, readonly string[]])
   [
     "/projects/{pid}/document-reading/sessions/{identity}/read",
     "/projects/{project_id}/reading/sessions/{resource_id}/read",
+    [
+      "POST"
+    ]
+  ],
+  [
+    "/projects/{pid}/studio/reader/{fid}/webpage",
+    "/projects/{project_id}/reading/parallel/{file_id}/webpage",
     [
       "POST"
     ]
@@ -1068,6 +1407,27 @@ export const API_ROUTES: readonly (readonly [string, string, readonly string[]])
     ]
   ],
   [
+    "/projects/{pid}/studio/reader/{fid}/guide",
+    "/projects/{project_id}/reading/parallel/{file_id}/guide",
+    [
+      "POST"
+    ]
+  ],
+  [
+    "/projects/{pid}/studio/abstract/{rid}",
+    "/projects/{project_id}/literature/abstract/{record_id}",
+    [
+      "GET"
+    ]
+  ],
+  [
+    "/projects/{pid}/studio/credentials/{name}",
+    "/projects/{project_id}/integrations/credentials/{name}",
+    [
+      "PUT"
+    ]
+  ],
+  [
     "/projects/{pid}/diagnostics/{rid}",
     "/projects/{project_id}/writing/diagnostics/{record_id}",
     [
@@ -1086,6 +1446,15 @@ export const API_ROUTES: readonly (readonly [string, string, readonly string[]])
     "/projects/{project_id}/writing/papers/{task_id}/revise",
     [
       "POST"
+    ]
+  ],
+  [
+    "/projects/{pid}/studio/records/{identity}",
+    "/projects/{project_id}/research-records/{resource_id}",
+    [
+      "GET",
+      "PUT",
+      "DELETE"
     ]
   ],
   [
@@ -1138,10 +1507,45 @@ export const API_ROUTES: readonly (readonly [string, string, readonly string[]])
     ]
   ],
   [
+    "/projects/{pid}/studio/assets/{identity}",
+    "/projects/{project_id}/asset-library/{resource_id}",
+    [
+      "GET"
+    ]
+  ],
+  [
+    "/projects/{pid}/studio/parsing/{fid}",
+    "/projects/{project_id}/parsing/providers/{file_id}",
+    [
+      "POST"
+    ]
+  ],
+  [
     "/projects/{pid}/writing-joint-reviews/{jid}",
     "/projects/{project_id}/writing/joint-reviews/{jid}",
     [
       "GET"
+    ]
+  ],
+  [
+    "/projects/{pid}/studio/reader/{fid}",
+    "/projects/{project_id}/reading/parallel/{file_id}",
+    [
+      "GET"
+    ]
+  ],
+  [
+    "/projects/{pid}/writing-quality/{tid}",
+    "/projects/{project_id}/writing/quality/{task_id}",
+    [
+      "GET"
+    ]
+  ],
+  [
+    "/projects/{pid}/studio/notes/{identity}/ai",
+    "/projects/{project_id}/notes/{resource_id}/ai",
+    [
+      "POST"
     ]
   ],
   [

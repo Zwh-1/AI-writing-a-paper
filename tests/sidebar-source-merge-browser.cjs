@@ -19,9 +19,9 @@ const port = process.env.PAPER_TEST_PORT || 8765;
   page.on('pageerror', e => errors.push(e.message));
   page.on('response', r => { if (r.url().includes('/api/') && r.status() >= 400) failures.push(r.url() + ':' + r.status()) });
   const sidebar = page.locator('aside.sidebar nav');
-  const entry = sidebar.getByRole('button', { name: /^资料与文献/ });
+  const entry = sidebar.getByRole('button', { name: /^文献资料与规则/ });
   const breadcrumb = page.locator('.breadcrumb');
-  const tabs = page.locator('.source-destinations button');
+  const tabs = page.locator('.workspace-navigation-destinations button');
   try {
     await page.goto(`http://127.0.0.1:${port}/#token=${session.bootstrap_token}`, { waitUntil: 'networkidle' });
     await page.getByRole('heading', { name: '把研究，写成有依据的论文。' }).waitFor();
@@ -30,7 +30,7 @@ const port = process.env.PAPER_TEST_PORT || 8765;
     assert.equal(await sidebar.getByRole('button', { name: /^资料中心/ }).count(), 0, '资料中心不应再作为独立主导航');
     assert.equal(await sidebar.getByRole('button', { name: /^论文规则/ }).count(), 0, '论文规则不应再作为独立主导航');
     assert.equal(await sidebar.getByRole('button', { name: /^文献与术语/ }).count(), 0, '文献不应再作为独立主导航');
-    assert.equal(await entry.count(), 1, '资料与文献入口应当唯一');
+    assert.equal(await entry.count(), 1, '文献资料与规则入口应当唯一');
     checks.push('sidebar_single_source_entry');
 
     // 2 点击后进入资料中心，侧栏保持一个高亮并标出子页面
@@ -38,7 +38,7 @@ const port = process.env.PAPER_TEST_PORT || 8765;
     await page.getByRole('heading', { name: '资料中心' }).first().waitFor({ timeout: 15000 });
     assert.ok((await entry.getAttribute('class') || '').includes('active'));
     assert.ok((await entry.innerText()).includes('资料中心'), '侧栏应标注当前子页面');
-    assert.ok((await breadcrumb.innerText()).includes('资料与文献 · 资料中心'));
+    assert.ok((await breadcrumb.innerText()).includes('文献资料与规则 · 资料中心'));
     assert.equal(await sidebar.locator('button.active').count(), 1, '同一时刻只应有一个高亮入口');
     checks.push('entry_opens_materials');
 
@@ -47,14 +47,14 @@ const port = process.env.PAPER_TEST_PORT || 8765;
     await page.getByRole('heading', { name: '论文规则' }).first().waitFor({ timeout: 15000 });
     assert.ok((await entry.getAttribute('class') || '').includes('active'));
     assert.ok((await entry.innerText()).includes('论文规则'));
-    assert.ok((await breadcrumb.innerText()).includes('资料与文献 · 论文规则'));
+    assert.ok((await breadcrumb.innerText()).includes('文献资料与规则 · 论文规则'));
     checks.push('internal_switch_rules');
 
     // 4 页面内部切换到文献与知识
     await tabs.filter({ hasText: '文献与知识' }).first().click();
     await page.waitForFunction(() => document.querySelector('.breadcrumb')?.textContent?.includes('文献与知识'), null, { timeout: 15000 });
     await page.getByRole('heading', { name: '文献与知识工作台' }).waitFor({ timeout: 20000 });
-    await page.locator('.source-destinations').first().waitFor({ timeout: 20000 });
+    await page.locator('.workspace-navigation-destinations').first().waitFor({ timeout: 20000 });
     assert.ok((await entry.getAttribute('class') || '').includes('active'));
     checks.push('internal_switch_references');
     await page.screenshot({ path: path.join(shots, 'sidebar-references.png') });

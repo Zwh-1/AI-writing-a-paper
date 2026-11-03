@@ -16,8 +16,9 @@ from .api.v2 import install as install_api_v2
 @asynccontextmanager
 async def lifespan(app):
     db.init()
-    (ROOT/'.runtime').mkdir(exist_ok=True)
-    (ROOT/'.runtime'/f'session-{PORT}.json').write_text(db.dumps({'port':PORT,'bootstrap_token':security.BOOTSTRAP_TOKEN,'pid':os.getpid(),'data_directory':str(DATA)}),encoding='utf-8')
+    session_directory=Path(os.environ.get('PAPER_SESSION_DIR',str(ROOT/'.runtime')))
+    session_directory.mkdir(parents=True,exist_ok=True)
+    (session_directory/f'session-{PORT}.json').write_text(db.dumps({'port':PORT,'bootstrap_token':security.BOOTSTRAP_TOKEN,'pid':os.getpid(),'data_directory':str(DATA)}),encoding='utf-8')
     yield
 
 app=FastAPI(title='砚台 · 论文工作台',version=APP_VERSION,lifespan=lifespan)
@@ -30,10 +31,12 @@ async def writing_contract_error(request,error):
 @app.middleware('http')
 async def boundary(request,call_next):
     host=request.headers.get('host','').split(':')[0]
-    if host not in ('127.0.0.1','localhost','testserver'): return JSONResponse({'detail':'本地服务不接受此Host'},403)
+    configured_hosts={value.strip() for value in os.environ.get('PAPER_ALLOWED_HOSTS','').split(',') if value.strip()} if os.environ.get('PAPER_CONTAINER_DEPLOYMENT')=='1' else set()
+    if host not in {'127.0.0.1','localhost','testserver',*configured_hosts}: return JSONResponse({'detail':'本地服务不接受此Host'},403)
     origin=request.headers.get('origin')
-    if origin and origin not in (f'http://127.0.0.1:{PORT}',f'http://localhost:{PORT}','http://127.0.0.1:5173','http://localhost:5173','http://testserver'): return JSONResponse({'detail':'不允许的请求来源'},403)
-    public=request.url.path in ('/api/v1/health','/api/v1/session')
+    configured_origins={value.strip() for value in os.environ.get('PAPER_ALLOWED_ORIGINS','').split(',') if value.strip()} if os.environ.get('PAPER_CONTAINER_DEPLOYMENT')=='1' else set()
+    if origin and origin not in {f'http://127.0.0.1:{PORT}',f'http://localhost:{PORT}','http://127.0.0.1:5173','http://localhost:5173','http://testserver',*configured_origins}: return JSONResponse({'detail':'不允许的请求来源'},403)
+    public=request.url.path in ('/api/v1/health','/api/v1/session','/api/v1/studio/zotero/callback','/api/v2/studio/zotero/callback')
     if request.url.path.startswith('/api/') and not public:
         if not secrets.compare_digest(request.cookies.get('paper_session',''),security.SESSION_TOKEN): return JSONResponse({'detail':'请通过启动器打开本机工作台'},401)
         if request.method not in ('GET','HEAD','OPTIONS') and not secrets.compare_digest(request.headers.get('x-csrf-token',''),security.SESSION_TOKEN): return JSONResponse({'detail':'会话校验失败'},403)
@@ -330,6 +333,8 @@ def patch_rule(rid,body:dict):
         for key in ('statement','category','scope','modality','state','checker','rule_key','value','decision_note','operations','source_id'):
             if key in body:c.execute(f'UPDATE rules SET {key}=? WHERE id=?',(db.dumps(body[key]) if key in ('value','operations') else body[key],rid))
         if 'conditions' in body:c.execute('INSERT INTO rule_conditions VALUES(?,?) ON CONFLICT(rule_id) DO UPDATE SET expression=excluded.expression',(rid,db.dumps(body['conditions'])))
+    from .knowledge_lineage import changed
+    changed(r['project_id'],'rule',rid,'论文规则已修改，复用内容需复查')
     db.audit(r['project_id'],'edit_rule',{'id':rid,'previous':r,'changes':body});return db.one('SELECT * FROM rules WHERE id=?',(rid,))
 @app.post('/api/v1/projects/{pid}/rules/batch-review')
 def batch_review_rules(pid,body:dict):
@@ -342,6 +347,8 @@ def batch_review_rules(pid,body:dict):
     with db.transaction() as c:
         for rid in selected:c.execute('UPDATE rules SET state=? WHERE id=?',(state,rid))
     db.audit(pid,'batch_review_rules',{'rule_ids':sorted(selected),'state':state})
+    from .knowledge_lineage import changed
+    for rid in selected:changed(pid,'rule',rid,'规则批量状态已修改，复用内容需复查')
     return {'updated':len(selected),'state':state}
 @app.post('/api/v1/projects/{pid}/rules/duplicates/merge')
 def merge_duplicate_rules(pid,body:dict):
@@ -418,6 +425,8 @@ def patch_section(sid,body:dict):
                     if dep==sid or security.require_section(dep)['project_id']!=s['project_id']: raise HTTPException(422,'章节依赖无效')
             db.execute(f'UPDATE sections SET {key}=? WHERE id=?',(db.dumps(body[key]) if key=='dependencies' else body[key],sid))
     db.execute('UPDATE projects SET outline_revision=outline_revision+1,updated_at=? WHERE id=?',(db.now(),s['project_id']))
+    from .knowledge_lineage import changed
+    changed(s['project_id'],'outline',sid,'章节计划已修改，复用内容需复查')
     if any(k in body for k in ('title','kind','goal','parent_id','dependencies')):documents.mark_downstream(s['project_id'],sid,'章节计划或依赖已修改')
     return security.require_section(sid)
 @app.get('/api/v1/sections/{sid}/content')
@@ -479,27 +488,23 @@ def patch_fact(fid,body:dict):
     for key in ('label','statement','status','verification','source_ids','artifact_id'):
         if key in body: db.execute(f'UPDATE facts SET {key}=?,revision=revision+1,updated_at=? WHERE id=?',(db.dumps(body[key]) if key=='source_ids' else body[key],db.now(),fid))
     from .writing_agent.evidence import sync_fact
-    sync_fact(f['project_id'],fid);documents.fact_changed(f['project_id'],fid);return db.one('SELECT * FROM facts WHERE id=?',(fid,))
+    sync_fact(f['project_id'],fid);documents.fact_changed(f['project_id'],fid)
+    from .knowledge_lineage import changed
+    changed(f['project_id'],'fact',fid,'研究事实已修改，复用内容需复查')
+    return db.one('SELECT * FROM facts WHERE id=?',(fid,))
 @app.get('/api/v1/projects/{pid}/references')
-def references(pid): body_project(pid);return db.rows('SELECT * FROM bibliography WHERE project_id=?',(pid,))
+def references(pid): body_project(pid);return db.rows("SELECT * FROM bibliography WHERE project_id=? AND COALESCE(json_extract(metadata,'$._studio_deleted'),0)=0",(pid,))
 @app.post('/api/v1/projects/{pid}/references')
 def add_reference(pid,body:dict):
-    body_project(pid);fid=body.get('file_id')
-    if fid and file_record(fid)['project_id']!=pid: raise HTTPException(422,'文献文件不属于项目')
-    rid=db.uid();db.execute('INSERT INTO bibliography(id,project_id,metadata,file_id,verification,created_at) VALUES(?,?,?,?,?,?)',(rid,pid,db.dumps(body.get('metadata',body)),fid,body.get('verification','unverified'),db.now()));return db.one('SELECT * FROM bibliography WHERE id=?',(rid,))
+    from .reference_service import save,get
+    row=save(pid,body.get('metadata',body),body.get('file_id'),verification=body.get('verification','unverified'))
+    return get(pid,row['id'],False)
 @app.patch('/api/v1/references/{rid}')
 @db.atomic
 def patch_reference(rid,body:dict):
-    r=db.one('SELECT * FROM bibliography WHERE id=?',(rid,))
-    if not r: raise HTTPException(404,'文献不存在')
-    fid=body.get('file_id',r['file_id'])
-    if fid and file_record(fid)['project_id']!=r['project_id']:raise HTTPException(422,'文献文件不属于项目')
-    db.execute('INSERT INTO bibliography_revisions VALUES(?,?,?,?)',(db.uid(),rid,r['metadata'],db.now()))
-    from .writing_agent.impact import retain_existing
-    for consumer in db.rows('SELECT DISTINCT s.id FROM sections s JOIN citations c ON c.revision_id=s.current_revision_id WHERE s.project_id=? AND c.reference_id=?',(r['project_id'],rid)):retain_existing(r['project_id'],consumer['id'])
-    db.execute('UPDATE bibliography SET metadata=?,file_id=?,verification=?,revision=revision+1 WHERE id=?',(db.dumps(body.get('metadata',db.loads(r['metadata'],{}))),fid,body.get('verification',r['verification']),rid))
-    documents.fact_changed(r['project_id'],rid)
-    return db.one('SELECT * FROM bibliography WHERE id=?',(rid,))
+    from .reference_service import update,get
+    row=update(rid,body)
+    return get(row['project_id'],rid,False)
 @app.get('/api/v1/projects/{pid}/mentor-tasks')
 def mentor_tasks(pid): body_project(pid);return db.rows('SELECT * FROM mentor_tasks WHERE project_id=?',(pid,))
 @app.post('/api/v1/projects/{pid}/mentor-tasks')
@@ -509,8 +514,12 @@ def add_mentor(pid,body:dict):
     rid=db.uid();db.execute('INSERT INTO mentor_tasks VALUES(?,?,?,?,?,?,?)',(rid,pid,sid,body['comment'],'open','',db.now()));return {'id':rid}
 @app.patch('/api/v1/mentor-tasks/{tid}')
 def patch_mentor(tid,body:dict):
-    if not db.one('SELECT id FROM mentor_tasks WHERE id=?',(tid,)): raise HTTPException(404,'意见不存在')
-    db.execute('UPDATE mentor_tasks SET status=?,resolution=? WHERE id=?',(body['status'],body.get('resolution',''),tid));return {'ok':True}
+    task=db.one('SELECT * FROM mentor_tasks WHERE id=?',(tid,))
+    if not task: raise HTTPException(404,'意见不存在')
+    db.execute('UPDATE mentor_tasks SET status=?,resolution=? WHERE id=?',(body['status'],body.get('resolution',''),tid))
+    from .knowledge_lineage import changed
+    changed(task['project_id'],'mentor_task',tid,'修改意见已更新，复用内容需复查')
+    return {'ok':True}
 @app.get('/api/v1/projects/{pid}/terms')
 def terms(pid): body_project(pid);return db.rows('SELECT * FROM terms WHERE project_id=?',(pid,))
 @app.post('/api/v1/projects/{pid}/terms')
@@ -555,7 +564,7 @@ def analysis(pid,body:dict):
 @app.post('/api/v1/projects/{pid}/reviews')
 def review_project(pid): body_project(pid);return tasks.enqueue(pid,'review',{})
 @app.get('/api/v1/projects/{pid}/findings')
-def get_findings(pid): body_project(pid);return db.rows('SELECT * FROM findings WHERE project_id=? ORDER BY severity,created_at',(pid,))
+def get_findings(pid): body_project(pid);return db.rows("SELECT * FROM findings WHERE project_id=? AND status!='superseded' ORDER BY severity,created_at",(pid,))
 @app.patch('/api/v1/findings/{fid}')
 def resolve_finding(fid,body:dict): db.execute('UPDATE findings SET status=? WHERE id=?',(body['status'],fid));return {'ok':True}
 @app.get('/api/v1/projects/{pid}/format')
@@ -586,7 +595,9 @@ async def upload_template(pid:str,file:UploadFile=File(...)):
 @app.post('/api/v1/projects/{pid}/exports')
 def export(pid,body:dict): body_project(pid);return tasks.enqueue(pid,'export',body)
 @app.get('/api/v1/projects/{pid}/exports')
-def export_list(pid): body_project(pid);return db.rows('SELECT * FROM exports WHERE project_id=? ORDER BY created_at DESC',(pid,))
+def export_list(pid):
+    from .export_service import history
+    return history(pid)
 @app.get('/api/v1/exports/{eid}/files/{name}')
 def export_download(eid,name):
     if not db.one('SELECT id FROM exports WHERE id=?',(eid,)): raise HTTPException(404,'导出不存在')
@@ -778,6 +789,7 @@ mount_api_routers(app,supplements=True)
 frontend=Path(os.environ.get('PAPER_FRONTEND_DIR',str(ROOT/'frontend'/'dist'))).resolve()
 if frontend.exists():
     app.mount('/assets',StaticFiles(directory=frontend/'assets',check_dir=False),name='assets')
+    app.mount('/mathlive-fonts',StaticFiles(directory=frontend/'mathlive-fonts',check_dir=False),name='mathlive-fonts')
     @app.get('/{path:path}')
     def spa(path:str):
         if path=='api' or path.startswith('api/'):raise HTTPException(404,'接口不存在')

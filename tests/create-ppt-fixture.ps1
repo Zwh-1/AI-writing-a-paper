@@ -1,6 +1,6 @@
 param([Parameter(Mandatory=$true)][string]$Output)
 $taskVersion=$PSVersionTable.PSVersion.ToString();$taskEdition=$PSVersionTable.PSEdition
-if($taskVersion -cne '7.6.5' -or $taskEdition -cne 'Core'){throw 'Required PowerShell 7.6.5 Core'}
+if ($PSVersionTable.PSVersion -le [version]'7.6.0' -or $PSVersionTable.PSEdition -ne 'Core') { throw 'Requires PowerShell > 7.6.0 Core' }
 $ErrorActionPreference='Stop';$taskApp=$null;$taskPresentation=$null;$taskBefore=0;$taskSecurity=$null
 try{
  $taskApp=New-Object -ComObject PowerPoint.Application;$taskBefore=$taskApp.Presentations.Count;$taskSecurity=$taskApp.AutomationSecurity;$taskApp.AutomationSecurity=3

@@ -15,7 +15,13 @@ def _blob(data):
     return Blob(len(data),ctypes.cast(array,ctypes.POINTER(ctypes.c_ubyte))),array
 
 def protect(data, decrypt=False):
-    if os.name!='nt': raise RuntimeError('密钥持久化需要 Windows DPAPI；其他平台请使用环境变量 PAPER_API_KEY')
+    if os.name!='nt':
+        from cryptography.fernet import Fernet
+        value=os.environ.get('PAPER_CREDENTIAL_KEY','')
+        if not value and os.environ.get('PAPER_CREDENTIAL_KEY_FILE'):value=Path(os.environ['PAPER_CREDENTIAL_KEY_FILE']).read_text(encoding='utf-8').strip()
+        if not value:raise RuntimeError('请为此部署配置 PAPER_CREDENTIAL_KEY_FILE；模型密钥也可通过环境变量提供')
+        cipher=Fernet(value.encode())
+        return cipher.decrypt(data) if decrypt else cipher.encrypt(data)
     inp,keep=_blob(data); out=Blob()
     crypt=ctypes.windll.crypt32
     if decrypt:

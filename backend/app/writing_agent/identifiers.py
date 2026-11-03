@@ -2,6 +2,7 @@
 from copy import deepcopy
 
 FIELDS={'id','nodeId','node_id','node_ids','sentence_id','evidence_ids','reference_ids','issue_id','section_id','revision_id','source_id','source_ids','file_id','file_ids','material_evidence_ids','rule_ids','parent_id','dependencies','depends_on_sections','current_revision_id','target_node_ids','knowledge_unit_id','knowledge_unit_ids','knowledgeUnitIds','unit_id','unit_ids','reading_id','document_reading_ids','documentReadingIds','passage_id','passage_ids'}
+FIELDS.update({'reference_id','evidence_id','document_reading_id','fact_id','fact_ids','claim_version_id','claim_version_ids'})
 STAGES={'judgment','judgment_check','draft','annotation','semantic','coherence','regression','paper_chunk','paper_cross_passages','paper_navigation'}
 
 def encode(payload,manifest):

@@ -3,7 +3,7 @@ from .. import documents,db
 from .models import Draft
 from .common import fail
 
-def document(data,current=None,targets=None,locks=None,references=None,evidence_ids=None):
+def document(data,current=None,targets=None,locks=None,references=None,evidence_ids=None,*,pid=None,context=None,manifest=None):
     # A known source ID can be classified without altering one character of
     # prose. Unknown IDs still fail, and independent annotation must verify it.
     normalized=Draft.model_validate(data).model_dump();permitted_evidence=set(evidence_ids or []);books={r['id'] for r in references or []};corrections=[]
@@ -16,10 +16,16 @@ def document(data,current=None,targets=None,locks=None,references=None,evidence_
             corrections.append({'local_id':paragraph.get('local_id'),'kind':'known_evidence_ids_classified_separately_from_bibliography','evidence_ids':misplaced,'prose_changed':False,'semantic_support':'not_granted'})
     draft=Draft.model_validate(normalized).model_dump();draft['field_corrections']=corrections;ids=[p['local_id'] for p in draft['paragraphs']]
     if len(set(ids))!=len(ids):fail('INVALID_DRAFT','候选段落标识重复')
-    permitted={r['id']:r for r in references or []};content=[]
+    permitted={r['id']:r for r in references or []};content=[];proposals=[];quality_findings=[]
     for p in draft['paragraphs']:
         if set(p['evidence_ids'])-permitted_evidence:fail('INVALID_EVIDENCE','候选关联了未提供的来源编号')
         if set(p['reference_ids'])-set(permitted):fail('INVALID_REFERENCE','候选引用了未提供原文依据的书目')
+        if p.get('claim_spans') or p.get('citation_intents'):
+            if pid is None or context is None:fail('PRECISE_CONTEXT_REQUIRED','精确引用需要实际发送上下文及项目身份，不能退回段尾引用')
+            from ..writing_evidence_quality import compile_paragraph
+            result=compile_paragraph(pid,p,context,manifest)
+            content.append(result['node']);proposals.extend(result['citation_proposals']);quality_findings.extend(result['findings'])
+            continue
         children=[{'type':'text','text':p['text']}];source_ids=[];unit_ids=[];reading_ids=[]
         for ref in dict.fromkeys(p['reference_ids']):
             children.append({'type':'citation','attrs':{'nodeId':db.uid(),'citationId':ref}});source_ids.extend(permitted[ref]['source_ids'])
@@ -39,4 +45,7 @@ def document(data,current=None,targets=None,locks=None,references=None,evidence_
     else:
         for i,n in enumerate(old):
             if n['type']!='paragraph' or n.get('attrs',{}).get('nodeId') in locks or documents.visual_paragraph(n):content.insert(min(i,len(content)),n)
+    draft['citation_proposals']=proposals
+    draft['evidence_quality_findings']=quality_findings
+    draft['missing_materials']=list(dict.fromkeys([*draft['missing_materials'],*[finding['message'] for finding in quality_findings]]))
     return documents.normalize({'type':'doc','content':content}),draft

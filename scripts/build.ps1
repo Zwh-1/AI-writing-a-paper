@@ -1,7 +1,7 @@
 param([switch]$InstallDependencies,[string]$PythonPath='')
 $taskVersion=$PSVersionTable.PSVersion.ToString()
 $taskEdition=$PSVersionTable.PSEdition
-if ($taskVersion -cne '7.6.5' -or $taskEdition -cne 'Core') { throw 'Required: PowerShell 7.6.5 Core.' }
+if ($PSVersionTable.PSVersion -le [version]'7.6.0' -or $PSVersionTable.PSEdition -ne 'Core') { throw 'Requires PowerShell > 7.6.0 Core' }
 $ErrorActionPreference='Stop'
 $taskRoot=Split-Path -Parent $PSScriptRoot
 if ($InstallDependencies) {

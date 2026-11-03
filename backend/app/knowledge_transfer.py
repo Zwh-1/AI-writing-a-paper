@@ -10,8 +10,8 @@ from fastapi import HTTPException
 from . import db,security
 
 FORMAT='paper-knowledge-bundle-v3'
-EXCLUDE={'settings','schema_migrations','backups','format_profiles','collaboration_users','collaboration_sessions','project_members','collaboration_presence','collaboration_events','sync_operations','sync_conflicts','sync_record_conflicts','knowledge_transfer_receipts'}
-SETTING_PREFIXES=('format:','template:','graph_wiki_enabled:','knowledge_auto_refresh:','knowledge_refresh_mode:','knowledge_refresh_budget:','knowledge_release:','knowledge_release_locked:','reference_knowledge:','retrieval:','expense_policy:','expense_currency:')
+EXCLUDE={'settings','schema_migrations','backups','format_profiles','collaboration_users','collaboration_sessions','project_members','collaboration_presence','collaboration_events','sync_operations','sync_conflicts','sync_record_conflicts','knowledge_transfer_receipts','studio_oauth'}
+SETTING_PREFIXES=('format:','template:','graph_wiki_enabled:','knowledge_auto_refresh:','knowledge_refresh_mode:','knowledge_refresh_budget:','knowledge_release:','knowledge_release_locked:','reference_knowledge:','retrieval:','expense_policy:','expense_currency:','studio:parsing:','studio:execution:','studio:zotero:')
 MAX_RAW=2_000_000_000
 MAX_ZIP=1_200_000_000
 
@@ -96,6 +96,8 @@ def export(pid,task_id=None):
     connection=sqlite3.connect(snapshot);connection.row_factory=sqlite3.Row
     try:
         tables,specs=collect(connection,pid);secret_check(tables)
+        from .resource_registry import validate_relations
+        validate_relations(pid,tables)
         settings={prefix+pid:db.loads(r[0]) for prefix in SETTING_PREFIXES if (r:=connection.execute('SELECT value FROM settings WHERE key=?',(prefix+pid,)).fetchone())}
         sourceids={r['id'] for r in tables.get('sources',[])}
         supersessions=connection.execute("SELECT value FROM settings WHERE key='document_observation_supersessions'").fetchone()
@@ -153,7 +155,7 @@ def validate(raw):
         manifest=json.loads(z.read('manifest.json'))
         if manifest.get('format')!=FORMAT or not re.fullmatch('[a-f0-9]{32}',manifest.get('project_id','')):raise ValueError('完整知识包格式无效')
         from .writing_agent.migrations import CURRENT
-        if manifest.get('schema')!=CURRENT:raise ValueError('请使用相同数据库版本导入知识包')
+        if manifest.get('schema') not in (16,CURRENT):raise ValueError('此知识包版本需要先由兼容版本升级')
         if set(names)!=set(manifest.get('files',{}))|{'manifest.json'}:raise ValueError('知识包清单不完整')
         with db.connect() as c:specs=schema(c)
         if set(manifest.get('tables',{}))-set(specs):raise ValueError('知识包包含不允许的表')
@@ -168,6 +170,8 @@ def validate(raw):
                 if table not in manifest['tables']:raise ValueError('未登记数据表')
                 rows=decode(json.loads(content))
                 if not isinstance(rows,list) or len(rows)!=manifest['tables'][table]['count']:raise ValueError('知识包记录数不匹配')
+                if manifest['schema']==16 and table=='studio_records':
+                    rows=[{**row,'schema_version':1} for row in rows]
                 if any(not isinstance(r,dict) or set(r)!=set(specs[table]['columns']) or 'project_id' in r and r['project_id']!=manifest['project_id'] for r in rows):raise ValueError('知识包字段或项目所属无效')
                 tables[table]=rows
         if len(tables.get('projects',[]))!=1 or tables['projects'][0]['id']!=manifest['project_id']:raise ValueError('项目对象不完整')
@@ -177,6 +181,8 @@ def validate(raw):
             if identity not in {r['id'] for r in tables.get('knowledge_artifacts',[])}:raise ValueError('资源清单指向外部产物')
             if any(not entry.startswith('resources/'+identity+'/') or entry not in manifest['files'] for entry in resource.get('entries',[])):raise ValueError('产物资源路径或所属无效')
         secret_check(tables)
+        from .resource_registry import validate_relations
+        validate_relations(manifest['project_id'],tables)
         return manifest,tables
 
 def preview(raw):

@@ -1,6 +1,6 @@
 param([switch]$CheckOnly,[string]$AdminName='admin')
 $taskVersion=$PSVersionTable.PSVersion.ToString();$taskEdition=$PSVersionTable.PSEdition
-if($taskVersion -cne '7.6.5' -or $taskEdition -cne 'Core'){throw 'Required PowerShell 7.6.5 Core'}
+if ($PSVersionTable.PSVersion -le [version]'7.6.0' -or $PSVersionTable.PSEdition -ne 'Core') { throw 'Requires PowerShell > 7.6.0 Core' }
 $ErrorActionPreference='Stop';$taskDirectory=Join-Path $PSScriptRoot 'deployment';$taskEnv=Join-Path $taskDirectory '.env';$taskSecretDir=Join-Path $taskDirectory 'private'
 if(-not(Test-Path -LiteralPath $taskEnv)){throw '请先复制deployment/.env.example为.env，填写自己的域名、接口与模型ID。'}
 $taskDocker=(Get-Command docker -ErrorAction Stop).Source

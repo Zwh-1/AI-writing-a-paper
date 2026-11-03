@@ -14,9 +14,10 @@ def plain(doc):
     if doc.get('type')=='figure': return '[图：'+doc.get('attrs',{}).get('caption','')+']'
     if doc.get('type')=='crossReference':return '[figref:'+doc.get('attrs',{}).get('targetSectionId','')+':'+doc.get('attrs',{}).get('targetId','')+']'
     if doc.get('type')=='hardBreak':return '\n'
+    if doc.get('type') in ('formula','inlineFormula'):return doc.get('attrs',{}).get('latex') or doc.get('attrs',{}).get('expression','')
     return ('\n' if doc.get('type') in ('doc','table','tableRow','tableCell','tableHeader','blockquote','bulletList','orderedList') else '').join(plain(c) for c in doc.get('content',[]))
 def normalize(doc,depth=0):
-    allowed={'doc','paragraph','heading','text','citation','blockquote','bulletList','orderedList','listItem','hardBreak','table','tableRow','tableHeader','tableCell','horizontalRule','figure','formula','footnote','crossReference'}
+    allowed={'doc','paragraph','heading','text','citation','blockquote','bulletList','orderedList','listItem','hardBreak','table','tableRow','tableHeader','tableCell','horizontalRule','figure','formula','inlineFormula','footnote','crossReference'}
     if depth>30 or doc.get('type') not in allowed: raise HTTPException(422,'正文结构不支持或嵌套过深')
     result={'type':doc['type']}
     if doc['type']=='text':
@@ -24,7 +25,12 @@ def normalize(doc,depth=0):
         marks=[m for m in doc.get('marks',[]) if m.get('type') in ('bold','italic','strike','code','underline','subscript','superscript')]
         if marks: result['marks']=marks
     else:
-        attrs={k:v for k,v in doc.get('attrs',{}).items() if k in ('nodeId','level','citationId','artifactId','caption','expression','targetId','targetSectionId','colspan','rowspan','colwidth','start','sourceIds','factIds','omml','noteText','latex','tableStyle','note','diagramType','figurePurpose','explanationNodeId','describesFigureId','relatedSectionIds')};
+        attrs={k:v for k,v in doc.get('attrs',{}).items() if k in ('nodeId','level','citationId','artifactId','assetVersionId','caption','expression','targetId','targetSectionId','colspan','rowspan','colwidth','start','sourceIds','factIds','omml','noteText','latex','tableStyle','note','diagramType','figurePurpose','explanationNodeId','describesFigureId','relatedSectionIds')};
+        # Tiptap extensions serialize absent optional attributes as null.
+        # Preserve actual values, but do not mistake an unset UI default for an
+        # invalid caption, identifier or table style.
+        for key in ('nodeId','citationId','artifactId','assetVersionId','caption','expression','targetId','targetSectionId','omml','noteText','latex','tableStyle','note','diagramType','figurePurpose','explanationNodeId','describesFigureId'):
+            if attrs.get(key,'') is None:attrs.pop(key,None)
         if doc['type']=='table':
             if attrs.get('tableStyle') not in (None,'grid','three-line'):raise HTTPException(422,'表格样式无效')
             for key in ('caption','note'):
@@ -33,15 +39,24 @@ def normalize(doc,depth=0):
         if not attrs.get('nodeId'): attrs['nodeId']=db.uid()
         if 'knowledgeUnitIds' in doc.get('attrs',{}):attrs['knowledgeUnitIds']=doc['attrs']['knowledgeUnitIds']
         if 'documentReadingIds' in doc.get('attrs',{}):attrs['documentReadingIds']=doc['attrs']['documentReadingIds']
+        if 'sourceRefs' in doc.get('attrs',{}):
+            from .resource_refs import validate
+            attrs['sourceRefs']=doc['attrs']['sourceRefs']
+            validate_doc_refs=attrs['sourceRefs']
+            if not isinstance(validate_doc_refs,list) or len(validate_doc_refs)>60:raise HTTPException(422,'段落来源关联无效')
         for extra_key in ('evidenceIds','knowledgeClaimIds','wikiVersionIds','wikiBlockIds'):
             if extra_key in doc.get('attrs',{}):attrs[extra_key]=doc['attrs'][extra_key]
+        for mapping_key,is_citation in (('claimEvidence',False),('claimMapping',True)):
+            if mapping_key in doc.get('attrs',{}):
+                from .writing_evidence_quality import validate_mapping_attributes
+                attrs[mapping_key]=validate_mapping_attributes(doc['attrs'],is_citation)
         for key in ('sourceIds','factIds','evidenceIds','knowledgeUnitIds','relatedSectionIds','documentReadingIds','knowledgeClaimIds','wikiVersionIds','wikiBlockIds'):
             if key in attrs:
                 if not isinstance(attrs[key],list) or len(attrs[key])>60 or any(not isinstance(x,str) for x in attrs[key]):raise HTTPException(422,'段落依据关联格式无效')
                 if not attrs[key]:attrs.pop(key)
         for key in ('targetId','targetSectionId','diagramType','figurePurpose','explanationNodeId','describesFigureId'):
             if key in attrs and (not isinstance(attrs[key],str) or len(attrs[key])>100):raise HTTPException(422,'图文关联标识格式无效')
-        if doc['type']=='formula' and attrs.get('omml'):
+        if doc['type'] in ('formula','inlineFormula') and attrs.get('omml'):
             from .ooxml_preserve import omml
             omml(attrs['omml'])
         if doc['type']=='footnote' and (not isinstance(attrs.get('noteText',''),str) or len(attrs.get('noteText',''))>10000):raise HTTPException(422,'脚注内容过长')
@@ -55,6 +70,9 @@ def visual_paragraph(node):
 @db.atomic
 def save(s,doc,base,kind='manual',task_id=None,citation_proposals=None,clear_stale=False):
     doc=normalize(doc);pid=s['project_id'];seen_ids=set()
+    from .asset_service import pin_document
+    prior=current(s)
+    pin_document(pid,doc,db.loads(prior['document'],{}) if prior else None)
     for node in nodes(doc):
         if node['type']=='text':continue
         identity=node.get('attrs',{}).get('nodeId')
@@ -85,6 +103,10 @@ def save(s,doc,base,kind='manual',task_id=None,citation_proposals=None,clear_sta
                 if dep['upstream_type'].startswith('knowledge:'):continue
                 c.execute('INSERT INTO dependencies VALUES(?,?,?,?,?,?,?)',(db.uid(),pid,dep['upstream_type'],dep['upstream_id'],dep['upstream_version'],s['id'],rid))
         for n in nodes(doc):
+            for ref in n.get('attrs',{}).get('sourceRefs',[]):
+                from .resource_refs import validate
+                validate(pid,[ref],allow_stale=kind=='manual')
+                c.execute('INSERT INTO dependencies VALUES(?,?,?,?,?,?,?)',(db.uid(),pid,'knowledge:'+ref['type'],ref['id'],ref['version'],s['id'],rid))
             for eid in n.get('attrs',{}).get('evidenceIds',[]):
                 from .writing_agent.evidence import get as get_evidence
                 from .writing_agent.common import dependency
@@ -138,6 +160,8 @@ def save(s,doc,base,kind='manual',task_id=None,citation_proposals=None,clear_sta
                     old_link=c.execute('SELECT scope FROM citation_knowledge_links WHERE citation_id=? AND unit_id=?',(prev['id'],uid)).fetchone() if prev else None
                     scope=db.loads(old_link['scope'],{}) if old_link else {'parse_id':unit['parse_id'],'locator':unit['locator'],'semantic_support':'not_checked'}
                     if uid in prop.get('knowledge_read_scopes',{}):scope['read_scope']=prop['knowledge_read_scopes'][uid]
+                    claim_mapping=prop.get('claim_mapping') or n['attrs'].get('claimMapping')
+                    if claim_mapping:scope['claim_mapping']=claim_mapping
                     c.execute('INSERT INTO citation_knowledge_links VALUES(?,?,?,?)',(citation_id,uid,unit['content_hash'],db.dumps(scope)))
                 reading_ids=prop.get('document_reading_ids',paragraph_readings.get(n['attrs']['nodeId']) or ([x['reading_id'] for x in c.execute('SELECT reading_id FROM citation_reading_links WHERE citation_id=?',(prev['id'],)).fetchall()] if prev else []))
                 for identity in reading_ids:
@@ -146,10 +170,12 @@ def save(s,doc,base,kind='manual',task_id=None,citation_proposals=None,clear_sta
                     if reading['file_id']!=ref['file_id'] or reading['intent']!='research':raise HTTPException(422,'阅读记录与研究引用的原件或用途不对应')
                     previous=c.execute('SELECT * FROM citation_reading_links WHERE citation_id=? AND reading_id=?',(prev['id'],identity)).fetchone() if prev and not prop else None
                     c.execute('INSERT INTO citation_reading_links VALUES(?,?,?,?)',(citation_id,identity,previous['reading_version'] if previous else reading['version'],previous['read_scope'] if previous else db.dumps(reading)))
-            if n['type']=='figure' and not c.execute("SELECT id FROM artifacts WHERE id=? AND project_id=? AND kind='figure' AND sha256 IS NOT NULL",(n.get('attrs',{}).get('artifactId'),pid)).fetchone(): raise HTTPException(422,'图表资源不存在或不是图片')
+            if n['type']=='figure' and not c.execute("SELECT id FROM artifacts WHERE id=? AND project_id=? AND kind IN ('figure','image','screenshot') AND sha256 IS NOT NULL",(n.get('attrs',{}).get('artifactId'),pid)).fetchone(): raise HTTPException(422,'图表资源不存在或不是图片')
             if n['type']=='table' and n.get('attrs',{}).get('artifactId') and not c.execute('SELECT id FROM artifacts WHERE id=? AND project_id=? AND kind=?',(n['attrs']['artifactId'],pid,'table')).fetchone():raise HTTPException(422,'表格资源不属于当前项目')
         c.execute("UPDATE sections SET current_revision_id=?,state='draft',stale=?,stale_reason=? WHERE id=?",(rid,0 if clear_stale else actual['stale'],'' if clear_stale else actual['stale_reason'],s['id']))
         c.execute('UPDATE projects SET updated_at=? WHERE id=?',(db.now(),pid))
+        from .writing_evidence_quality import persist_document_mappings
+        persist_document_mappings(pid,rid,doc,strict=kind!='manual')
     mark_downstream(pid,s['id'],'章节内容已变化')
     from .writing_agent.impact import revision_changed
     revision_changed(pid,s['id'],rid)

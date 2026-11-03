@@ -226,6 +226,9 @@ def validate_item(pid, item):
     if not item.get('document') or documents.plain(item['document']) != item.get('text'):
         raise HTTPException(409, '候选文档与用于衔接的正文文本不一致，请重新生成')
     manifest = item.get('manifest', {})
+    if manifest.get('evidence_bundle'):
+        from .writing_retrieval import validate as validate_bundle
+        validate_bundle(pid,manifest['evidence_bundle'],remote=True)
     if manifest.get('writing_state') and check_manifest(pid, manifest['writing_state']):
         raise HTTPException(409, '整篇候选所用正文或依据版本已变化')
     for fid in manifest.get('file_ids', []):

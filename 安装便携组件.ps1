@@ -1,5 +1,5 @@
 param([Parameter(Mandatory=$true)][string]$PackagePath,[switch]$VerifyOnly)
-if ($PSVersionTable.PSVersion.ToString() -cne '7.6.5' -or $PSVersionTable.PSEdition -cne 'Core') { throw 'Required PowerShell 7.6.5 Core. No version fallback is permitted.' }
+if ($PSVersionTable.PSVersion -le [version]'7.6.0' -or $PSVersionTable.PSEdition -ne 'Core') { throw 'Requires PowerShell > 7.6.0 Core' }
 $ErrorActionPreference='Stop'
 $taskComponentPython=Join-Path $PSScriptRoot '.runtime\python\python.exe'
 $taskComponentScript=Join-Path $PSScriptRoot 'scripts\install_portable_component.py'

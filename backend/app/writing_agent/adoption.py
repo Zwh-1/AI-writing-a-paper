@@ -66,6 +66,15 @@ def merge_document(current,doc,body):
 
 def commit_document(pid,s,doc,manifest,body,analysis=None,kind='agent_accepted',task_id=None,citation_proposals=None):
     """The single mutation path for agent, legacy, partial and joint adoption."""
+    from ..resource_refs import validate as validate_resources
+    validate_resources(pid,manifest.get('resource_refs',[]))
+    if manifest.get('evidence_bundle'):
+        from ..writing_retrieval import validate as validate_bundle
+        validate_bundle(pid,manifest['evidence_bundle'],remote=True)
+    critical=manifest.get('writing_quality_blockers',[])
+    if critical:fail('WRITING_EVIDENCE_UNRESOLVED','候选仍含来源映射或研究成果等级错误，请先补证修订',409,findings=critical)
+    from ..section_materials import validate as validate_materials
+    validate_materials(pid,manifest.get('section_materials'))
     current=documents.current(s);old_doc=db.loads(current['document'],{}) if current else None;merged=merge_document(old_doc,doc,body)
     partial=digest(merged)!=digest(doc)
     if partial and body.get('accept_policy')=='strict':fail('PARTIAL_REVIEW_REQUIRED','请先建立合并候选并复核后严格采用',409)
@@ -94,6 +103,8 @@ def commit_document(pid,s,doc,manifest,body,analysis=None,kind='agent_accepted',
                 verification.save_run(pid,fresh_analysis['id'],run['stage'],copied_manifest,copied,run['method'],run['status'])
         if not partial and analysis['state']=='human_reviewed':resolve_covered(pid,s['id'],manifest,fresh_analysis['id'])
     for eid,version in manifest.get('evidence_versions',{}).items():dependency(pid,'evidence',eid,version,'revision',result['id'],result['id'])
+    for ref in manifest.get('resource_refs',[]):
+        db.execute('INSERT INTO dependencies VALUES(?,?,?,?,?,?,?)',(db.uid(),pid,'knowledge:'+ref['type'],ref['id'],ref['version'],s['id'],result['id']))
     for fid,version in manifest.get('fact_versions',{}).items():dependency(pid,'fact',fid,version,'revision',result['id'],result['id'])
     for chapter,version in manifest.get('related_revisions',{}).items():
         if chapter!=s['id']:dependency(pid,'revision',version,version,'revision',result['id'],result['id'])
@@ -130,9 +141,17 @@ def adopt_legacy(sid,body,key=''):
     policy=body.get('accept_policy','draft')
     if policy not in ('draft','strict'):fail('INVALID_POLICY','采用策略无效')
     if policy=='strict':fail('VERIFICATION_UNRESOLVED','旧候选没有当前逐句核验，请在有据写作中核验后严格采用',409)
-    task=db.one("SELECT * FROM tasks WHERE id=? AND kind='write' AND status='succeeded' AND project_id=?",(body.get('task_id'),pid))
-    if not task:fail('NOT_FOUND','候选任务不存在或未完成',404)
+    task=db.one("SELECT * FROM tasks WHERE id=? AND kind='write' AND project_id=?",(body.get('task_id'),pid))
+    if not task:fail('NOT_FOUND','候选任务不存在',404)
+    if task['status']!='succeeded':
+        rejected=db.loads(task['result'],{}) or {}
+        if rejected.get('validation_error') and not rejected.get('document'):
+            fail('INVALID_CANDIDATE','候选未通过校验：'+str(rejected['validation_error']),422)
+        fail('SESSION_NOT_READY','候选任务尚未成功完成',409)
     output=db.loads(task['result'],{});manifest=output.get('manifest',{});p=security.require_project(pid)
+    if manifest.get('evidence_bundle'):
+        from ..writing_retrieval import validate as validate_bundle
+        validate_bundle(pid,manifest['evidence_bundle'],remote=True)
     if output.get('section_id')!=sid or not output.get('document'):fail('INVALID_CANDIDATE','候选稿无有效结构')
     if s['kind']=='abstract_en' and not manifest.get('abstract_translation'):
         fail('ABSTRACT_TRANSLATION_REQUIRED','此英文摘要候选未记录中文摘要翻译来源，请重新翻译后采用',409)
@@ -152,7 +171,7 @@ def adopt_legacy(sid,body,key=''):
     if expected!=body.get('base_revision_id'):fail('INPUT_VERSION_CHANGED','候选基础正文不匹配',409)
     adapted={'base_revision_id':body.get('base_revision_id'),'accept_policy':'draft','placement':'replace_section'}
     if 'node_ids' in body:adapted.update(placement=body.get('mode','append'),selected_node_ids=body['node_ids'],source_node_ids=body.get('source_node_ids',[]))
-    tracked={**manifest.get('writing_state',{}),'fact_versions':manifest.get('fact_revisions',{}),'rule_package_id':p['rule_package_id']}
+    tracked={**manifest.get('writing_state',{}),'fact_versions':manifest.get('fact_revisions',{}),'rule_package_id':p['rule_package_id'],'resource_refs':manifest.get('resource_refs',[]),'section_materials':manifest.get('section_materials'),'evidence_bundle':manifest.get('evidence_bundle'),'writing_quality_blockers':manifest.get('writing_quality_blockers',[])}
     result,analysis,partial=commit_document(pid,s,output['document'],tracked,adapted,kind='accepted',task_id=task['id'],citation_proposals=output.get('citation_proposals',[]))
     for source in manifest.get('source_ids',[]):db.execute('INSERT INTO dependencies VALUES(?,?,?,?,?,?,?)',(db.uid(),pid,'source',source,source,sid,result['id']))
     for fid,version in manifest.get('fact_revisions',{}).items():db.execute('INSERT INTO dependencies VALUES(?,?,?,?,?,?,?)',(db.uid(),pid,'fact',fid,str(version),sid,result['id']))

@@ -55,9 +55,13 @@ export async function request<T = unknown>(path: string, options: ApiOptions = {
 export async function api(path: string, options: ApiOptions = {}) {
   const envelope = await request<any>(path, options);
   if (envelope.meta.kind === "collection") return envelope.data.items;
-  if (envelope.meta.kind === "task") return envelope.data.task;
+  if (envelope.meta.kind === "task") return { ...envelope.data.task, resource_type: "task" };
   return envelope.data;
 }
 export function send(path: string, body: unknown = {}, method = "POST") {
-  return api(path, { method, body: JSON.stringify(body) });
+  return api(path, { method, body: JSON.stringify(body) }).then(value=>{
+    const pid=path.match(/\/projects\/([^/]+)/)?.[1];
+    window.dispatchEvent(new CustomEvent('paper-resource-changed',{detail:{project_id:pid,path}}));
+    return value;
+  });
 }
