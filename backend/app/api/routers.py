@@ -2,7 +2,7 @@
 from importlib import import_module
 
 DOMAIN_ROUTERS = (
-    "deepseek_profiles", "research_api", "source_workspace", "expense_evidence", "writing_agent.api",
+    "deepseek_profiles", "ai_cache_policy", "runtime_api", "request_receipts", "execution_policy", "research_api", "source_workspace", "expense_evidence", "writing_agent.api",
     "paper_writing", "paper_study", "writing_ops", "writing_live", "writing_retrieval_api", "writing_flow_api", "ai_autopilot_api",
     "reference_library", "reference_knowledge", "knowledge_units", "knowledge_imports",
     "knowledge_evaluation", "knowledge_api", "document_reading", "rule_rebuild",

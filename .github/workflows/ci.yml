@@ -3,28 +3,79 @@ on:
   pull_request:
   push:
     branches: [main, master]
+  workflow_call:
+    inputs:
+      commit:
+        type: string
+        required: true
 jobs:
   verify:
     runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit || github.sha }}
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
-      - name: Install dependencies
-        run: |
-          python -m pip install -r deployment/requirements.workbench.txt pytest
-          npm ci --prefix frontend --ignore-scripts --no-audit --no-fund
-      - name: Verify features and API contract
-        shell: pwsh
+      - name: Check clean source and install pinned dependencies
         run: |
           if ($PSVersionTable.PSVersion -le [version]'7.6.0' -or $PSVersionTable.PSEdition -ne 'Core') { throw 'Requires PowerShell > 7.6.0 Core' }
-          $env:PAPER_DATA_DIR=Join-Path $env:RUNNER_TEMP 'yantai-ci'
-          python runner.py test tests/test_studio.py tests/test_api_v2.py tests/test_reference_library.py tests/test_graph_wiki.py tests/test_document_reading.py tests/test_rag_reranking.py
+          if (git status --porcelain --untracked-files=all) { throw 'Verification requires a clean checkout' }
+          python -m pip install -r deployment/requirements.workbench.txt pytest
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm ci --prefix frontend --ignore-scripts --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Verify imports and generated API contract
+        run: |
+          if ($PSVersionTable.PSVersion -le [version]'7.6.0' -or $PSVersionTable.PSEdition -ne 'Core') { throw 'Requires PowerShell > 7.6.0 Core' }
+          $env:PAPER_DATA_DIR=Join-Path $env:RUNNER_TEMP 'yantai-ci-bootstrap'
+          node scripts/release-version.mjs --check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -X utf8 -c 'import runner;from app.main import app;from app import worker_supervisor,runtime_identity;print(app.version)'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -X utf8 scripts/export_api_contract.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git diff --exit-code -- docs/api-contract-v2.json frontend/src/api/routes.generated.ts frontend/src/collaboration.html frontend/package-lock.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Run isolated backend regression
+        run: |
+          if ($PSVersionTable.PSVersion -le [version]'7.6.0' -or $PSVersionTable.PSEdition -ne 'Core') { throw 'Requires PowerShell > 7.6.0 Core' }
+          $env:PAPER_DATA_DIR=Join-Path $env:RUNNER_TEMP 'yantai-ci-tests'
+          python -X utf8 runner.py test --junitxml=test-results/backend.xml
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build frontend and content identity
+        run: |
+          if ($PSVersionTable.PSVersion -le [version]'7.6.0' -or $PSVersionTable.PSEdition -ne 'Core') { throw 'Requires PowerShell > 7.6.0 Core' }
+          python -X utf8 scripts/build_runtime_manifest.py --frontend --require-clean
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           npm run build --prefix frontend
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -X utf8 scripts/build_runtime_manifest.py --require-clean
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           git diff --exit-code -- frontend/package-lock.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Save commit-bound verification evidence
+        run: |
+          if ($PSVersionTable.PSVersion -le [version]'7.6.0' -or $PSVersionTable.PSEdition -ne 'Core') { throw 'Requires PowerShell > 7.6.0 Core' }
+          $taskCommit=(git rev-parse HEAD).Trim()
+          $taskManifest=Get-Content -LiteralPath build-info.json -Raw | ConvertFrom-Json
+          if ($taskManifest.source_commit -ne $taskCommit) { throw 'Build identity does not match the verified commit' }
+          $taskEvidence=@{commit=$taskCommit;build_id=$taskManifest.build_id;source_fingerprint=$taskManifest.source_fingerprint;api_contract_hash=$taskManifest.api_contract_hash;frontend_fingerprint=$taskManifest.frontend_fingerprint;backend_tests='passed';frontend_build='passed';api_contract='passed'}
+          $taskEvidence | ConvertTo-Json | Set-Content -LiteralPath test-results/verification.json -Encoding utf8NoBOM
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: verification-${{ inputs.commit || github.sha }}
+          if-no-files-found: error
+          path: |
+            test-results/backend.xml
+            test-results/verification.json
+            build-info.json

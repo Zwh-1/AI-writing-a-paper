@@ -30,6 +30,7 @@ WRITING = {"writing-state": "state", "writing-link": "model-link", "writing-boot
     "diagnostic-dataset": "diagnostic-dataset", "diagnostic-rubric": "diagnostic-rubric",
     "diagnostic-comparisons": "diagnostic-comparisons", "paper-writing": "papers"}
 PROFILES = {"/settings": "/model-profiles/primary", "/material-summary/settings": "/model-profiles/material-summary",
+    "/ai-cache-policy": "/model-providers/cache-policy",
     "/gpt-fallback/settings": "/model-profiles/gpt-fallback", "/image-generation/settings": "/model-profiles/image-generation",
     "/provider/models": "/model-profiles/primary/models", "/material-summary/models": "/model-profiles/material-summary/models",
     "/gpt-fallback/models": "/model-profiles/gpt-fallback/models", "/provider/probe-generation": "/model-profiles/primary/probes/text",

@@ -10,10 +10,14 @@ permissions:
   packages: write
 jobs:
   version:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
     outputs:
       released: ${{ steps.version.outputs.released }}
       version: ${{ steps.version.outputs.version }}
+      commit: ${{ steps.commit.outputs.commit }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -24,86 +28,154 @@ jobs:
       - name: Select consistent version
         id: version
         env:
-          VERSION: ${{ inputs.version }}
+          RELEASE_VERSION: ${{ inputs.version }}
         run: |
-          if [ -n "$VERSION" ]; then node scripts/release-version.mjs "$VERSION"; else node scripts/release-version.mjs --auto; fi
-      - name: Commit and tag
+          if ($PSVersionTable.PSVersion -le [version]'7.6.0' -or $PSVersionTable.PSEdition -ne 'Core') { throw 'Requires PowerShell > 7.6.0 Core' }
+          if (git status --porcelain --untracked-files=all) { throw 'Release requires a clean committed source checkout' }
+          if ($env:RELEASE_VERSION) { node scripts/release-version.mjs $env:RELEASE_VERSION } else { node scripts/release-version.mjs --auto }
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Commit version candidate without publishing a tag
+        id: commit
         if: steps.version.outputs.released == 'true'
         env:
-          VERSION: ${{ steps.version.outputs.version }}
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
         run: |
+          if ($PSVersionTable.PSVersion -le [version]'7.6.0' -or $PSVersionTable.PSEdition -ne 'Core') { throw 'Requires PowerShell > 7.6.0 Core' }
           git config user.name github-actions[bot]
           git config user.email github-actions[bot]@users.noreply.github.com
           git add frontend/package.json frontend/package-lock.json backend/app/config.py deployment/desktop/windows.nsi
-          git diff --cached --quiet || git commit -m "chore(release): v${VERSION}"
-          git tag "v${VERSION}"
-          git push origin HEAD --tags
-      - name: Create release
-        if: steps.version.outputs.released == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.version.outputs.version }}
-        run: gh release create "v${VERSION}" --verify-tag --generate-notes
-  desktop:
+          git diff --cached --quiet
+          if ($LASTEXITCODE -ne 0) { git commit -m "chore(release): v$env:RELEASE_VERSION"; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } }
+          git push origin "HEAD:$env:GITHUB_REF_NAME"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "commit=$((git rev-parse HEAD).Trim())" | Add-Content -LiteralPath $env:GITHUB_OUTPUT -Encoding utf8
+  validate:
     needs: version
     if: needs.version.outputs.released == 'true'
+    uses: ./.github/workflows/ci.yml
+    with:
+      commit: ${{ needs.version.outputs.commit }}
+  prepare-release:
+    needs: [version, validate]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.commit }}
+          fetch-depth: 0
+      - name: Tag the verified commit and create a draft release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ needs.version.outputs.version }}
+          VERIFIED_COMMIT: ${{ needs.version.outputs.commit }}
+        run: |
+          if ($PSVersionTable.PSVersion -le [version]'7.6.0' -or $PSVersionTable.PSEdition -ne 'Core') { throw 'Requires PowerShell > 7.6.0 Core' }
+          if ((git rev-parse HEAD).Trim() -ne $env:VERIFIED_COMMIT) { throw 'Checkout differs from validated release commit' }
+          git tag "v$env:RELEASE_VERSION" $env:VERIFIED_COMMIT
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git push origin "v$env:RELEASE_VERSION"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          gh release create "v$env:RELEASE_VERSION" --verify-tag --draft --generate-notes
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+  desktop:
+    needs: [version, validate, prepare-release]
     strategy:
       matrix:
         os: [windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: pwsh
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: v${{ needs.version.outputs.version }}
+          ref: ${{ needs.version.outputs.commit }}
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
-      - name: Install runtime
+      - name: Build runtime and content identity
         run: |
+          if ($PSVersionTable.PSVersion -le [version]'7.6.0' -or $PSVersionTable.PSEdition -ne 'Core') { throw 'Requires PowerShell > 7.6.0 Core' }
           python -m pip install -r deployment/requirements.workbench.txt pyinstaller
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           npm ci --prefix frontend --ignore-scripts --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -X utf8 scripts/build_runtime_manifest.py --frontend --require-clean
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           npm run build --prefix frontend
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -X utf8 scripts/build_runtime_manifest.py --require-clean
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Add Windows OCR
         if: runner.os == 'Windows'
-        run: python -m pip install winrt-windows.media.ocr winrt-windows.storage winrt-windows.graphics.imaging winrt-windows.globalization winrt-windows.foundation winrt-windows.foundation.collections winrt-windows.storage.streams
+        run: |
+          if ($PSVersionTable.PSVersion -le [version]'7.6.0' -or $PSVersionTable.PSEdition -ne 'Core') { throw 'Requires PowerShell > 7.6.0 Core' }
+          python -m pip install winrt-windows.media.ocr winrt-windows.storage winrt-windows.graphics.imaging winrt-windows.globalization winrt-windows.foundation winrt-windows.foundation.collections winrt-windows.storage.streams
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build native application
         env:
           PYTHONPATH: backend
-        run: python -m PyInstaller --noconfirm deployment/desktop/yantai.spec
+        run: |
+          if ($PSVersionTable.PSVersion -le [version]'7.6.0' -or $PSVersionTable.PSEdition -ne 'Core') { throw 'Requires PowerShell > 7.6.0 Core' }
+          python -m PyInstaller --noconfirm deployment/desktop/yantai.spec
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Smoke test the packaged application in isolated data
+        run: |
+          if ($PSVersionTable.PSVersion -le [version]'7.6.0' -or $PSVersionTable.PSEdition -ne 'Core') { throw 'Requires PowerShell > 7.6.0 Core' }
+          $taskExecutable=if ($IsWindows) { 'dist/Yantai/Yantai.exe' } else { 'dist/Yantai.app/Contents/MacOS/Yantai' }
+          python -X utf8 scripts/smoke_native_release.py --executable $taskExecutable --manifest build-info.json --output test-results/native-smoke.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Package Windows installer
         if: runner.os == 'Windows'
-        shell: pwsh
         env:
-          VERSION: ${{ needs.version.outputs.version }}
+          RELEASE_VERSION: ${{ needs.version.outputs.version }}
         run: |
           if ($PSVersionTable.PSVersion -le [version]'7.6.0' -or $PSVersionTable.PSEdition -ne 'Core') { throw 'Requires PowerShell > 7.6.0 Core' }
           choco install nsis --yes --no-progress
-          & (Join-Path ${env:ProgramFiles(x86)} 'NSIS/makensis.exe') "/DVERSION=$env:VERSION" deployment/desktop/windows.nsi
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & (Join-Path ${env:ProgramFiles(x86)} 'NSIS/makensis.exe') "/DVERSION=$env:RELEASE_VERSION" deployment/desktop/windows.nsi
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Package macOS DMG
         if: runner.os == 'macOS'
+        env:
+          RELEASE_VERSION: ${{ needs.version.outputs.version }}
         run: |
-          hdiutil create -volname Yantai -srcfolder dist/Yantai.app -ov -format UDZO "Yantai-${{ needs.version.outputs.version }}.dmg"
-          ditto -c -k --sequesterRsrc --keepParent dist/Yantai.app "Yantai-${{ needs.version.outputs.version }}-macOS.zip"
+          if ($PSVersionTable.PSVersion -le [version]'7.6.0' -or $PSVersionTable.PSEdition -ne 'Core') { throw 'Requires PowerShell > 7.6.0 Core' }
+          hdiutil create -volname Yantai -srcfolder dist/Yantai.app -ov -format UDZO "Yantai-$env:RELEASE_VERSION.dmg"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ditto -c -k --sequesterRsrc --keepParent dist/Yantai.app "Yantai-$env:RELEASE_VERSION-macOS.zip"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Hash and stage verified-commit assets
+        env:
+          RELEASE_OS: ${{ runner.os }}
+        run: |
+          if ($PSVersionTable.PSVersion -le [version]'7.6.0' -or $PSVersionTable.PSEdition -ne 'Core') { throw 'Requires PowerShell > 7.6.0 Core' }
+          New-Item -ItemType Directory -Path release-assets -Force | Out-Null
+          Get-ChildItem -LiteralPath deployment/desktop -Filter '*-setup.exe' -File | Copy-Item -Destination release-assets
+          Get-ChildItem -Path '*.dmg','*-macOS.zip' -File -ErrorAction SilentlyContinue | Copy-Item -Destination release-assets
+          Copy-Item -LiteralPath build-info.json -Destination "release-assets/build-info-$env:RELEASE_OS.json"
+          Copy-Item -LiteralPath test-results/native-smoke.json -Destination "release-assets/native-smoke-$env:RELEASE_OS.json"
+          Get-ChildItem -LiteralPath release-assets -File | Get-FileHash -Algorithm SHA256 | Select-Object @{Name='file';Expression={Split-Path $_.Path -Leaf}},Hash | ConvertTo-Json | Set-Content "release-assets/SHA256-$env:RELEASE_OS.json" -Encoding utf8NoBOM
       - uses: actions/upload-artifact@v4
         with:
-          name: Yantai-${{ runner.os }}
-          path: |
-            deployment/desktop/*-setup.exe
-            *.dmg
-            *-macOS.zip
-      - name: Publish assets
+          name: Yantai-${{ runner.os }}-${{ needs.version.outputs.commit }}
+          path: release-assets/*
+          if-no-files-found: error
+      - name: Upload assets to the verified draft release
         env:
           GH_TOKEN: ${{ github.token }}
-        shell: bash
+          RELEASE_VERSION: ${{ needs.version.outputs.version }}
+          RELEASE_OS: ${{ runner.os }}
         run: |
-          find . -maxdepth 4 -type f \( -name '*-setup.exe' -o -name '*.dmg' -o -name '*-macOS.zip' \) -print0 | xargs -0 -I{} gh release upload "v${{ needs.version.outputs.version }}" "{}" --clobber
+          if ($PSVersionTable.PSVersion -le [version]'7.6.0' -or $PSVersionTable.PSEdition -ne 'Core') { throw 'Requires PowerShell > 7.6.0 Core' }
+          Get-ChildItem -LiteralPath release-assets -File | ForEach-Object { gh release upload "v$env:RELEASE_VERSION" $_.FullName --clobber; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } }
   images:
-    needs: version
-    if: needs.version.outputs.released == 'true'
+    needs: [version, validate, prepare-release]
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -123,17 +195,31 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: v${{ needs.version.outputs.version }}
+          ref: ${{ needs.version.outputs.commit }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Freeze source identity for container frontend
+        shell: pwsh
+        run: |
+          if ($PSVersionTable.PSVersion -le [version]'7.6.0' -or $PSVersionTable.PSEdition -ne 'Core') { throw 'Requires PowerShell > 7.6.0 Core' }
+          python -X utf8 scripts/build_runtime_manifest.py --frontend --require-clean
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          password: ${{ github.token }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - name: Resolve lowercase image name
         id: image
-        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+        shell: pwsh
+        env:
+          RELEASE_REPOSITORY: ${{ github.repository }}
+        run: |
+          if ($PSVersionTable.PSVersion -le [version]'7.6.0' -or $PSVersionTable.PSEdition -ne 'Core') { throw 'Requires PowerShell > 7.6.0 Core' }
+          "name=ghcr.io/$($env:RELEASE_REPOSITORY.ToLowerInvariant())" | Add-Content -LiteralPath $env:GITHUB_OUTPUT -Encoding utf8
       - uses: docker/build-push-action@v6
         with:
           context: .
@@ -141,5 +227,22 @@ jobs:
           platforms: ${{ matrix.platforms }}
           build-args: |
             TORCH_CHANNEL=${{ matrix.torch_channel }}
+          labels: |
+            org.opencontainers.image.revision=${{ needs.version.outputs.commit }}
+            org.opencontainers.image.version=${{ needs.version.outputs.version }}
           push: true
           tags: ${{ steps.image.outputs.name }}-${{ matrix.image }}:${{ needs.version.outputs.version }}
+  publish:
+    needs: [version, validate, desktop, images]
+    runs-on: windows-latest
+    steps:
+      - name: Publish only after validation and all artifacts succeeded
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          if ($PSVersionTable.PSVersion -le [version]'7.6.0' -or $PSVersionTable.PSEdition -ne 'Core') { throw 'Requires PowerShell > 7.6.0 Core' }
+          gh release edit "v$env:RELEASE_VERSION" --draft=false
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

@@ -155,7 +155,7 @@ def validate(raw):
         manifest=json.loads(z.read('manifest.json'))
         if manifest.get('format')!=FORMAT or not re.fullmatch('[a-f0-9]{32}',manifest.get('project_id','')):raise ValueError('完整知识包格式无效')
         from .writing_agent.migrations import CURRENT
-        if manifest.get('schema') not in (16,CURRENT):raise ValueError('此知识包版本需要先由兼容版本升级')
+        if manifest.get('schema') not in (16,17,CURRENT):raise ValueError('此知识包版本需要先由兼容版本升级')
         if set(names)!=set(manifest.get('files',{}))|{'manifest.json'}:raise ValueError('知识包清单不完整')
         with db.connect() as c:specs=schema(c)
         if set(manifest.get('tables',{}))-set(specs):raise ValueError('知识包包含不允许的表')

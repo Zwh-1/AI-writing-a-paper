@@ -102,6 +102,18 @@ def transaction():
         c.close()
 
 def init():
+    _init_schema()
+    # Auxiliary indexes are installed only at initialization while no task or
+    # request is in flight. Old/paused task payloads and user_version stay intact.
+    from .ai_cache_indexes import manage
+    try:
+        with connect() as connection:manage(connection)
+    except (RuntimeError, sqlite3.OperationalError):
+        # Active queues skip maintenance; the standalone manager can retry idle.
+        pass
+
+
+def _init_schema():
     with connect() as c:
         version=c.execute('PRAGMA user_version').fetchone()[0]
         from .writing_agent.migrations import CURRENT

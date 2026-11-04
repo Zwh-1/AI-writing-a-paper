@@ -27,7 +27,7 @@ export function useCommand(onDone?: () => void | Promise<void>, scope?: string) 
       setTaskId(id);
       if (scope) remember(scope, id);
       const remove = subscribeTask(id, (task) => {
-        if (mounted.current) setPhase(task.phase || "任务处理中");
+        if (mounted.current) setPhase(task.observation_error || task.phase || "任务处理中");
       });
       let task: TaskHandle;
       try {

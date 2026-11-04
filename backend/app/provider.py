@@ -7,11 +7,140 @@ from .network import proxy_for
 from .security import get_key,redact as security_redact
 class ProviderError(Exception):
     def __init__(self,message,unknown=False,retryable=False,retry_after=None,response_result=None,fallback_allowed=False): super().__init__(message);self.unknown=unknown;self.retryable=retryable;self.retry_after=retry_after;self.response_result=response_result;self.fallback_allowed=fallback_allowed
-DEFAULT={'streaming':False,'base_url':DEFAULT_GATEWAY,'protocol':os.environ.get('PAPER_PROTOCOL','openai'),'model':os.environ.get('PAPER_MODEL','deepseek-v4.1-flash-1017'),'max_output_tokens':8192,'timeout_seconds':600,'input_price':None,'output_price':None,'currency':'USD','context_limit':100000,'max_request_cost':2.0,'json_mode':False,'max_attempts':3,'supports_images':False,'thinking_enabled':False}
+DEFAULT={'streaming':False,'base_url':DEFAULT_GATEWAY,'protocol':os.environ.get('PAPER_PROTOCOL','openai'),'model':os.environ.get('PAPER_MODEL','deepseek-v4.1-flash-1017'),'max_output_tokens':8192,'timeout_seconds':600,'input_price':None,'output_price':None,'currency':'USD','context_limit':100000,'max_request_cost':2.0,'json_mode':False,'max_attempts':5,'supports_images':False,'thinking_enabled':False}
 _REQUEST=contextvars.ContextVar('provider_request_snapshot',default=None)
 _CLIENT_REQUEST_ID=contextvars.ContextVar('provider_client_request_id',default=None)
 _CONNECTION_POOL=contextvars.ContextVar('provider_connection_pool',default=None)
+_ATTEMPT_BUDGET=contextvars.ContextVar('provider_attempt_budget',default=None)
+_ATTEMPT_ACTIVE=contextvars.ContextVar('provider_attempt_active',default=False)
 _LOCKS={};_LOCK_GUARD=threading.Lock()
+
+
+@contextmanager
+def attempt_budget(maximum=5):
+    """Share one bounded attempt allowance across routing and nested retries."""
+    maximum=max(1,min(5,int(maximum)))
+    existing=_ATTEMPT_BUDGET.get()
+    if existing is not None:
+        # A route explicitly allowing fewer tries may reduce the remaining
+        # allowance; entering another layer must never replenish it.
+        existing['limit']=min(existing['limit'],existing['used']+maximum)
+        yield existing
+        return
+    state={'limit':maximum,'used':0,'endpoints':[],'consecutive_failures':0,'route_budgets':{}}
+    token=_ATTEMPT_BUDGET.set(state)
+    try:yield state
+    finally:_ATTEMPT_BUDGET.reset(token)
+
+
+@contextmanager
+def route_attempt_budget(route,maximum=5):
+    """Give GPT one separate allowance, shared by nested repairs in this stage."""
+    if route!='gpt':
+        with attempt_budget(maximum) as state:yield state
+        return
+    parent=_ATTEMPT_BUDGET.get()
+    if parent is None or parent.get('route')==route:
+        with attempt_budget(maximum) as state:yield state
+        return
+    maximum=max(1,min(5,int(maximum)))
+    states=parent.setdefault('route_budgets',{})
+    state=states.setdefault(route,{'limit':maximum,'used':0,'endpoints':[],
+                                  'consecutive_failures':0,'route':route,'route_budgets':{}})
+    token=_ATTEMPT_BUDGET.set(state)
+    try:
+        with attempt_budget(maximum):yield state
+    finally:_ATTEMPT_BUDGET.reset(token)
+
+
+def safe_fallback_failure(error):
+    """Only a known rejection or a failure before HTTP can be sent elsewhere."""
+    if (not isinstance(error,ProviderError) or error.unknown or error.response_result is not None
+            or getattr(error,'has_stream_output',False)
+            or getattr(error,'failure_phase',None) in ('policy_before_http','attempt_budget_before_http')):
+        return False
+    return bool(getattr(error,'safe_failure',False) or error.retryable or error.fallback_allowed
+                or getattr(error,'failure_phase',None)=='connect_before_http')
+
+
+def attempts_used():
+    state=_ATTEMPT_BUDGET.get()
+    return state['used'] if state is not None else 0
+
+
+def attempts_remaining():
+    state=_ATTEMPT_BUDGET.get()
+    return max(0,state['limit']-state['used']) if state is not None else 5
+
+
+def _annotate_attempt_error(error):
+    state=_ATTEMPT_BUDGET.get()
+    if state is None:return
+    if getattr(error,'attempt_route',None)=='gpt' and state.get('route')!='gpt':return
+    # Exhaustion ends retries on this route without erasing a known safe
+    # failure's eligibility for the independent backup route.
+    error.safe_failure=safe_fallback_failure(error)
+    error.attempts_used=state['used'];error.attempt_limit=state['limit']
+    error.attempt_route=state.get('route','deepseek')
+    error.consecutive_failures=state.get('consecutive_failures',0)
+    if state['endpoints']:error.pool_endpoints_used=list(state['endpoints'])
+    if not attempts_remaining():
+        error.attempt_budget_exhausted=True
+        error.retryable=False;error.fallback_allowed=False
+
+
+def with_attempt_budget(function):
+    @functools.wraps(function)
+    def bounded(*args,**kwargs):
+        with attempt_budget(config().get('max_attempts',5)):
+            try:return function(*args,**kwargs)
+            except ProviderError as error:
+                _annotate_attempt_error(error)
+                raise
+    return bounded
+
+
+@contextmanager
+def _model_attempt(endpoint_id=None):
+    """Count an endpoint invocation once, including mocked endpoint transports."""
+    if _ATTEMPT_ACTIVE.get():
+        yield
+        return
+    task_id=(_REQUEST.get() or {}).get('task_id')
+    if task_id:
+        live=db.one('SELECT cancel_requested,status FROM tasks WHERE id=?',(task_id,))
+        if live and (live['cancel_requested'] or live['status']=='cancelled'):
+            error=InterruptedError('用户已请求取消')
+            error.failure_phase='cancel_before_http'
+            raise error
+    state=_ATTEMPT_BUDGET.get()
+    if state is None:raise RuntimeError('A model attempt requires an attempt budget')
+    if not attempts_remaining():
+        error=ProviderError('本次模型请求已用完最多尝试次数，未发送新的请求。')
+        error.failure_phase='attempt_budget_before_http'
+        error.code='MODEL_ATTEMPTS_EXHAUSTED'
+        _annotate_attempt_error(error)
+        raise error
+    state['used']+=1
+    if endpoint_id and endpoint_id not in state['endpoints']:state['endpoints'].append(endpoint_id)
+    token=_ATTEMPT_ACTIVE.set(True)
+    try:
+        from .request_execution import attempt
+        with attempt(endpoint_id):yield
+    except ProviderError as error:
+        state['consecutive_failures']=state.get('consecutive_failures',0)+1 if safe_fallback_failure(error) else 0
+        _annotate_attempt_error(error)
+        raise
+    else:state['consecutive_failures']=0
+    finally:_ATTEMPT_ACTIVE.reset(token)
+
+
+def single_model_attempt(function):
+    @functools.wraps(function)
+    def counted(*args,**kwargs):
+        with attempt_budget(config().get('max_attempts',5)):
+            with _model_attempt():return function(*args,**kwargs)
+    return counted
 def settings_lock():
     from filelock import FileLock
     from . import security
@@ -36,11 +165,40 @@ def frozen_request(function):
     return wrapped
 
 @contextmanager
-def request_scope(configuration,key,route=None):
+def request_scope(configuration,key,route=None,request_options=None):
     """Use an isolated provider snapshot without changing global settings."""
-    token=_REQUEST.set({"config":dict(configuration),"key":key,"route":route})
+    previous=_REQUEST.get() or {}
+    options=previous.get('request_options',{}) if request_options is None else request_options
+    token=_REQUEST.set({"config":dict(configuration),"key":key,"route":route,'request_options':dict(options),
+                        **({'task_id':previous['task_id']} if previous.get('task_id') else {})})
     try:yield
     finally:_REQUEST.reset(token)
+
+def apply_request_options(configuration,options=None):
+    """Apply bounded transport choices without changing endpoint identity or keys."""
+    c=dict(configuration)
+    options=(_REQUEST.get() or {}).get('request_options',{}) if options is None else options
+    if not isinstance(options,dict):raise ValueError('请求参数必须是对象')
+    if options.get('protocol') is not None:
+        if options['protocol'] not in ('openai','responses'):raise ValueError('请求协议必须为 Chat Completions 或 Responses')
+        c['protocol']=options['protocol']
+    for name in ('streaming','json_mode','thinking_enabled'):
+        if name in options:
+            if type(options[name]) is not bool:raise ValueError('请求开关格式无效：'+name)
+            c[name]=options[name]
+    if 'proxy_mode' in options:
+        if options['proxy_mode'] not in ('system','direct'):raise ValueError('请求代理方式须为system或direct')
+        c['proxy_mode']=options['proxy_mode']
+    if 'connect_timeout_seconds' in options:
+        value=options['connect_timeout_seconds']
+        if type(value) not in (int,float) or not 1<=value<=120:raise ValueError('连接等待时间须为1至120秒')
+        c['connect_timeout_seconds']=value
+    if options.get('max_output_tokens') is not None:
+        value=options['max_output_tokens']
+        if type(value) is not int or value<128:raise ValueError('请求输出上限必须是不小于128的整数')
+        c['max_output_tokens']=min(int(c['max_output_tokens']),value)
+    if options.get('reasoning_effort') in ('low','high','max'):c['reasoning_effort']=options['reasoning_effort']
+    return c
 
 def config():
     snapshot=_REQUEST.get()
@@ -79,16 +237,34 @@ def connection_pool():
 def client(c):
     connect=float(c.get('connect_timeout_seconds',12))
     if not 1<=connect<=120:raise ProviderError('连接等待时间须为1至120秒')
-    timeout=float(c.get('timeout_seconds',600));proxy=proxy_for(c['base_url'])
-    def create():return httpx.Client(timeout=httpx.Timeout(timeout,connect=connect),proxy=proxy,trust_env=False,follow_redirects=False)
+    timeout=float(c.get('timeout_seconds',600));proxy=None if c.get('proxy_mode')=='direct' else proxy_for(c['base_url'])
+    frozen=dict(c)
+    actual_key=(_REQUEST.get() or {}).get('key')
+    def before_http(request):
+        _official_request_policy(request)
+        from .request_execution import before_http as gate
+        gate(request,frozen,actual_key)
+    def after_http(response):
+        from .request_execution import response_received
+        response_received(response)
+    def create():return httpx.Client(timeout=httpx.Timeout(timeout,connect=connect),proxy=proxy,trust_env=False,follow_redirects=False,
+                                     event_hooks={'request':[before_http],'response':[after_http]})
     pool=_CONNECTION_POOL.get()
     if pool is None:return create()
     snapshot=_REQUEST.get() or {}
     credential=hashlib.sha256(str(snapshot.get('key') or '').encode()).hexdigest()
-    key=(c['base_url'],proxy,connect,timeout,credential)
+    guard_configuration=hashlib.sha256(db.dumps(frozen).encode()).hexdigest()
+    key=(c['base_url'],proxy,connect,timeout,credential,guard_configuration)
     with pool['lock']:
         if key not in pool['clients']:pool['clients'][key]=create()
         return nullcontext(pool['clients'][key])
+
+
+def _official_request_policy(request):
+    # Recheck every destination immediately before HTTP, including pooled
+    # clients created before consent was revoked or peak hours began.
+    from .official_api_policy import assert_allowed
+    assert_allowed({'base_url':str(request.url)})
 def cloudflare_error(operation='模型请求'):
     return operation+'被Cloudflare网页访问防护拦截（HTTP 403），未收到API JSON，尚不能判断密钥是否有效。请检查代理软件是否已连接、系统代理是否已启用，再到“接口与设置”检测模型；仍被拦截时，请向服务方确认API专用地址或放行API请求。已保存密钥不受影响，本地候选仍可核对'
 
@@ -144,8 +320,11 @@ def models():
     return values
 
 @frozen_request
+@single_model_attempt
 def generate(system,user,images=None):
     c=config()
+    from .official_api_policy import assert_allowed
+    assert_allowed(c)
     if c.get('agent_transport'):
         from .writing_agent.provider_adapter import transport
         return transport(system,user,c,images)
@@ -173,6 +352,7 @@ def generate(system,user,images=None):
     return read_generation(r,c,path,body)
 
 
+@single_model_attempt
 def _pool_generate_once(system,user,images,ep):
     """Send one generation through a specific pool endpoint.
 
@@ -183,7 +363,10 @@ def _pool_generate_once(system,user,images,ep):
     if ep is None:
         # Fall back to the legacy single-config path so existing settings keep working.
         return generate(system,user,images), {'id': None, 'name': 'legacy'}, get_key()
-    c=deepseek_pool._endpoint_to_provider(ep)
+    c=apply_request_options(deepseek_pool._endpoint_to_provider(ep))
+    from .official_api_policy import assert_allowed
+    assert_allowed(c)
+    if images:c.update(streaming=False,json_mode=False)
     key=deepseek_pool.endpoint_key(ep)
     if not key:
         raise ProviderError('端点密钥未配置，无法请求：'+ep.get('name',''))
@@ -211,11 +394,12 @@ def _pool_generate_once(system,user,images,ep):
                 raise error from e
             except httpx.RequestError as e: raise ProviderError('请求已提交但未取得最终响应，请先核实账单或任务状态，再决定重试。'+type(e).__name__,unknown=True) from e
     response_error(r)
-    result=read_generation(r,c,path,body)
+    with request_scope(c,key):result=read_generation(r,c,path,body)
     result['provider_snapshot']={k:c[k] for k in ('base_url','protocol','model')}
     return result, ep, key
 
 
+@with_attempt_budget
 def pool_generate(system,user,images=None,on_retry=None):
     """Generation through the DeepSeek multi-endpoint pool with failover/retry.
 
@@ -231,7 +415,7 @@ def pool_generate(system,user,images=None,on_retry=None):
     from . import deepseek_pool
     cfg=deepseek_pool.config()
     snapshot=_REQUEST.get() or {}
-    endpoints=[] if cfg['strategy'].get('mode')=='manual' or snapshot.get('route') not in (None,'deepseek') else deepseek_pool.endpoints()
+    endpoints=[] if cfg['strategy'].get('mode')=='manual' or snapshot.get('config',{}).get('provider_endpoint_id') or snapshot.get('route') not in (None,'deepseek') else deepseek_pool.endpoints()
     if not endpoints:
         # Legacy single-endpoint configuration still works unchanged.
         result=generate(system,user,images)
@@ -259,7 +443,8 @@ def pool_generate(system,user,images=None,on_retry=None):
         for attempt in range(same_retry+1):
             last_attempt=attempt
             try:
-                result,endpoint,key=_pool_generate_once(system,user,images,ep)
+                with _model_attempt(ep.get('id')):
+                    result,endpoint,key=_pool_generate_once(system,user,images,ep)
                 deepseek_pool.mark_success(ep.get('id'))
                 if strategy.get('mode')=='round_robin':
                     deepseek_pool.rotate()
@@ -277,6 +462,7 @@ def pool_generate(system,user,images=None,on_retry=None):
                 if e.response_result is not None:
                     # Partial output exists: preserve it, do not retry.
                     raise
+                if not attempts_remaining():raise
                 failover_allowed=kind in strategy.get('failover_on',[])
                 if not failover_allowed:
                     raise
@@ -302,16 +488,18 @@ def read_generation(r,c,path,body):
     from . import adapter
     if protocol=='responses':
         text=''.join(p.get('text','') for item in data.get('output',[]) for p in item.get('content',[]) if p.get('type')=='output_text');finish=data.get('status');raw_usage=data.get('usage',{})
-        normalized=adapter.normalize_usage(raw_usage)
-        usage={'input_tokens':normalized['input_tokens'],'output_tokens':normalized['output_tokens'],'raw':raw_usage}
+        usage=adapter.normalize_usage(raw_usage,protocol)
     else:
         choices=data.get('choices',[])
         if not choices: raise ProviderError('中转站未返回 choices，执行费用未知',unknown=True)
         text=choices[0].get('message',{}).get('content') or '';finish=choices[0].get('finish_reason');raw_usage=data.get('usage',{})
-        normalized=adapter.normalize_usage(raw_usage)
-        usage={'input_tokens':normalized['input_tokens'],'output_tokens':normalized['output_tokens'],'raw':raw_usage}
+        usage=adapter.normalize_usage(raw_usage,protocol)
     cost=usage_cost(c,usage)
     result={'text':text,'usage':usage,'cost':cost,'remote_id':data.get('id'),'response_evidence':response_evidence(r,data),'request_hash':hashlib.sha256(db.dumps({'path':path,'body':body}).encode()).hexdigest()}
+    result['provider_snapshot']={name:c[name] for name in ('base_url','protocol','model')}
+    result['actual_provider_config']=dict(c)
+    scoped=_REQUEST.get() or {}
+    if scoped.get('key'):result['actual_provider_credential_hash']=adapter.credential_hash(scoped['key'])
     if finish in ('length','MAX_TOKENS','incomplete'):raise ProviderError('模型输出被截断，请减少单次篇幅或调整输出上限',response_result=result)
     if not text:raise ProviderError('模型返回内容为空',response_result=result)
     return result
@@ -480,9 +668,13 @@ def usage_cost(cfg, usage):
     import math
     if not isinstance(usage, dict):
         return None
+    from . import adapter
+    usage=adapter.normalize_usage(usage,(cfg or {}).get('protocol'))
     if not all(type(usage.get(k)) is int and usage[k] >= 0 for k in ('input_tokens', 'output_tokens')):
         return None
     cfg = dict(cfg or {})
+    cache_amount=_cache_usage_cost(cfg,usage)
+    if cache_amount is not None:return cache_amount
     # Resolve any missing price only when an adaptive basis was bound.
     if not all(type(cfg.get(k)) in (int, float) and math.isfinite(cfg[k]) and cfg[k] >= 0 for k in ('input_price', 'output_price')):
         basis = cfg.get('expense_pricing_basis') or cfg.get('pricing_evidence') or {}
@@ -493,8 +685,34 @@ def usage_cost(cfg, usage):
                         cfg[name] = basis[name]
     if not all(type(cfg.get(k)) in (int, float) and math.isfinite(cfg[k]) and cfg[k] >= 0 for k in ('input_price', 'output_price')):
         return None
-    amount = (usage['input_tokens'] * cfg['input_price'] + usage['output_tokens'] * cfg['output_price']) / 1e6
+    try:amount = (usage['input_tokens'] * cfg['input_price'] + usage['output_tokens'] * cfg['output_price']) / 1e6
+    except OverflowError:return None
     return amount if math.isfinite(amount) else None
+
+
+def _cache_usage_cost(cfg,usage):
+    """Apply a split tariff only with versioned evidence bound to this account."""
+    import math
+    from . import adapter
+    evidence=cfg.get('cache_pricing_evidence')
+    snapshot=_REQUEST.get() or {}
+    key=snapshot.get('key')
+    if (isinstance(evidence,dict) and evidence.get('verified') is True
+            and isinstance(evidence.get('version'),str) and evidence['version'].strip()
+            and evidence.get('unit')=='per_million_tokens'
+            and evidence.get('base_url')==cfg.get('base_url')
+            and evidence.get('model')==cfg.get('model')
+            and evidence.get('currency')==cfg.get('currency')
+            and key and evidence.get('credential_hash')==adapter.credential_hash(key)
+            and all(type(evidence.get(name)) in (int,float) and math.isfinite(evidence[name]) and evidence[name]>=0
+                    for name in ('input_hit_price','input_miss_price','output_price'))
+            and all(type(usage.get(name)) is int for name in ('cache_hit_tokens','cache_miss_tokens'))):
+        try:amount=(usage['cache_hit_tokens']*evidence['input_hit_price']
+                    +usage['cache_miss_tokens']*evidence['input_miss_price']
+                    +usage['output_tokens']*evidence['output_price'])/1e6
+        except OverflowError:return None
+        return amount if math.isfinite(amount) else None
+    return None
 
 
 def auto_bind_pricing(cfg, key=None, response=None):

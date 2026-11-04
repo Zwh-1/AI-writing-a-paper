@@ -4,7 +4,7 @@ type Row = Record<string, any>;
 
 const EMPTY_STRATEGY: Row = {
   mode: "priority",
-  retry_same_endpoint: 2,
+  retry_same_endpoint: 4,
   rotate_delay_base: 0.4,
   rotate_delay_max: 12.0,
   failover_on: [
@@ -38,7 +38,7 @@ function emptyEndpoint(): Row {
     supports_images: false,
     thinking_enabled: false,
     streaming: false,
-    max_attempts: 3,
+    max_attempts: 5,
     credential_ref: "primary",
     api_key: "",
   };
@@ -140,6 +140,7 @@ export default function DeepSeekPoolSettings() {
           {message}
         </p>
       )}
+      <p className="muted">DeepSeek 单条请求链最多尝试 5 次（含首次）；连续 5 次明确且可安全重试的失败后，自动切换到已启用并配置就绪的 GPT 备选，GPT 独立最多尝试 5 次。同一模型路线中的接口切换、网络重试和格式修复共用该路线的尝试上限，不会逐层增加次数。</p>
       <div className="form-grid">
         <label className="field">
           切换模式
@@ -351,6 +352,18 @@ export default function DeepSeekPoolSettings() {
                       max_request_cost: Number(e.target.value),
                     })
                   }
+                  disabled={busy}
+                />
+              </label>
+              <label className="field">
+                最多尝试次数（含首次）
+                <input
+                  type="number"
+                  min="1"
+                  max="5"
+                  step="1"
+                  value={ep.max_attempts ?? 5}
+                  onChange={(e) => updateEndpoint(index, { max_attempts: Number(e.target.value) })}
                   disabled={busy}
                 />
               </label>

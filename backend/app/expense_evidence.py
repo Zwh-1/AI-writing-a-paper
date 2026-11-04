@@ -12,7 +12,7 @@ from decimal import Decimal
 from urllib.parse import urlsplit
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import Response
-from . import db, provider, security
+from . import db, provider, security,provider_identity
 
 router = APIRouter()
 DEFAULT_POLICY = {'require_pricing_basis': True, 'block_on_unresolved': True}
@@ -140,15 +140,20 @@ def resolve_config(pid, cfg, key):
     return result
 
 
-def preflight(pid, cfg, key, images=False, task=None, reservation=None):
+def preflight(pid, cfg, key, images=False, task=None, reservation=None,exclude_run_id=None):
     rules = policy(pid)
+    if exclude_run_id is not None:
+        owned=db.one('SELECT project_id,task_id,status FROM generation_runs WHERE id=?',(exclude_run_id,))
+        if (not owned or owned['project_id']!=pid or not task or owned['task_id']!=task['id']
+                or owned['status'] not in ('pending','sent')):
+            raise ValueError('Only the current task pending reservation may be repriced')
     from .paid_testing import guard
-    testing = guard(task, cfg, key, reservation)
+    testing = guard(task, cfg, key, reservation,exclude_run_id=exclude_run_id)
     if not rules['require_pricing_basis'] and not testing:
         return None
     from .summary_billing import BudgetExceeded, key_hash
     if not db.setting('expense_currency:'+pid):
-        recorded={db.loads(r['manifest'],{}).get('provider',{}).get('currency') for r in db.rows("SELECT manifest FROM generation_runs WHERE project_id=? AND status NOT IN ('rejected','failed_before_send')",(pid,))}
+        recorded={provider_identity.effective(r)['effective']['currency'] for r in db.rows("SELECT * FROM generation_runs WHERE project_id=? AND status NOT IN ('rejected','failed_before_send')",(pid,))}
         recorded.discard(None)
         if recorded and recorded!={rules['currency']}:
             raise BudgetExceeded('历史调用存在不同币种，须先核实原始币种，禁止隐式合并')
@@ -163,6 +168,7 @@ def preflight(pid, cfg, key, images=False, task=None, reservation=None):
         raise BudgetExceeded('图像输入的计价上界尚无依据，已阻止收费请求；请使用具备完整图像计价依据的接口')
     if rules['block_on_unresolved'] or testing:
         exemptions = set(testing['historical_exemption_ids'])|set(testing.get('inflight_request_ids',[])) if testing else set()
+        if exclude_run_id is not None:exemptions.add(exclude_run_id)
         pending = any(r['id'] not in exemptions for r in db.rows("SELECT g.id FROM generation_runs g LEFT JOIN generation_billing_group_runs m ON m.run_id=g.id WHERE g.project_id=? AND g.status NOT IN ('rejected','failed_before_send') AND m.run_id IS NULL AND (g.status IN ('pending','sent','outcome_unknown') OR g.cost IS NULL)", (pid,)))
         if pending:
             raise BudgetExceeded('项目仍有已发送但费用未核实的请求；请先补齐账单依据，已阻止新增收费请求')
@@ -173,18 +179,22 @@ def preflight(pid, cfg, key, images=False, task=None, reservation=None):
 
 
 def estimate_basis(run, meta, usage):
-    cfg = meta.get('provider', {})
+    cfg = provider_identity.config_for({**run,'manifest':meta})
+    identity=provider_identity.effective({**run,'manifest':meta})['effective']
     evidence = meta.get('cost_evidence', {})
-    if run['protocol'] == 'images':
+    if identity['protocol'] == 'images':
         price = cfg.get('image_price')
-        return {'formula': '1 × image_price', 'image_price': price, 'source': cfg.get('expense_pricing_basis')} if finite(price) and price == run['cost'] and source_for(cfg, meta.get('credential_hash')) else None
-    rates = {k: cfg.get(k) if cfg.get(k) is not None else evidence.get(k) for k in ('input_price', 'output_price')}
+        return {'formula': '1 × image_price', 'image_price': price, 'source': cfg.get('expense_pricing_basis')} if finite(price) and price == run['cost'] and source_for(cfg, identity['credential_hash']) else None
+    projection=provider_identity.effective({**run,'manifest':meta})
+    requested=projection['requested'];actual=projection['effective']
+    same_identity=all(actual[name]==requested[name] for name in ('base_url','model','protocol','credential_hash'))
+    rates = {k: cfg.get(k) if cfg.get(k) is not None else evidence.get(k) if same_identity else None for k in ('input_price', 'output_price')}
     if not all(finite(v) for v in rates.values()) or not all(type(usage.get(k)) is int and usage[k] >= 0 for k in ('input_tokens', 'output_tokens')):
         return None
     expected = (usage['input_tokens'] * rates['input_price'] + usage['output_tokens'] * rates['output_price']) / 1e6
     if not finite(run['cost']) or not math.isclose(expected, run['cost'], abs_tol=1e-9, rel_tol=1e-8):
         return None
-    proof = source_for({**cfg, **rates}, meta.get('credential_hash'))
+    proof = source_for({**cfg, **rates}, identity['credential_hash'])
     if not proof and evidence.get('method')=='verified_account_reference_upper_estimate' and evidence.get('basis'):
         # A timestamp is only a pointer. Recover the original full scoped
         # observation and the explicit run membership from the audit trail.
@@ -192,7 +202,7 @@ def estimate_basis(run, meta, usage):
             saved=db.loads(record['detail'],{})
             matched=any(item.get('id')==run['id'] and item.get('estimate')==run['cost'] for item in saved.get('updated_completed_run_estimates',[]))
             if matched:
-                source=source_for({**cfg,**rates,'currency':evidence.get('currency'),'pricing_evidence':saved.get('evidence',{})},meta.get('credential_hash'))
+                source=source_for({**cfg,**rates,'currency':evidence.get('currency'),'pricing_evidence':saved.get('evidence',{})},identity['credential_hash'])
                 if source:proof={**source,'audit_record_id':record['id']};break
     return {'formula': '(input_tokens × input_price + output_tokens × output_price) / 1000000', **rates,
             'recomputed': expected, 'source': proof,
@@ -268,8 +278,10 @@ def ledger(pid):
     items = []
     for run in db.rows('SELECT g.*,t.kind AS task_kind FROM generation_budget_usage g LEFT JOIN tasks t ON t.id=g.task_id WHERE g.project_id=? ORDER BY g.created_at DESC,g.id', (pid,)):
         meta, usage = db.loads(run['manifest'], {}), db.loads(run['usage'], {})
-        cfg = meta.get('provider', {})
-        currency = cfg.get('currency') or meta.get('cost_evidence', {}).get('currency')
+        cfg = provider_identity.config_for(run)
+        identity=provider_identity.effective(run)
+        currency = cfg.get('currency')
+        if identity['source']=='legacy_requested':currency=currency or meta.get('cost_evidence', {}).get('currency')
         kind, amount, basis = 'reservation', None, {}
         gaps = []
         gid = members.get(run['id'])
@@ -311,7 +323,8 @@ def ledger(pid):
             gaps.append('原始快照未明确记录币种')
         if run['status'] in UNRESOLVED:
             gaps.append('远端是否完成或收费尚未证实，禁止把预留认作实际支出')
-        items.append({'id': run['id'], 'task_id': run['task_id'], 'task_kind': run['task_kind'], 'model': run['model'],
+        items.append({'id': run['id'], 'task_id': run['task_id'], 'task_kind': run['task_kind'], 'model': identity['effective']['model'],
+                      'provider_identity':identity,
                       'created_at': run['created_at'], 'status': run['status'], 'kind': kind, 'label': LABELS[kind],
                       'currency': currency, 'amount': amount, 'reserved': run['reserved'], 'budget_occupation': 0 if kind == 'excluded' else run['budget_charge'],
                       'input_tokens': usage.get('input_tokens'), 'output_tokens': usage.get('output_tokens'),
@@ -429,10 +442,10 @@ def settle(rid, raw):
     if not finite(doc.get('amount')):
         raise HTTPException(422, '凭证金额须为非负有限数值')
     meta = db.loads(run['manifest'], {})
-    cfg = meta.get('provider', {})
+    cfg = provider_identity.config_for(run)
     ids = {v for v in (run['remote_id'], meta.get('response_evidence', {}).get('provider_request_id')) if v}
     exact_match = doc['request_id'] in ids or bool(meta.get('client_request_id') and doc.get('client_request_id') == meta['client_request_id'])
-    if not exact_match or doc['model'] != run['model'] or base(doc['base_url']) != base(cfg.get('base_url')):
+    if not exact_match or not cfg.get('model') or not cfg.get('base_url') or doc['model'] != cfg['model'] or base(doc['base_url']) != base(cfg.get('base_url')):
         raise HTTPException(422, '凭证请求标识、服务商或模型与本机记录不匹配；不能只按时间或金额推断归属')
     if doc['currency'] != cfg.get('currency') or doc['currency'] != budget_currency(run['project_id']):
         raise HTTPException(422, '凭证币种与原始快照或项目账本不一致')

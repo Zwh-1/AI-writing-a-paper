@@ -81,6 +81,30 @@ def test_search_preview_is_not_read_evidence_and_ignores_forged_text(client):
     assert '客户端伪造' not in db.dumps(bundle)
 
 
+def test_project_search_skips_unrelated_literature_before_validation(client,monkeypatch):
+    from app.writing_agent import evidence
+    pid,sid=paper(client)
+    project_item=evidence.create(pid,{'kind':'author_statement','origin_type':'author',
+        'text':'本项目的验证范围仍需实际测试核对。'})
+    excluded=set()
+    # Unrelated literature may have stale or unavailable payloads. It belongs
+    # to its own retrieval channel and must not incur project validation work.
+    for index in range(80):
+        identity=db.uid();excluded.add(identity)
+        db.execute('INSERT INTO evidence_items VALUES(?,?,?,?,?,?,?,?,?,?,?)',
+            (identity,pid,'literature' if index%2 else 'guidance_observation','knowledge_unit',
+             db.uid(),'old-version','{}','unavailable-payload','[]','current',db.now()))
+    original_get=evidence.get;checked=[]
+    def checked_get(project_id,identity,remote=False):
+        assert identity not in excluded
+        checked.append(identity)
+        return original_get(project_id,identity,remote)
+    monkeypatch.setattr(evidence,'get',checked_get)
+    result=service.search(pid,sid,'验证范围',channels=['project'])
+    assert checked and {item['id'] for item in result['items']}=={project_item['id']}
+    assert set(checked)=={project_item['id']}
+
+
 def test_local_only_notes_are_not_discovered_or_read(client):
     pid, sid = paper(client)
     note = research_records.save(pid, 'note', {'title': '私密笔记', 'text': 'local secret', 'egress': 'local_only'})
@@ -140,7 +164,23 @@ def test_restrict_and_usage_match_actual_context(client):
     assert any(t['actual_use'] for t in used['retrieval_trace'])
     omitted = service.restrict(bundle, {})
     assert not omitted['derived_context'] and omitted['gaps']
+    assert any(gap.get('deferred_items')==1 for gap in service.for_model(omitted)['gaps'])
     with pytest.raises(HTTPException):service.attach_usage(omitted, resource_refs=[ref])
+
+
+def test_model_catalogue_deduplicates_rule_provenance_and_keeps_local_bundle(client):
+    pid,sid=paper(client);manual_package(client,pid)
+    bundle=service.prepare(pid,sid,'验证范围',channels=['rules'])
+    original=deepcopy(bundle['constraints'][0])
+    bundle['constraints']=[{**deepcopy(original),'rule_id':f'rule-{index}'} for index in range(100)]
+    saved=deepcopy(bundle)
+    compact=service.for_model(bundle)
+    assert bundle==saved
+    assert [identity for r in compact['constraints'] for identity in r['rule_ids']]==[f'rule-{index}' for index in range(100)]
+    assert compact['constraint_sources']==[original['source_ref']]
+    assert all(r['conditions']==original['conditions'] and r['modality']==original['modality'] for r in compact['constraints'])
+    assert len(compact['constraints'])==1
+    assert len(db.dumps(compact).encode())<len(db.dumps(bundle['constraints']).encode())//2
 
 
 def test_direct_guidance_read_preserves_teaching_context(client):

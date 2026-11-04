@@ -32,7 +32,7 @@ MAX_ENDPOINTS = 6
 
 DEFAULT_STRATEGY = {
     'mode': 'priority',              # 'priority' | 'round_robin'
-    'retry_same_endpoint': 2,        # attempts on the same endpoint before rotating
+    'retry_same_endpoint': 4,        # four retries plus the initial attempt
     'rotate_delay_base': 0.4,
     'rotate_delay_max': 12.0,
     'failover_on': [
@@ -180,11 +180,13 @@ def _validate_endpoint(endpoint):
                             ('timeout_seconds', 15, 3600),
                             ('context_limit', 512, 2000000),
                             ('max_request_cost', 0.000001, 1000000),
-                            ('max_attempts', 1, 3)):
+                            ('max_attempts', 1, 5)):
         value = allowed.get(name, provider.DEFAULT[name])
         if isinstance(value, bool) or not isinstance(value, (int, float)) or \
            not math.isfinite(value) or not low <= value <= high:
             raise HTTPException(422, '端点配置数值无效：' + name)
+        if name == 'max_attempts' and type(value) is not int:
+            raise HTTPException(422, '最多尝试次数（含首次）须为1至5的整数')
     for name in ('input_price', 'output_price'):
         value = allowed.get(name)
         if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float)) or
@@ -335,7 +337,10 @@ def _sort_endpoints(endpoints):
 def endpoints():
     """Enabled endpoints sorted by priority, with round-robin rotation."""
     cfg = config()
-    enabled = _sort_endpoints([e for e in cfg['endpoints'] if e.get('enabled', True)])
+    from .official_api_policy import is_official, status as official_policy_status
+    official_blocked=official_policy_status()['blocked']
+    enabled = _sort_endpoints([e for e in cfg['endpoints'] if e.get('enabled', True)
+                              and not (official_blocked and is_official(e))])
     if cfg.get('unified'):
         active=cfg.get('active_endpoint_id')
         if cfg['strategy'].get('mode')=='manual':

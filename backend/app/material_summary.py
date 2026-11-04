@@ -6,7 +6,7 @@ from fastapi import HTTPException
 from . import db, provider, security
 
 PROFILE='material-summary'
-DEFAULT={**provider.DEFAULT,'base_url':'https://api.x5m5x.com','protocol':'openai','model':'deepseek-chat','streaming':False,'max_output_tokens':4096,'context_limit':32000,'timeout_seconds':180,'max_attempts':1,'json_mode':True,'input_price':None,'output_price':None,'thinking_enabled':False}
+DEFAULT={**provider.DEFAULT,'base_url':'https://api.x5m5x.com','protocol':'openai','model':'deepseek-chat','streaming':False,'max_output_tokens':4096,'context_limit':32000,'timeout_seconds':180,'json_mode':True,'input_price':None,'output_price':None,'thinking_enabled':False}
 PROMPT_VERSION='material-summary-v1'
 REVIEW_METHOD='assistant-source-review-v1'
 SYSTEM='''你是中文资料整理助手。只根据用户提供的资料文字生成忠实、简洁、便于学习的总结，不要逐页照抄。
@@ -30,7 +30,9 @@ def validate_config(c):
         value=c.get(name)
         if value is not None and (isinstance(value,bool) or not isinstance(value,(int,float)) or not math.isfinite(value) or value<0):raise HTTPException(422,'Token 单价必须为非负有限数值')
     if not isinstance(c.get('thinking_enabled'),bool):raise HTTPException(422,'推理模式设置必须为布尔值')
-    c.update(protocol='openai',streaming=False,max_attempts=1,json_mode=True)
+    if type(c.get('max_attempts',provider.DEFAULT['max_attempts'])) is not int or not 1<=c.get('max_attempts',provider.DEFAULT['max_attempts'])<=5:
+        raise HTTPException(422,'最多尝试次数（含首次）应为1至5的整数')
+    c.update(protocol='openai',streaming=False,json_mode=True)
     c['base_url']=c['base_url'].rstrip('/')
     return c
 
@@ -40,7 +42,7 @@ def config():
         active=deepseek_profiles.selected()
         if not active:raise HTTPException(422,'请在 DeepSeek 接口列表中选择接口')
         c=deepseek_profiles.pool._endpoint_to_provider(active)
-        return {**c,'streaming':False,'max_attempts':1,'json_mode':True,'max_output_tokens':min(8192,int(c['max_output_tokens']))}
+        return {**c,'streaming':False,'json_mode':True,'max_output_tokens':min(8192,int(c['max_output_tokens']))}
     return validate_config({**DEFAULT,**db.setting('material_summary_provider',{})})
 
 def configuration_hash(c):return digest({k:c[k] for k in ('base_url','model','max_output_tokens','context_limit')}|{'prompt_version':PROMPT_VERSION})
@@ -66,7 +68,7 @@ def save_settings(body):
     if deepseek_profiles.enabled():
         deepseek_profiles.save_active(body)
         return settings()
-    allowed=('base_url','model','max_output_tokens','context_limit','timeout_seconds','max_request_cost','input_price','output_price','currency','thinking_enabled')
+    allowed=('base_url','model','max_output_tokens','context_limit','timeout_seconds','max_request_cost','max_attempts','input_price','output_price','currency','thinking_enabled')
     c=validate_config({**config(),**{k:v for k,v in body.get('provider',{}).items() if k in allowed}})
     if 'api_key' in body:
         if not isinstance(body['api_key'],str):raise HTTPException(422,'API key 必须是单行文字')

@@ -120,7 +120,16 @@ def resolve_manual(pid,sid,body):
     db.audit(pid,'writing_stale_resolved',{'section_id':sid,'reason_ids':ids,'revision_id':s['current_revision_id'],'note':note,'method':'human_reviewed'})
     project_stale(sid);return reasons(pid,sid)
 
+@db.read_session()
 def check_manifest(pid,manifest):
+    from ..knowledge_units import cache_inputs
+    # Every check is a new preflight. Share only input hashes across its reads;
+    # later stages must observe source edits and fresh permission checks.
+    with cache_inputs(fresh=True):
+        return _check_manifest(pid,manifest)
+
+
+def _check_manifest(pid,manifest):
     if manifest.get('evidence_bundle'):
         from ..writing_retrieval import validate as validate_bundle
         try:validate_bundle(pid,manifest['evidence_bundle'],remote=bool(manifest.get('remote',True)))

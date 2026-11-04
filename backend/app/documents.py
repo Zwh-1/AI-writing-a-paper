@@ -1,4 +1,4 @@
-import re
+import math,re
 from fastapi import HTTPException
 from . import db
 def text_document(text):
@@ -25,16 +25,25 @@ def normalize(doc,depth=0):
         marks=[m for m in doc.get('marks',[]) if m.get('type') in ('bold','italic','strike','code','underline','subscript','superscript')]
         if marks: result['marks']=marks
     else:
-        attrs={k:v for k,v in doc.get('attrs',{}).items() if k in ('nodeId','level','citationId','artifactId','assetVersionId','caption','expression','targetId','targetSectionId','colspan','rowspan','colwidth','start','sourceIds','factIds','omml','noteText','latex','tableStyle','note','diagramType','figurePurpose','explanationNodeId','describesFigureId','relatedSectionIds')};
+        attrs={k:v for k,v in doc.get('attrs',{}).items() if k in ('nodeId','level','citationId','artifactId','assetVersionId','svgSha256','caption','expression','targetId','targetSectionId','colspan','rowspan','colwidth','columnWidths','fontSize','bodyAlignment','start','sourceIds','factIds','omml','noteText','latex','tableStyle','note','diagramType','figurePurpose','explanationNodeId','describesFigureId','relatedSectionIds')};
         # Tiptap extensions serialize absent optional attributes as null.
         # Preserve actual values, but do not mistake an unset UI default for an
         # invalid caption, identifier or table style.
-        for key in ('nodeId','citationId','artifactId','assetVersionId','caption','expression','targetId','targetSectionId','omml','noteText','latex','tableStyle','note','diagramType','figurePurpose','explanationNodeId','describesFigureId'):
+        for key in ('nodeId','citationId','artifactId','assetVersionId','svgSha256','caption','expression','targetId','targetSectionId','omml','noteText','latex','tableStyle','note','diagramType','figurePurpose','explanationNodeId','describesFigureId','columnWidths','fontSize','bodyAlignment'):
             if attrs.get(key,'') is None:attrs.pop(key,None)
         if doc['type']=='table':
             if attrs.get('tableStyle') not in (None,'grid','three-line'):raise HTTPException(422,'表格样式无效')
             for key in ('caption','note'):
                 if key in attrs and (not isinstance(attrs[key],str) or len(attrs[key])>1500):raise HTTPException(422,'表题或表注过长')
+            if 'columnWidths' in attrs:
+                widths=attrs['columnWidths']
+                if not isinstance(widths,list) or not widths or len(widths)>100 or any(isinstance(x,bool) or not isinstance(x,(int,float)) or not math.isfinite(x) or x<=0 for x in widths):raise HTTPException(422,'表格列宽必须为正有限数值数组')
+                columns=max((sum(max(1,int(cell.get('attrs',{}).get('colspan',1))) for cell in row.get('content',[])) for row in doc.get('content',[])),default=0)
+                if columns and len(widths)!=columns:raise HTTPException(422,'表格列宽数量与列数不符')
+            if 'fontSize' in attrs and (isinstance(attrs['fontSize'],bool) or not isinstance(attrs['fontSize'],(int,float)) or not math.isfinite(attrs['fontSize']) or not 6<=attrs['fontSize']<=36):raise HTTPException(422,'表格字号须在6至36pt范围内')
+            if attrs.get('bodyAlignment','left') not in ('left','center','right','justify'):raise HTTPException(422,'表格正文对齐方式无效')
+        if 'svgSha256' in attrs and (doc['type']!='figure' or not isinstance(attrs['svgSha256'],str) or not re.fullmatch(r'[a-f0-9]{64}',attrs['svgSha256'])):raise HTTPException(422,'SVG资源哈希须为64位小写十六进制')
+        if doc['type']!='table' and any(key in attrs for key in ('columnWidths','fontSize','bodyAlignment')):raise HTTPException(422,'表格显示属性只能用于表格节点')
         if doc['type']=='figure' and 'caption' in attrs and (not isinstance(attrs['caption'],str) or len(attrs['caption'])>1500):raise HTTPException(422,'图题格式无效')
         if not attrs.get('nodeId'): attrs['nodeId']=db.uid()
         if 'knowledgeUnitIds' in doc.get('attrs',{}):attrs['knowledgeUnitIds']=doc['attrs']['knowledgeUnitIds']

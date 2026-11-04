@@ -34,6 +34,7 @@ if (-not $taskReady) {
         if ($LASTEXITCODE -ne 0) { throw 'Project initialization failed.' }
     }
     $taskServer=Start-Process -FilePath $taskPython -ArgumentList @('-X','utf8',('"'+$taskRunner+'"'),'server') -WorkingDirectory $taskRoot -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $taskRuntime ('server-'+$Port+'.out.log')) -RedirectStandardError (Join-Path $taskRuntime ('server-'+$Port+'.error.log'))
+    # worker supervises the queue child and restarts it after a watchdog exit.
     $taskWorker=Start-Process -FilePath $taskPython -ArgumentList @('-X','utf8',('"'+$taskRunner+'"'),'worker') -WorkingDirectory $taskRoot -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $taskRuntime ('worker-'+$Port+'.out.log')) -RedirectStandardError (Join-Path $taskRuntime ('worker-'+$Port+'.error.log'))
     @{server_pid=$taskServer.Id;worker_pid=$taskWorker.Id;runner=$taskRunner;data_directory=$env:PAPER_DATA_DIR;started_at=(Get-Date).ToString('o')} | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $taskRuntime ("processes-"+$Port+".json")) -Encoding utf8NoBOM
     for ($taskAttempt=0;$taskAttempt -lt 40;$taskAttempt++) {
@@ -58,7 +59,10 @@ if ($taskReady -and (Test-Path -LiteralPath $taskProcessState)) {
     # A worker started before the newest backend source change runs stale code
     # and would keep executing tasks with the old logic; replace it.
     if ($taskWorkerValid) {
-        $taskNewestSource=Get-ChildItem -LiteralPath (Join-Path $taskRoot 'backend\app') -Filter '*.py' -Recurse -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+        $taskNewestSource=@(
+            Get-ChildItem -LiteralPath (Join-Path $taskRoot 'backend\app') -Filter '*.py' -Recurse -File -ErrorAction SilentlyContinue
+            Get-Item -LiteralPath $taskRunner
+        ) | Sort-Object LastWriteTime -Descending | Select-Object -First 1
         if ($taskNewestSource) {
             $taskWorkerLive=Get-Process -Id $taskRegistered.worker_pid -ErrorAction SilentlyContinue
             if ($taskWorkerLive -and $taskWorkerLive.StartTime -lt $taskNewestSource.LastWriteTime) {

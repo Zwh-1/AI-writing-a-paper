@@ -5,7 +5,7 @@ when key lifetime, request count, model, project, currency and token totals matc
 """
 import hashlib,math,os
 from datetime import datetime
-from . import db,security,provider
+from . import db,security,provider,provider_identity,budget_usage
 
 class BudgetExceeded(ValueError):pass
 
@@ -54,14 +54,14 @@ def priced_config(configuration, key):
 
 def budget(pid,reservation=0):
     project=security.require_project(pid)
-    row=db.one("SELECT COALESCE(SUM(budget_charge),0) used,COUNT(*) calls FROM generation_budget_usage WHERE project_id=? AND status NOT IN ('rejected','failed_before_send')",(pid,))
+    used=budget_usage.charge(pid)
     unknown=db.one("SELECT COUNT(*) n,COALESCE(SUM(g.reserved),0) amount FROM generation_runs g LEFT JOIN generation_billing_group_runs m ON m.run_id=g.id WHERE g.project_id=? AND g.cost IS NULL AND m.run_id IS NULL AND g.status NOT IN ('rejected','failed_before_send')",(pid,))
     groups=db.one('SELECT COALESCE(SUM(amount),0) amount,COUNT(*) n FROM generation_billing_groups WHERE project_id=?',(pid,))
     pending=db.one("SELECT COUNT(*) n,COALESCE(SUM(g.reserved),0) amount FROM generation_runs g LEFT JOIN generation_billing_group_runs m ON m.run_id=g.id WHERE g.project_id=? AND g.cost IS NULL AND m.run_id IS NULL AND g.status IN ('completed','completed_invalid')",(pid,))
     unresolved=db.one("SELECT COUNT(*) n,COALESCE(SUM(reserved),0) amount FROM generation_runs WHERE project_id=? AND status IN ('sent','pending','outcome_unknown')",(pid,))
     estimated=db.one("SELECT COALESCE(SUM(g.cost),0) amount FROM generation_runs g LEFT JOIN generation_billing_group_runs m ON m.run_id=g.id WHERE g.project_id=? AND m.run_id IS NULL AND g.status NOT IN ('rejected','failed_before_send')",(pid,))
     from .expense_evidence import budget_currency
-    return {'limit':project['budget'],'used':row['used'],'currency':budget_currency(pid),'used_basis':'budget_occupation_including_estimates_and_holds','available':max(0,project['budget']-row['used']),'unknown_calls':unknown['n'],'unknown_reserved':unknown['amount'],'reconciled_amount':groups['amount'],'reconciled_amount_basis':'conservative_bill_upper_bound_not_verified_net_debit','reconciled_groups':groups['n'],'pending_bill_calls':pending['n'],'pending_bill_reserved':pending['amount'],'unresolved_calls':unresolved['n'],'unresolved_reserved':unresolved['amount'],'estimated_cost':estimated['amount'],'reservation':reservation,'can_call':row['used']+reservation<=project['budget']}
+    return {'limit':project['budget'],'used':used,'currency':budget_currency(pid),'used_basis':'budget_occupation_including_estimates_and_holds','available':max(0,project['budget']-used),'unknown_calls':unknown['n'],'unknown_reserved':unknown['amount'],'reconciled_amount':groups['amount'],'reconciled_amount_basis':'conservative_bill_upper_bound_not_verified_net_debit','reconciled_groups':groups['n'],'pending_bill_calls':pending['n'],'pending_bill_reserved':pending['amount'],'unresolved_calls':unresolved['n'],'unresolved_reserved':unresolved['amount'],'estimated_cost':estimated['amount'],'reservation':reservation,'can_call':used+reservation<=project['budget']}
 
 
 def request_reservation(cfg,system,user):
@@ -77,15 +77,11 @@ def request_reservation(cfg,system,user):
 
 
 def job_charge(job_id,route=None):
-    where="g.project_id=j.project_id AND json_extract(g.manifest,'$.rule_job_id')=? AND g.status NOT IN ('rejected','failed_before_send')"
-    args=[job_id]
-    if route:where+=" AND json_extract(g.manifest,'$.provider_route')=?";args.append(route)
-    ungrouped=db.one("SELECT COALESCE(SUM(COALESCE(g.cost,g.reserved)),0) amount FROM generation_runs g JOIN rule_jobs j ON j.id=json_extract(g.manifest,'$.rule_job_id') LEFT JOIN generation_billing_group_runs m ON m.run_id=g.id WHERE "+where+' AND m.run_id IS NULL',args)['amount']
-    # A group can be anchored in a different, older task. Charging only the
-    # anchor would erase this job's spending after reconciliation. With no per
-    # request prices, attribute the whole touched group as a conservative bound.
-    groups=db.one("SELECT COALESCE(SUM(amount),0) amount FROM generation_billing_groups WHERE id IN (SELECT DISTINCT m.group_id FROM generation_runs g JOIN rule_jobs j ON j.id=json_extract(g.manifest,'$.rule_job_id') JOIN generation_billing_group_runs m ON m.run_id=g.id WHERE "+where+')',args)['amount']
-    return ungrouped+groups
+    job=db.one('SELECT project_id FROM rule_jobs WHERE id=?',(job_id,))
+    if not job:return 0.0
+    scope={'rule_job_id':job_id}
+    if route:scope['provider_route']=route
+    return budget_usage.charge(job['project_id'],manifest_scope=scope)
 
 def finite(value):return not isinstance(value,bool) and isinstance(value,(float,int)) and math.isfinite(value) and value>=0
 
@@ -120,12 +116,15 @@ def reconcile(pid,profile='material-summary'):
         # Older runs can be attributed only if this DPAPI key predates every run.
         credential=security.DATA/('credential.dpapi' if profile=='primary' else profile+'.dpapi');key_env='PAPER_GPT_API_KEY' if profile=='gpt-fallback' else 'PAPER_IMAGE_API_KEY' if profile=='image-generation' else 'PAPER_API_KEY' if profile=='primary' else 'PAPER_SUMMARY_API_KEY';legacy_after=credential.stat().st_mtime if credential.exists() and not os.environ.get(key_env) else None
         candidates=[]
-        for run in db.rows('SELECT g.*,t.kind FROM generation_runs g JOIN tasks t ON t.id=g.task_id WHERE g.model=? ORDER BY g.created_at',(model,)):
-            manifest=db.loads(run['manifest'],{});snap=manifest.get('provider',{})
-            if snap.get('base_url','').rstrip('/').removesuffix('/v1')!=base:continue
-            fingerprint=manifest.get('credential_hash')
+        for run in db.rows('SELECT g.*,t.kind FROM generation_runs g JOIN tasks t ON t.id=g.task_id ORDER BY g.created_at'):
+            identity_projection=provider_identity.effective(run)
+            snap=identity_projection['effective']
+            if snap['model']!=model or snap['protocol']!=cfg.get('protocol'):continue
+            if provider_identity.base(snap.get('base_url'))!=base:continue
+            fingerprint=snap.get('credential_hash')
             if fingerprint and fingerprint!=identity:continue
             if not fingerprint:
+                if identity_projection['source']!='legacy_requested':continue
                 try:created=datetime.fromisoformat(run['created_at']).timestamp()
                 except ValueError:continue
                 if legacy_after is None or created<legacy_after:continue
@@ -133,7 +132,8 @@ def reconcile(pid,profile='material-summary'):
         executed=[x for x in candidates if x['status'] in ('completed','completed_invalid') or (x['status']=='rejected' and '输出被截断' in (x['error'] or ''))]
         # Unresolved calls stay outside this matched group and keep reservations.
         if len(executed)!=stat['requests'] or not executed or any(x['project_id']!=pid for x in executed):return {'reconciled':False,'reason':'服务商账单与本机请求范围不完全匹配，保留未知费用预留','account':account,'budget':budget(pid,cfg['max_request_cost'])}
-        complete_usage=[db.loads(x['usage'],{}) for x in executed]
+        from .adapter import normalize_usage
+        complete_usage=[normalize_usage(db.loads(x['usage'],{}),provider_identity.effective(x)['effective']['protocol']) for x in executed]
         token_accounting={}
         for local_name,remote_name in [('input_tokens','input_tokens'),('output_tokens','output_tokens')]:
             values=[u.get(local_name) for u in complete_usage]
@@ -142,9 +142,7 @@ def reconcile(pid,profile='material-summary'):
             cached=[]
             if local_name=='input_tokens':
                 for u in complete_usage:
-                    raw=u.get('raw',{});details=raw.get('prompt_tokens_details',{}) if isinstance(raw,dict) else {}
-                    value=details.get('cached_tokens',0) if isinstance(details,dict) else 0
-                    cached.append(value if type(value) is int and value>=0 and type(u.get('input_tokens')) is int and value<=u['input_tokens'] else None)
+                    cached.append(u['cache_hit_tokens'])
             alternatives={known:'reported_total'}
             if cached and all(v is not None for v in cached):alternatives.setdefault(known-sum(cached),'input_minus_reported_cached')
             all_known=all(type(v) is int and v>=0 for v in values)

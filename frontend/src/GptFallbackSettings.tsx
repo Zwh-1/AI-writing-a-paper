@@ -37,7 +37,7 @@ export default function GptFallbackSettings({ pid }: { pid: string }) {
   const dirty = !!key || JSON.stringify(cfg) !== JSON.stringify(saved?.provider);
   return <section className="panel mb" aria-label="GPT 备选设置">
     <div className="section-heading"><h2>GPT 备选</h2><span>{saved?.ready ? "已就绪" : "待完成配置"}</span></div>
-    <p className="muted mb">文字任务优先使用 DeepSeek；图片能力不足或请求被明确拒绝时，使用 GPT。超时、503 和已有输出的请求保留待核实状态。</p>
+    <p className="muted mb">文字任务优先使用 DeepSeek，单条请求链最多尝试 5 次。连续 5 次明确且可安全重试的失败后，自动切换到已启用并配置就绪的 GPT 备选；图片能力不足或请求被明确拒绝时可提前切换。GPT 独立最多尝试 5 次，成功接替后当前任务的后续调用沿用 GPT。超时、503 或已有输出但结果未知时保留待核实状态，不自动重发；官方 API 的禁用及高峰时段限制仍然生效。</p>
     {cfg && <form noValidate onSubmit={(e) => { e.preventDefault(); void save(); }}>
       <fieldset disabled={busy} className="settings-fieldset">
         <div className="form-grid">
@@ -50,8 +50,8 @@ export default function GptFallbackSettings({ pid }: { pid: string }) {
         <label className="checkbox"><input type="checkbox" checked={cfg.enabled} onChange={(e) => setCfg({ ...cfg, enabled: e.target.checked })} />启用 GPT 备选</label>
         <label className="checkbox"><input type="checkbox" checked={cfg.supports_images} onChange={(e) => setCfg({ ...cfg, supports_images: e.target.checked })} />所选 GPT 模型支持图片输入</label>
         <details className="mb"><summary>GPT 输出与预算</summary><div className="form-grid">{[
-          ["max_output_tokens", "GPT 输出上限"], ["timeout_seconds", "GPT 超时秒数"], ["max_request_cost", "GPT 单次费用上限"], ["input_price", "GPT 每百万输入 Token 单价"], ["output_price", "GPT 每百万输出 Token 单价"],
-        ].map(([name, label]) => <label className="field" key={name}>{label}<input aria-label={label} type="number" step="any" min="0" value={cfg[name] ?? ""} onChange={(e) => setCfg({ ...cfg, [name]: e.target.value === "" ? null : Number(e.target.value) })} /></label>)}</div></details>
+          ["max_output_tokens", "GPT 输出上限"], ["timeout_seconds", "GPT 超时秒数"], ["max_attempts", "GPT 最多尝试次数（含首次）"], ["max_request_cost", "GPT 单次费用上限"], ["input_price", "GPT 每百万输入 Token 单价"], ["output_price", "GPT 每百万输出 Token 单价"],
+        ].map(([name, label]) => <label className="field" key={name}>{label}<input aria-label={label} type="number" step={name === "max_attempts" ? "1" : "any"} min={name === "max_attempts" ? 1 : 0} max={name === "max_attempts" ? 5 : undefined} value={cfg[name] ?? ""} onChange={(e) => setCfg({ ...cfg, [name]: e.target.value === "" ? null : Number(e.target.value) })} /></label>)}</div></details>
         <div className="actions"><button type="submit" className="btn primary">{busy ? "处理中…" : "保存 GPT 备选"}</button><button type="button" className="btn" onClick={() => void save(true)}>检测 GPT 模型</button><button type="button" className="btn" disabled={!pid || !saved?.ready || dirty} onClick={async () => {
           if (pending.current) return;
           pending.current = true; setBusy(true); setError("");

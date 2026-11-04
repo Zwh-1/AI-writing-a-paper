@@ -107,7 +107,7 @@ def bindings(pid, allocation_id):
         "AND json_extract(content,'$.allocation_id')=?", (pid, allocation_id))]
 
 
-def charge(pid, allocation_id):
+def charge(pid, allocation_id,exclude_run_id=None):
     """Count each touched bill group in full, never divide or lose its charge."""
     allocation = get(pid, allocation_id)
     ids = [r['task_id'] for r in bindings(pid, allocation_id)]
@@ -116,6 +116,7 @@ def charge(pid, allocation_id):
     placeholders = ','.join('?' for _ in ids)
     runs = db.rows('SELECT g.*,m.group_id FROM generation_runs g LEFT JOIN generation_billing_group_runs m ON m.run_id=g.id '
                    'WHERE g.project_id=? AND g.task_id IN (' + placeholders + ") AND g.status NOT IN ('rejected','failed_before_send')", (pid, *ids))
+    if exclude_run_id:runs=[r for r in runs if r['id']!=exclude_run_id]
     total = sum((Decimal(str(r['cost'] if r['cost'] is not None else r['reserved']))
                  for r in runs if not r['group_id']), Decimal(0))
     for identity in {r['group_id'] for r in runs if r['group_id']}:
@@ -126,7 +127,7 @@ def charge(pid, allocation_id):
     return total
 
 
-def guard(task, cfg, key, reservation):
+def guard(task, cfg, key, reservation,exclude_run_id=None):
     """Called inside the same IMMEDIATE transaction as request reservation."""
     if not task:
         return None
@@ -148,7 +149,11 @@ def guard(task, cfg, key, reservation):
         raise BudgetExceeded('测试使用的账号、模型、接口、单价或币种与授权快照不一致')
     if not finite(reservation):
         raise BudgetExceeded('测试请求缺少有效费用预留')
-    used = charge(pid, allocation_id)
+    if exclude_run_id:
+        current=db.one('SELECT project_id,task_id,status FROM generation_runs WHERE id=?',(exclude_run_id,))
+        if not current or current['project_id']!=pid or current['task_id']!=task['id'] or current['status'] not in ('pending','sent'):
+            raise BudgetExceeded('重定价只能排除当前任务正在准备的请求')
+    used = charge(pid, allocation_id,exclude_run_id=exclude_run_id)
     if used + Decimal(str(reservation)) > Decimal(str(allocation['limit'])):
         raise BudgetExceeded('本轮测试支出已达到授权上限；完成结果与未知费用预留均已保存')
     historical = dict(allocation['historical_unresolved']); exemptions = [];inflight=[];elsewhere=[]
@@ -173,6 +178,7 @@ def guard(task, cfg, key, reservation):
         return bool(owner and owner['status']=='running' and owner['heartbeat']
                     and __import__('time').time()-owner['heartbeat']<180)
     for run in unresolved(pid):
+        if run['id']==exclude_run_id:continue
         if in_flight(run):
             if run['task_id']==task['id']:inflight.append(run['id'])
             else:elsewhere.append(run['id'])

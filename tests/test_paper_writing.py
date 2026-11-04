@@ -82,8 +82,10 @@ def test_one_task_generates_complete_manuscript_and_shares_unadopted_candidates(
 
 
 @pytest.mark.parametrize('bad_reply', ['prose', 'empty_paragraph'])
-def test_introduction_candidate_repairs_malformed_or_empty_model_response(manuscript, monkeypatch, bad_reply):
+@pytest.mark.parametrize('layout',['legacy','cache_v2'])
+def test_introduction_candidate_repairs_malformed_or_empty_model_response(manuscript, monkeypatch, bad_reply,layout):
     e=manuscript
+    db.set_setting('ai_cache_policy',{'new_task_prompt_layout':layout})
     original=provider.generate
     introduction_systems=[]
 
@@ -105,7 +107,13 @@ def test_introduction_candidate_repairs_malformed_or_empty_model_response(manusc
     assert introduction['validation_attempts'][0]['error']
     assert introduction['validation_attempts'][1]=={'attempt':2,'valid':True,'error':None}
     assert introduction['manifest']['candidate_validation']['retry_count']==1
-    assert '章节响应校验发现以下问题：'+introduction['validation_attempts'][0]['error'] in introduction_systems[1]
+    if layout=='legacy':
+        assert '章节响应校验发现以下问题：'+introduction['validation_attempts'][0]['error'] in introduction_systems[1]
+    else:
+        repairs=[row for row in e['calls'] if row.get('section',{}).get('kind')=='introduction']
+        assert repairs[1]['request_parameters']['validation_error']==introduction['validation_attempts'][0]['error']
+        assert repairs[1]['request_parameters']['repair_attempt']==2
+        assert introduction['validation_attempts'][0]['error'] not in introduction_systems[1]
     assert next(c for c in result['section_checks'] if c['section_id']==introduction['section_id'])['response_format_retries']==1
     assert len(result['completed_run_ids'])==6
     assert db.one('SELECT status FROM tasks WHERE id=?',(tid,))['status']=='succeeded'
@@ -133,9 +141,9 @@ def test_unrepairable_introduction_response_fails_visibly_without_prose_fallback
     result=db.loads(task['result'])
     invalid=result['invalid_output']
     assert task['status']=='failed'
-    assert introduction_calls==3
+    assert introduction_calls==tasks.CANDIDATE_FORMAT_RETRIES+1==5
     assert '第一章 绪论' in task['error'] and 'JSON解析失败' in task['error']
-    assert len(invalid['validation_attempts'])==3
+    assert len(invalid['validation_attempts'])==tasks.CANDIDATE_FORMAT_RETRIES+1
     assert all(not attempt['valid'] and attempt['error'] for attempt in invalid['validation_attempts'])
     assert invalid['raw_text']==invalid_response
     assert result['paper_sections']==[]
@@ -400,7 +408,10 @@ def test_existing_full_manuscript_and_locked_paragraphs_survive_whole_generation
 def test_capacity_stop_preserves_full_candidate_and_resumes_after_capacity_changes(manuscript, monkeypatch):
     e = manuscript
     cfg = provider.config()
-    db.set_setting('provider', {**cfg, 'context_limit': 18000})
+    from app.writing_request import FORMAT_REPAIR_INPUT_RESERVE
+    # Keep the original 18k draft allowance after reserving format-repair input.
+    initial_limit = 18000 + FORMAT_REPAIR_INPUT_RESERVE
+    db.set_setting('provider', {**cfg, 'context_limit': initial_limit})
     original = e['generate']
     def large_first(system, user, images=None):
         result = original(system, user, images)
@@ -416,7 +427,7 @@ def test_capacity_stop_preserves_full_candidate_and_resumes_after_capacity_chang
     assert task['status'] == 'failed' and 'WRITING_CONTEXT_BUDGET_EXCEEDED' in task['error']
     assert len(result['paper_sections']) == result['completed_sections'] == 1
     assert result['paper_sections'][0]['text'] == '完整保留的候选原文及其限定条件。' * 1000
-    assert result['context_budget']['component_bytes']['paper_draft_sections'] > 18000
+    assert result['context_budget']['component_bytes']['paper_draft_sections'] > initial_limit
     assert len(e['calls']) == 1 and not db.rows('SELECT * FROM revisions')
     db.set_setting('provider', cfg)
     monkeypatch.setattr(provider, 'generate', original)

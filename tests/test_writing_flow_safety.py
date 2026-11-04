@@ -126,6 +126,64 @@ def test_completed_cache_reuse_still_rechecks_exact_bundle_permissions(writing_p
     assert len(calls)==1
 
 
+def test_semantic_review_uses_exact_linked_sources_without_duplicating_project_evidence(writing_project,monkeypatch):
+    e=writing_project;task=_running(e);context,manifest=_basis(e)
+    source=context['sources'][0]
+    unrelated={'id':'unused-evidence','payload':{'text':'无关项目说明'*5000}}
+    context['project_evidence']=[unrelated]
+    paragraph={'text':'模块职责清晰有助于维护。','source_ids':[source['id']]}
+    captured=[]
+    def transport(system,user,images=None):
+        payload=db.loads(user);captured.append(payload)
+        assert {row['id'] for row in payload['actual_sources']}=={source['id']}
+        assert not payload['project_evidence']
+        return response({'claim_reviews':[{'claim_id':claim['claim_id'],'support':'supported',
+                         'source_quotes':[{'source_id':source['id'],'quote':source['text']}],
+                         'reason':'原文支持'} for claim in payload['claims']],
+                         'point_reviews':[],'findings':[]})
+    monkeypatch.setattr(provider,'generate',transport)
+    local=writing_flow._local_quality(task,[paragraph],context,manifest)
+    result=writing_flow._semantic(task,security.require_section(e['sid']),[paragraph],context,manifest,local)
+    assert captured and result['coverage_complete']
+    assert all(item['quote_verified'] for item in result['claims'])
+
+
+def test_oversize_semantic_stage_saves_incomplete_candidate_without_calling_model(writing_project,monkeypatch):
+    e=writing_project;task=_running(e);context,manifest=_basis(e)
+    paragraph={'text':'模块职责清晰有助于维护。','source_ids':[context['sources'][0]['id']]}
+    context['sources'][0]['text']='必须保留的长原文。'*4000
+    db.set_setting('provider',{**provider.config(),'context_limit':2000,'max_output_tokens':512})
+    monkeypatch.setattr(provider,'generate',lambda *args,**kwargs:pytest.fail('Oversized stage sent a model request'))
+    local=writing_flow._local_quality(task,[paragraph],context,manifest)
+    with pytest.raises(HTTPException) as error:
+        writing_flow._semantic(task,security.require_section(e['sid']),[paragraph],context,manifest,local)
+    assert error.value.status_code==422
+    checkpoint=writing_flow.completed_stage_candidate(task,security.require_section(e['sid']),stage='semantic_review')
+    assert checkpoint['candidate']['paragraphs']==[paragraph]
+    assert checkpoint['budget']['input_upper_bound']>0
+    assert not db.rows('SELECT * FROM generation_runs WHERE task_id=?',(task['id'],))
+
+
+def test_oversize_evidence_revision_saves_candidate_without_unchecked_send(writing_project,monkeypatch):
+    e=writing_project;task=_running(e);context,manifest=_basis(e)
+    section=security.require_section(e['sid'])
+    candidate={'paragraphs':[{'text':'模块职责清晰有助于维护。','source_ids':[context['sources'][0]['id']]}]}
+    candidate['retrieval_requests']=[{'query':'补读模块职责和授权条件'}]
+    writing_flow.save_settings(e['pid'],{'semantic_review':False,'originality_check':False,'max_revision_rounds':1})
+    db.set_setting('provider',{**provider.config(),'context_limit':2000,'max_output_tokens':512})
+    original_prepare=writing_retrieval.prepare
+    def read_more(pid,sid,query,**kwargs):
+        return original_prepare(pid,sid,'模块职责维护性',channels=['rules'])
+    monkeypatch.setattr(writing_retrieval,'prepare',read_more)
+    monkeypatch.setattr(provider,'generate',lambda *args,**kwargs:pytest.fail('Oversized revision sent a model request'))
+    with pytest.raises(HTTPException) as error:
+        writing_flow.finish(task,section,candidate,'synthetic',context,manifest,tasks.candidate_from_text)
+    assert error.value.status_code==422
+    checkpoint=writing_flow.completed_stage_candidate(task,section,stage='evidence_revision')
+    assert checkpoint['candidate']==candidate
+    assert not db.rows('SELECT * FROM generation_runs WHERE task_id=?',(task['id'],))
+
+
 def test_simple_unlinked_fact_without_material_is_incomplete_not_passed(writing_project,monkeypatch):
     e=writing_project;task=_running(e);section=security.require_section(e['sid'])
     writing_flow.save_settings(e['pid'],{'max_revision_rounds':0,'originality_check':False})

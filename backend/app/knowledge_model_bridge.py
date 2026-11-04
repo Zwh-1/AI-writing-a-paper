@@ -23,7 +23,14 @@ def _complete(task,operation,payload,refs,system=None):
     model_keys=('base_url','model','protocol','max_output_tokens','context_limit','json_mode','temperature','thinking_enabled','reasoning_effort','top_p','seed')
     cache_key=lineage.digest([operation,prompt,payload,refs,{k:cfg.get(k) for k in model_keys},profile])
     wire_hash=__import__('hashlib').sha256((prompt+'\n'+user).encode()).hexdigest()
-    saved=db.rows("SELECT * FROM generation_runs WHERE project_id=? AND (json_extract(manifest,'$.knowledge_cache_key')=? OR json_extract(manifest,'$.outgoing_context_hash')=?) ORDER BY created_at DESC",(task['project_id'],cache_key,wire_hash))
+    # Split the OR into two indexed lookups, retaining the same exact proofs.
+    found={}
+    for field,value in (('knowledge_cache_key',cache_key),('outgoing_context_hash',wire_hash)):
+        for row in db.rows("SELECT rowid AS sequence,* FROM generation_runs WHERE project_id=? AND json_valid(manifest) "
+                           "AND json_extract(manifest,'$."+field+"')=? ORDER BY created_at DESC,rowid DESC",
+                           (task['project_id'],value)):
+            found[row['id']]=row
+    saved=sorted(found.values(),key=lambda row:(row['created_at'],row['sequence']),reverse=True)
     replay_of=None
     for previous in saved:
         metadata=db.loads(previous['manifest'],{})

@@ -4,6 +4,8 @@ $taskEdition=$PSVersionTable.PSEdition
 if ($PSVersionTable.PSVersion -le [version]'7.6.0' -or $PSVersionTable.PSEdition -ne 'Core') { throw 'Requires PowerShell > 7.6.0 Core' }
 $ErrorActionPreference='Stop'
 $taskRoot=Split-Path -Parent $PSScriptRoot
+if (-not $PythonPath) { $PythonPath=Join-Path $taskRoot '.runtime\python\python.exe' }
+if (-not (Test-Path -LiteralPath $PythonPath)) { throw 'Pass -PythonPath pointing to Python 3.12+ to build a content-bound runtime identity.' }
 if ($InstallDependencies) {
     if (-not $PythonPath -or -not (Test-Path -LiteralPath $PythonPath)) { throw 'Pass -PythonPath pointing to a Python 3.12+ interpreter with pip. The packaged runtime does not need pip.' }
     $taskVersionCheck=& $PythonPath -c 'import sys;print(int(sys.version_info >= (3,12)))'
@@ -13,6 +15,10 @@ if ($InstallDependencies) {
     & npm ci --prefix (Join-Path $taskRoot 'frontend') --no-audit --no-fund
     if ($LASTEXITCODE -ne 0) { throw 'Frontend dependency installation failed.' }
 }
+& $PythonPath -X utf8 (Join-Path $taskRoot 'scripts\build_runtime_manifest.py') --frontend
+if ($LASTEXITCODE -ne 0) { throw 'Frontend build identity generation failed.' }
 & npm run build --prefix (Join-Path $taskRoot 'frontend')
 if ($LASTEXITCODE -ne 0) { throw 'Frontend build failed.' }
+& $PythonPath -X utf8 (Join-Path $taskRoot 'scripts\build_runtime_manifest.py')
+if ($LASTEXITCODE -ne 0) { throw 'Runtime build identity generation failed.' }
 Write-Output 'Build completed. Run the launcher to open the workbench.'

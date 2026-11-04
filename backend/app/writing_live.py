@@ -4,6 +4,9 @@ import hashlib
 import os
 import re
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
+from copy import deepcopy
 from pathlib import Path, PurePosixPath
 from fastapi import APIRouter, HTTPException
 from . import db, documents, security
@@ -11,6 +14,19 @@ from .writing_agent.common import digest
 
 router = APIRouter()
 _REPOSITORY_WATCH={}
+_REPOSITORY_VALIDATION=ContextVar('writing_repository_validation',default=None)
+
+
+@contextmanager
+def repository_validation_scope():
+    """Reuse one filesystem observation inside a pure read-only validation.
+
+    The caller must leave this scope before writes, events or HTTP. A new scope
+    always observes the filesystem again; this is not the UI's timed cache.
+    """
+    token=_REPOSITORY_VALIDATION.set({})
+    try:yield
+    finally:_REPOSITORY_VALIDATION.reset(token)
 
 
 def versions(pid, ignore_task=None):
@@ -32,6 +48,14 @@ def versions(pid, ignore_task=None):
 
 
 def repository_status(pid, progress=None):
+    cached=_REPOSITORY_VALIDATION.get()
+    if cached is None or progress is not None:
+        return _repository_status(pid,progress)
+    if pid not in cached:cached[pid]=_repository_status(pid)
+    return deepcopy(cached[pid])
+
+
+def _repository_status(pid, progress=None):
     from .writing_agent import repository
     state=db.one('SELECT target_snapshot_id FROM writing_project_state WHERE project_id=?',(pid,))
     snapshot=db.one('SELECT * FROM repository_snapshots WHERE id=? AND project_id=?',(state['target_snapshot_id'],pid)) if state and state['target_snapshot_id'] else None
@@ -42,14 +66,23 @@ def repository_status(pid, progress=None):
     root=Path(binding['root_path_local']);changed=[]
     if not root.is_absolute() or not root.is_dir() or repository.reparse(root):
         return {'bound':True,'changed':True,'snapshot_id':snapshot['id'],'unavailable':True,'changed_files':[]}
+    try:resolved_root=root.resolve()
+    except OSError:
+        return {'bound':True,'changed':True,'snapshot_id':snapshot['id'],'unavailable':True,'changed_files':[]}
     rows=db.rows('SELECT relative_path,blob_sha256,observed_metadata_json FROM repository_snapshot_files WHERE snapshot_id=?',(snapshot['id'],))
     expected={r['relative_path']:r['blob_sha256'] for r in rows}
     observed={r['relative_path']:db.loads(r['observed_metadata_json'],{}) for r in rows}
+    # Ordinary files cannot redirect resolution after the per-file reparse
+    # check. Resolve each shared parent once for this scan, including junctions.
+    inside_parents={root:True}
     for index,(relative, sha) in enumerate(expected.items(),1):
         if progress and (index%200==0 or index==len(expected)):progress('正在核对已登记的项目文件',index,len(expected))
         path=root/relative
         try:
-            if repository.reparse(path) or not path.resolve().is_relative_to(root.resolve()):changed.append(relative);continue
+            if repository.reparse(path):changed.append(relative);continue
+            if path.parent not in inside_parents:
+                inside_parents[path.parent]=path.parent.resolve().is_relative_to(resolved_root)
+            if not inside_parents[path.parent]:changed.append(relative);continue
             stat=path.stat();before=observed[relative]
             if before.get('size')==stat.st_size and before.get('mtime_ns')==stat.st_mtime_ns:continue
             if hashlib.sha256(path.read_bytes()).hexdigest()!=sha:changed.append(relative)
@@ -103,6 +136,26 @@ def prepare(pid,section,query,task_id=None):
     snapshot=head['target_snapshot_id'] if head else None
     ids=list(dict.fromkeys([*c.get('evidence_ids',[]),*c.get('required_evidence_ids',[])]))
     pinned=set(c.get('required_evidence_ids',[]))
+    # Newly read recovery sources belong to this task, not a republished contract.
+    recovery_ids=[]
+    if task_id:
+        task=db.one('SELECT kind,payload FROM tasks WHERE id=? AND project_id=?',(task_id,pid))
+        if task and task['kind']=='write_paper':
+            task_payload=db.loads(task['payload'],{})
+            if 'recovery_evidence_ids_by_section' in task_payload:
+                recovery=task_payload['recovery_evidence_ids_by_section']
+                if not isinstance(recovery,dict):
+                    raise HTTPException(422,'任务恢复证据必须按章节映射')
+                if section['id'] in recovery:
+                    recovery_ids=recovery[section['id']]
+                    if (not isinstance(recovery_ids,list) or len(recovery_ids)>200
+                            or any(not isinstance(identity,str) or not identity.strip()
+                                   or identity!=identity.strip() for identity in recovery_ids)):
+                        raise HTTPException(422,'当前章节的恢复证据须为最多200个有效编号的列表')
+                    recovery_ids=list(dict.fromkeys(recovery_ids))
+                    ids=list(dict.fromkeys([*ids,*recovery_ids]))
+                    pinned.update(recovery_ids)
+    recovery_required=set(recovery_ids)
     claim_ids=[*c.get('claim_versions',[]),*(db.loads(core['content_json'],{}).get('claim_versions',[]) if core else [])]
     for claim in claim_ids:
         pinned.update(r['evidence_id'] for r in db.rows('SELECT evidence_id FROM claim_evidence_links WHERE claim_version_id=?',(claim,)))
@@ -115,8 +168,12 @@ def prepare(pid,section,query,task_id=None):
                 if item['id'] in pinned:raise HTTPException(409,'明确指定的项目原文已被排除或替换，请重新选择依据')
                 gaps.append('旧章节任务中的资料来源已被排除，未继续使用');continue
         if not item['version_current'] or item['validity'] not in ('current','historical'):
+            if identity in recovery_required:
+                raise HTTPException(409,'明确指定的任务恢复证据已过期，请重新读取：'+identity)
             gaps.append('章节证据已过期：'+identity);continue
         if item['origin_type']=='code' and item['origin_id']!=snapshot:
+            if identity in recovery_required:
+                raise HTTPException(409,'明确指定的任务恢复代码证据不属于当前快照：'+identity)
             gaps.append('章节代码证据来自旧快照，已使用当前项目快照重新取证');continue
         items.append(item)
     if snapshot and not any(i['origin_type']=='code' for i in items):
@@ -181,6 +238,7 @@ def prepare(pid,section,query,task_id=None):
     manifest={'live_input_versions':versions(pid,task_id),'evidence_versions':{i['id']:i['origin_version'] for i in items},
               'permission_stamps':{i['id']:evidence.permission_stamp(pid,i['id']) for i in items},
               'asset_versions':{a['id']:digest([a['sha256'],db.loads(a['metadata'],{})]) for a in db.rows('SELECT * FROM artifacts WHERE project_id=?',(pid,)) if any(x['id']==a['id'] for x in assets)}}
+    if recovery_ids:manifest['task_scoped_recovery_evidence_ids']=recovery_ids
     return payload,manifest,items
 
 

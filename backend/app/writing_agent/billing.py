@@ -1,6 +1,6 @@
 """Optional exact interval reconciliation. Ambiguous intervals retain reservations."""
 from decimal import Decimal,InvalidOperation
-from .. import provider,db
+from .. import provider,db,adapter,provider_identity
 
 def sample(cfg):
     try:
@@ -22,14 +22,20 @@ def reconcile(before,after,usage,request_count=1):
     if not before or not after or before['unit']!=after['unit'] or before['model']!=after['model'] or after['requests']-before['requests']!=request_count:return None
     for field in ('credential_hash','base_url'):
         if before.get(field)!=after.get(field):return None
-    inp=usage.get('input_tokens');out=usage.get('output_tokens');raw=usage.get('raw',{});cached=raw.get('prompt_cache_hit_tokens',0) or raw.get('prompt_tokens_details',{}).get('cached_tokens',0) or 0
-    if type(inp) is not int or type(out) is not int or type(cached) is not int or not 0<=cached<=inp:return None
+    usage=adapter.normalize_usage(usage)
+    inp=usage['input_tokens'];out=usage['output_tokens'];cached=usage['cache_hit_tokens']
+    raw=usage['raw'] if isinstance(usage['raw'],dict) else {}
+    if type(inp) is not int or type(out) is not int:return None
     remote_input=after['input_tokens']-before['input_tokens']
     remote_output=after['output_tokens']-before['output_tokens'];outputs={out:'reported_output'}
     total=raw.get('total_tokens');raw_input=raw.get('prompt_tokens',raw.get('input_tokens'));raw_output=raw.get('completion_tokens',raw.get('output_tokens'))
     if type(total) is int and type(raw_input) is int and type(raw_output) is int and raw_input==inp and raw_output==out and total>=inp+out:
         outputs.setdefault(total-inp,'reported_total_minus_input')
-    if remote_output not in outputs or remote_input not in (inp-cached,inp,inp+cached):return None
+    inputs={inp:'cache_included'}
+    if cached is not None:
+        inputs.setdefault(inp-cached,'cache_excluded')
+        inputs.setdefault(inp+cached,'cache_reported_separately')
+    if remote_output not in outputs or remote_input not in inputs:return None
     try:
         deltas=[Decimal(after['amounts'][k])-Decimal(v) for k,v in before['amounts'].items() if k in after['amounts']]
         if not deltas or any(not v.is_finite() or v<0 for v in deltas):return None
@@ -38,14 +44,33 @@ def reconcile(before,after,usage,request_count=1):
             if not balance.is_finite() or balance<0:return None
             deltas.append(balance)
         amount=max(deltas)
-        return {'amount':float(amount),'currency':after['unit'],'method':'exact_model_interval_matching_request_count_and_token_deltas','matched_requests':request_count,'before':before,'after':after,'usage_match':{'input_tokens':inp,'output_tokens':out,'cached_tokens_if_reported':cached,'provider_input_delta':remote_input,'input_counting':'cache_excluded' if remote_input==inp-cached and cached else 'cache_included' if remote_input==inp else 'cache_reported_separately','provider_output_delta':remote_output,'output_counting':outputs[remote_output]}}
+        return {'amount':float(amount),'currency':after['unit'],'method':'exact_model_interval_matching_request_count_and_token_deltas','matched_requests':request_count,'before':before,'after':after,'usage_match':{'input_tokens':inp,'output_tokens':out,'cached_tokens_if_reported':cached,'provider_input_delta':remote_input,'input_counting':inputs[remote_input],'provider_output_delta':remote_output,'output_counting':outputs[remote_output]}}
     except (InvalidOperation,ValueError,TypeError):return None
+
+def _combined_usage(values):
+    normalized=[adapter.normalize_usage(value) for value in values]
+    if not normalized or any(type(value[name]) is not int for value in normalized for name in ('input_tokens','output_tokens')):
+        return None
+    total={name:sum(value[name] for value in normalized) for name in ('input_tokens','output_tokens')}
+    if all(value['cache_hit_tokens'] is not None for value in normalized):
+        total.update({name:sum(value[name] for value in normalized) for name in ('cache_hit_tokens','cache_miss_tokens')})
+    return adapter.normalize_usage({**total,'raw':{}})
+
+
+def _route(run):
+    projection=provider_identity.effective(run);value=projection['effective']
+    if projection['source']=='unknown_pool' or projection['source']=='actual' and not projection['actual_known']:
+        return None
+    return value['credential_hash'],value['base_url'],value['model'],value['protocol']
+
 
 def recover_adjacent(pid):
     """Recheck old completed intervals using preserved adjacent bill boundaries."""
     rows=db.rows("SELECT * FROM generation_runs WHERE project_id=? AND status NOT IN ('rejected','failed_before_send') ORDER BY created_at,rowid",(pid,));settled=[]
     for i,row in enumerate(rows):
         if row['cost'] is not None or row['status'] not in ('completed','completed_invalid'):continue
+        identity=_route(row)
+        if identity is None:continue
         meta=db.loads(row['manifest'],{});observation=meta.get('billing_interval_observation',{});befores=[observation.get('before')];afters=[observation.get('after')];sources=[]
         # Concurrent responses may finish out of creation order. Search a small
         # same-route neighborhood, then require an exact one-request/token match.
@@ -53,7 +78,7 @@ def recover_adjacent(pid):
         for neighbor_index,field in neighbors:
             if neighbor_index<0 or neighbor_index>=len(rows):continue
             neighbor=rows[neighbor_index];nm=db.loads(neighbor['manifest'],{})
-            if nm.get('credential_hash')!=meta.get('credential_hash') or nm.get('provider',{}).get('base_url')!=meta.get('provider',{}).get('base_url') or neighbor['model']!=row['model']:continue
+            if _route(neighbor)!=identity:continue
             proof=nm.get('billing_interval_proof',{});observed=nm.get('billing_interval_observation',{})
             if field=='before':befores.extend([proof.get('after'),observed.get('after')]);sources.append(neighbor['id'])
             if field=='after':afters.extend([proof.get('before'),observed.get('before')]);sources.append(neighbor['id'])
@@ -61,9 +86,9 @@ def recover_adjacent(pid):
         for before in befores:
             for after in afters:
                 if not before or not after:continue
-                key=meta.get('credential_hash');base=meta.get('provider',{}).get('base_url')
+                key,base,model,_=identity
                 b={**before,'credential_hash':before.get('credential_hash',key),'base_url':before.get('base_url',base)};a={**after,'credential_hash':after.get('credential_hash',key),'base_url':after.get('base_url',base)}
-                if b['credential_hash']!=key or a['credential_hash']!=key or b['base_url']!=base or a['base_url']!=base:continue
+                if b['credential_hash']!=key or a['credential_hash']!=key or b['base_url']!=base or a['base_url']!=base or before.get('model')!=model or after.get('model')!=model:continue
                 proof=reconcile(b,a,db.loads(row['usage'],{}))
                 if proof:break
             if proof:break
@@ -84,11 +109,11 @@ def recover_closed_group(pid,current_sample=None):
         while i<len(rows) and rows[i]['cost'] is None and not db.one('SELECT run_id FROM generation_billing_group_runs WHERE run_id=?',(rows[i]['id'],)):i+=1
         block=rows[start:i]
         if any(x['status'] not in ('completed','completed_invalid') for x in block):continue
-        metas=[db.loads(x['manifest'],{}) for x in block];keys={(m.get('credential_hash'),m.get('provider',{}).get('base_url'),x['model']) for m,x in zip(metas,block)}
-        if len(keys)!=1:continue
-        key,base,model=next(iter(keys));before=metas[0].get('billing_interval_observation',{}).get('before');after=metas[-1].get('billing_interval_observation',{}).get('after')
+        metas=[db.loads(x['manifest'],{}) for x in block];keys={_route(x) for x in block}
+        if len(keys)!=1 or None in keys:continue
+        key,base,model,protocol=next(iter(keys));before=metas[0].get('billing_interval_observation',{}).get('before');after=metas[-1].get('billing_interval_observation',{}).get('after')
         def same_route(row):
-            m=db.loads(row['manifest'],{});return m.get('credential_hash')==key and m.get('provider',{}).get('base_url')==base and row['model']==model
+            return _route(row)==(key,base,model,protocol)
         if not before and start and same_route(rows[start-1]):before=db.loads(rows[start-1]['manifest'],{}).get('billing_interval_proof',{}).get('after')
         if not after and i<len(rows) and same_route(rows[i]):after=db.loads(rows[i]['manifest'],{}).get('billing_interval_proof',{}).get('before')
         if not after and i==len(rows) and current_sample and current_sample.get('credential_hash')==key and current_sample.get('base_url')==base:after=current_sample
@@ -97,10 +122,8 @@ def recover_closed_group(pid,current_sample=None):
         if before:before={**before,'credential_hash':before.get('credential_hash',key),'base_url':before.get('base_url',base)}
         if after:after={**after,'credential_hash':after.get('credential_hash',key),'base_url':after.get('base_url',base)}
         if (before and (before['credential_hash']!=key or before['base_url']!=base)) or (after and (after['credential_hash']!=key or after['base_url']!=base)):continue
-        usage=[db.loads(x['usage'],{}) for x in block]
-        if any(type(u.get('input_tokens')) is not int or type(u.get('output_tokens')) is not int for u in usage):continue
-        cached=sum(u.get('raw',{}).get('prompt_cache_hit_tokens',0) or u.get('raw',{}).get('prompt_tokens_details',{}).get('cached_tokens',0) or 0 for u in usage)
-        total={'input_tokens':sum(u['input_tokens'] for u in usage),'output_tokens':sum(u['output_tokens'] for u in usage),'raw':{'prompt_cache_hit_tokens':cached}}
+        total=_combined_usage([db.loads(x['usage'],{}) for x in block])
+        if total is None:continue
         proof=reconcile(before,after,total,len(block))
         if not proof:continue
         if len(block)==1:
@@ -136,18 +159,18 @@ def recover_overlapping_intervals(pid):
         if not before or not after:continue
         size=after.get('requests',0)-before.get('requests',0)
         if type(size) is not int or not 2<=size<=8:continue
-        key=meta.get('credential_hash');base=meta.get('provider',{}).get('base_url');model=row['model']
+        identity=_route(row)
+        if identity is None:continue
+        key,base,model,protocol=identity
         before={**before,'credential_hash':before.get('credential_hash',key),'base_url':before.get('base_url',base)};after={**after,'credential_hash':after.get('credential_hash',key),'base_url':after.get('base_url',base)}
         if before['credential_hash']!=key or after['credential_hash']!=key or before['base_url']!=base or after['base_url']!=base:continue
         for start in range(max(0,index-size+1),index+1):
             block=rows[start:start+size]
             if len(block)!=size or row['id'] not in {r['id'] for r in block}:continue
             metas=[db.loads(x['manifest'],{}) for x in block]
-            if any(m.get('credential_hash')!=key or m.get('provider',{}).get('base_url')!=base or x['model']!=model or db.one('SELECT run_id FROM generation_billing_group_runs WHERE run_id=?',(x['id'],)) for x,m in zip(block,metas)):continue
-            usage=[db.loads(x['usage'],{}) for x in block]
-            if any(type(u.get('input_tokens')) is not int or type(u.get('output_tokens')) is not int for u in usage):continue
-            cached=sum(u.get('raw',{}).get('prompt_cache_hit_tokens',0) or u.get('raw',{}).get('prompt_tokens_details',{}).get('cached_tokens',0) or 0 for u in usage)
-            total={'input_tokens':sum(u['input_tokens'] for u in usage),'output_tokens':sum(u['output_tokens'] for u in usage),'raw':{'prompt_cache_hit_tokens':cached}}
+            if any(_route(x)!=identity or db.one('SELECT run_id FROM generation_billing_group_runs WHERE run_id=?',(x['id'],)) for x in block):continue
+            total=_combined_usage([db.loads(x['usage'],{}) for x in block])
+            if total is None:continue
             proof=reconcile(before,after,total,size)
             if not proof:continue
             proof.update(run_ids=[x['id'] for x in block],per_request_costs_unknown=True,includes_prior_single_cost_evidence=True)

@@ -3,6 +3,8 @@ from fastapi import HTTPException
 from . import db,security,knowledge_units as units,document_reading as reading
 
 
+@db.read_session()
+@units.cache_inputs()
 def prepare(pid,query,sid,limit=8,max_chars=60000,findings=None,max_bytes=None):
     from .knowledge_service import search
     security.require_project(pid)
@@ -75,10 +77,19 @@ def prepare(pid,query,sid,limit=8,max_chars=60000,findings=None,max_bytes=None):
                 records.extend(rows)
                 gaps.append({'file_id':fid,'reason':'已读取旧版文档来源文本；解析完整性与语义条件尚未核对'})
                 continue
-            rows=[units.get(pid,r['unit_id'],remote=True) for r in directory['units'] if r['review_state']!='excluded']
             existing=[p for p in passages if p['file_id']==fid]
             reclaimed=sum(len(p['text']) for p in existing)
             reclaimed_bytes=sum(len(p['text'].encode('utf-8')) for p in existing)
+            # The directory already gives exact character counts. Avoid reading
+            # and decorating every unit of a document that cannot fit intact.
+            total=sum(r['characters'] for r in directory['units'] if r['review_state']!='excluded')
+            if total>remaining+reclaimed:
+                gaps.append({'file_id':fid,'reason':f'整篇候选文献为{total}字，超过本次读取预算；未将检索片段冒充全文，请在文献阅读中选择章节并核对方法、条件、结果及局限'})
+                continue
+            if byte_remaining is not None and total>byte_remaining+reclaimed_bytes:
+                gaps.append({'file_id':fid,'reason':'完整候选文献超过本次字节预算，继续查找其他完整文献；未裁剪片段'})
+                continue
+            rows=[units.get(pid,r['unit_id'],remote=True) for r in directory['units'] if r['review_state']!='excluded']
             total=sum(len(r['text']) for r in rows)
             byte_size=sum(len(r['text'].encode('utf-8')) for r in rows)
             if byte_remaining is not None and byte_size>byte_remaining+reclaimed_bytes:
@@ -99,7 +110,8 @@ def prepare(pid,query,sid,limit=8,max_chars=60000,findings=None,max_bytes=None):
     # Keep exact source IDs only when their canonical text was actually read.
     from .reference_knowledge import decorate
     file_ids={p['file_id'] for p in passages}
-    for fid in file_ids:
+    from .prompt_layout import deterministic_materials
+    for fid in sorted(file_ids) if deterministic_materials() else file_ids:
         bodies=[p['text'] for p in passages if p['file_id']==fid]
         full_document=all(p['scope']=='full_parsed_document_text' for p in passages if p['file_id']==fid)
         combined=' '.join(' '.join(text.split()) for text in bodies) if full_document else ''

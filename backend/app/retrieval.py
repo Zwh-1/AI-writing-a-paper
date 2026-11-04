@@ -7,6 +7,8 @@ _LOCK=threading.RLock();_MODELS={}
 _QUERY_VECTORS=OrderedDict()
 _RERANK_SCORES=OrderedDict()
 _DENSE_MATRICES=OrderedDict()
+_UNIT_MATRICES=OrderedDict()
+_UNIT_MATRIX_LOCKS=[threading.RLock() for _ in range(32)]
 _MODEL_LOCKS={}
 _INFERENCE_LOCKS={}
 _QUERY_LOCKS=[threading.RLock() for _ in range(32)]
@@ -201,6 +203,96 @@ def _dense_top_k(matrix,query_vector,rows,limit):
     indexes.sort(key=lambda index:(-float(scores[index]),rows[index]['id']))
     return [{**{key:value for key,value in rows[index].items() if key!='vector'},
              'semantic_score':float(scores[index])} for index in indexes]
+
+
+def _unit_vector(row,dimension):
+    """Validate numeric index rows; evidence and access decisions stay outside."""
+    import numpy as np
+    raw=row.get('vector')
+    if (type(row.get('dimension')) is not int or row['dimension']!=dimension
+            or row.get('text_hash')!=row.get('current_hash')
+            or not isinstance(raw,(bytes,bytearray,memoryview))
+            or len(raw)!=dimension*np.dtype(np.float32).itemsize):return None
+    vector=np.frombuffer(raw,dtype=np.float32)
+    if not np.isfinite(vector).all():return None
+    norm=float(np.linalg.norm(vector))
+    return (vector,norm) if math.isfinite(norm) and norm>0 else None
+
+
+def _unit_candidates(rows,dimension):
+    candidates=[];signature=hashlib.sha256()
+    fields=('unit_id','chunk_id','parse_id','file_id','file_hash','input_hash',
+            'text_hash','current_hash','dimension')
+    for row in sorted(rows,key=lambda value:(value['chunk_id'],value['unit_id'])):
+        raw=row.get('vector')
+        if (type(row.get('dimension')) is not int or row['dimension']!=dimension
+                or row.get('text_hash')!=row.get('current_hash')
+                or not isinstance(raw,(bytes,bytearray,memoryview))
+                or len(raw)!=dimension*4):continue
+        signature.update(db.dumps([row.get(field) for field in fields]).encode())
+        signature.update(hashlib.sha256(raw).digest())
+        candidates.append(row)
+    return candidates,signature.hexdigest()
+
+
+def _build_unit_matrix(rows,dimension):
+    import numpy as np
+    identities=[];vectors=[]
+    for row in rows:
+        decoded=_unit_vector(row,dimension)
+        if decoded is not None:
+            vector,norm=decoded
+            identities.append(row['unit_id']);vectors.append(vector/norm)
+    matrix=np.stack(vectors).astype(np.float32,copy=False) if vectors else np.empty((0,dimension),np.float32)
+    matrix.setflags(write=False)
+    return tuple(identities),matrix
+
+
+def _normalized_unit_matrix(pid,namespace,rows,dimension):
+    """Bounded numeric-only snapshots, independently keyed from source matrices."""
+    candidates,signature=_unit_candidates(rows,dimension)
+    key=(str(db.DB_PATH),pid,namespace,dimension,signature)
+    with _UNIT_MATRIX_LOCKS[hash(key)%len(_UNIT_MATRIX_LOCKS)]:
+        with _LOCK:
+            cached=_UNIT_MATRICES.get(key)
+            if cached is not None:
+                _UNIT_MATRICES.move_to_end(key)
+                return *cached,True
+        identities,matrix=_build_unit_matrix(candidates,dimension)
+        if matrix.nbytes<=_MATRIX_CACHE_BYTES//2:
+            with _LOCK:
+                for stale in [old for old in _UNIT_MATRICES if old[:3]==key[:3] and old!=key]:
+                    _UNIT_MATRICES.pop(stale,None)
+                _UNIT_MATRICES[key]=(identities,matrix)
+                while len(_UNIT_MATRICES)>8 or sum(value[1].nbytes for value in _UNIT_MATRICES.values())>_MATRIX_CACHE_BYTES:
+                    _UNIT_MATRICES.popitem(last=False)
+        return identities,matrix,False
+
+
+def unit_dense_scores(pid,namespace,rows,query_vector,*,cache_enabled=True,limit=100):
+    """Rank units by their best chunk, reusing no text, results or permissions."""
+    import numpy as np
+    query=np.asarray(query_vector,dtype=np.float32)
+    if query.ndim!=1 or not np.isfinite(query).all():raise ValueError('查询模型返回无效向量')
+    query_norm=float(np.linalg.norm(query))
+    if not math.isfinite(query_norm) or query_norm<=0:raise ValueError('查询模型返回无效向量')
+    if cache_enabled:
+        identities,matrix,hit=_normalized_unit_matrix(pid,namespace,rows,len(query))
+        pairs=zip(identities,matrix@(query/query_norm))
+    else:
+        # Rollback retains the previous scalar algorithm with the same row
+        # validation, one query norm and deterministic unit-ID tie breaking.
+        pairs=[];hit=False
+        for row in rows:
+            decoded=_unit_vector(row,len(query))
+            if decoded is not None:
+                vector,norm=decoded
+                pairs.append((row['unit_id'],float(vector@query/(norm*query_norm))))
+    best={}
+    for identity,score in pairs:
+        value=float(score)
+        if math.isfinite(value) and (identity not in best or value>best[identity]):best[identity]=value
+    return sorted(best.items(),key=lambda pair:(-pair[1],pair[0]))[:limit],hit
 
 
 def hybrid(pid,query,kind='research',limit=12,remote=False,force=False,knowledge=False,rerank_override=None,file_ids=None):

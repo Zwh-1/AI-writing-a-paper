@@ -4,6 +4,20 @@ ROOT=Path(__file__).resolve().parent
 sys.path.insert(0,str(ROOT/'.runtime'/'python-deps'))
 sys.path.insert(0,str(ROOT/'.runtime'/'advanced-deps'))
 sys.path.insert(0,str(ROOT/'backend'))
+
+
+def test_arguments(arguments):
+    """An explicit pytest selection must not also collect the entire suite."""
+    arguments=list(arguments)
+    selected=('--pyargs' in arguments or '--' in arguments or any(
+        not value.startswith('-') and (
+            value.partition('::')[0].endswith('.py') or
+            (ROOT/value.partition('::')[0]).exists() or
+            Path(value.partition('::')[0]).exists())
+        for value in arguments))
+    return ['-q',*arguments] if selected else [str(ROOT/'tests'),'-q',*arguments]
+
+
 if __name__=='__main__':
     mode=sys.argv[1] if len(sys.argv)>1 else 'server'
     if mode=='server':
@@ -47,11 +61,14 @@ if __name__=='__main__':
         value=json.loads(sys.stdin.read(1024*1024))
         print(json.dumps(asyncio.run(_recognize_path_native(value['path'],value.get('language','zh-Hans-CN'))),ensure_ascii=False))
     elif mode=='worker':
-        from app.tasks import run_forever
-        run_forever()
+        from app.worker_supervisor import supervise
+        raise SystemExit(supervise())
+    elif mode=='worker-child':
+        from app.worker_supervisor import run_child
+        raise SystemExit(run_child())
     elif mode=='test':
         import pytest
-        raise SystemExit(pytest.main([str(ROOT/'tests'),'-q',*sys.argv[2:]]))
+        raise SystemExit(pytest.main(test_arguments(sys.argv[2:])))
     elif mode=='seed':
         from app import db,parsers,tasks,material_quality
         db.init()

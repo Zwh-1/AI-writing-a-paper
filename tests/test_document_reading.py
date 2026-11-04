@@ -163,6 +163,83 @@ def test_oversized_document_does_not_fall_back_to_ranked_fragments(paper):
     assert any('未将检索片段冒充全文' in gap['reason'] for gap in result['gaps'])
 
 
+def test_oversized_candidate_is_rejected_before_reading_each_unit(paper,monkeypatch):
+    from app.document_preparation import prepare
+    c,pid,sid,original,parsed=paper
+    def unexpected_read(*args,**kwargs):
+        raise AssertionError('An oversized document must be rejected from its directory before unit reads')
+    monkeypatch.setattr(units,'get',unexpected_read)
+    result=prepare(pid,'验证范围',sid,max_chars=20,
+                   findings={'items':[{'file_id':original['id'],'name':original['name']}]})
+    assert not result['knowledge_units'] and not result['sources']
+    assert any('未将检索片段冒充全文' in gap['reason'] for gap in result['gaps'])
+
+
+def test_document_preparation_hashes_each_file_once_and_refreshes_next_call(paper,monkeypatch):
+    from app.document_preparation import prepare
+    c,pid,sid,original,parsed=paper
+    scans=[];original_rows=db.rows
+    def measured_rows(sql,args=()):
+        if sql.startswith('SELECT id,text,method,locator FROM sources WHERE file_id='):
+            scans.append(args[0])
+        return original_rows(sql,args)
+    monkeypatch.setattr(db,'rows',measured_rows)
+    findings={'items':[{'file_id':original['id'],'name':original['name']}]}
+    first=prepare(pid,'验证范围',sid,findings=findings)
+    assert len(first['knowledge_units'])==len(parsed['units'])>1
+    assert scans==[original['id']]
+    db.execute('UPDATE sources SET text=text||? WHERE file_id=?',('原文已更新',original['id']))
+    scans.clear()
+    second=prepare(pid,'验证范围',sid,findings=findings)
+    assert not second['knowledge_units']
+    assert scans==[original['id']]
+
+
+def test_native_rule_source_survives_unrelated_ocr_exclusion_without_bypassing_revocation(client):
+    from app import resource_refs
+    pid=project(client)
+    original,_=parsers.register_file(pid,'原生规则.pptx',synthetic_slides(),role='rules')
+    parsers.parse_file(original['id'])
+    parsed=units.build(pid,original['id'],allow_material=True)
+    native=units.get(pid,parsed['units'][0]['id'],intent='guidance')
+    page=db.one('SELECT id FROM pages WHERE file_id=? AND page_number=1',(original['id'],))
+    sid=db.uid();locator={'unit_id':native['id'],'parse_id':native['parse_id'],
+                         'unit_hash':native['content_hash'],'page':1,'read_scope':'complete_original_unit'}
+    db.execute('INSERT INTO sources VALUES(?,?,?,?,?,?,?,?,?)',
+        (sid,original['id'],page['id'],db.dumps(locator),native['text'],native['text'],'rule_context','document_rule_context',1))
+    def add_unit(parse_id,origin,text,review_state,ordinal):
+        db.execute('INSERT INTO knowledge_units(id,parse_id,ordinal,kind,text,content_hash,locator,heading_path,origin,review_state,issues) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
+            (db.uid(),parse_id,ordinal,'image_observation',text,units.digest(text),db.dumps({'page':1}),'[]',origin,review_state,'[]'))
+    add_unit(native['parse_id'],'windows_ocr','已排除的独立OCR', 'excluded',20)
+    assert not service.source_is_excluded(pid,sid)
+    ref=resource_refs.make(pid,'source',sid)
+    resource_refs.validate(pid,[ref],remote=True)
+    db.execute("UPDATE files SET egress='local_only' WHERE id=?",(original['id'],))
+    with pytest.raises(HTTPException):resource_refs.validate(pid,[ref],remote=True)
+    db.execute("UPDATE files SET egress='selected_content' WHERE id=?",(original['id'],))
+    db.execute("UPDATE pages SET review_state='not_applicable' WHERE id=?",(page['id'],))
+    assert service.source_is_excluded(pid,sid)
+    db.execute("UPDATE pages SET review_state='reviewed' WHERE id=?",(page['id'],))
+    db.set_setting('document_observation_supersessions',{sid:{'replacement_source_id':'other'}})
+    assert service.source_is_excluded(pid,sid)
+    db.set_setting('document_observation_supersessions',{})
+    # Excluding the selected unit cannot be bypassed by an identical duplicate.
+    db.execute("UPDATE knowledge_units SET review_state='excluded' WHERE id=?",(native['id'],))
+    add_unit(native['parse_id'],'pptx_slide',native['text'],'pending',21)
+    assert service.source_is_excluded(pid,sid)
+    # Rebuilding the same slide preserves an exact immutable source mapping.
+    fresh=units.build(pid,original['id'],strategy='page',allow_material=True)
+    assert fresh['id']!=native['parse_id']
+    # A clean new parse cannot restore a specifically excluded old source.
+    assert service.source_is_excluded(pid,sid)
+    db.execute("UPDATE knowledge_units SET review_state='pending' WHERE id=?",(native['id'],))
+    add_unit(fresh['id'],'windows_ocr','本轮排除的独立OCR','excluded',20)
+    assert not service.source_is_excluded(pid,sid)
+    current_id=next(r['id'] for r in fresh['units'] if r['origin']=='pptx_slide')
+    db.execute("UPDATE knowledge_units SET review_state='excluded' WHERE id=?",(current_id,))
+    assert service.source_is_excluded(pid,sid)
+
+
 def test_guidance_observation_cannot_support_project_implementation(client):
     pid=project(client);sid=section(client,pid);original=file(client,pid,'✅ 正确示例\n本文实现了证书上链功能。',role='rules')
     opened=reader.create(pid,{'file_id':original['id'],'question':'摘要应如何表述？','intent':'guidance','section_id':sid})

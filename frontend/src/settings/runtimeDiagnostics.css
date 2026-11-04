@@ -1,0 +1,8 @@
+.runtime-diagnostics > .muted { line-height: 1.8; }
+.runtime-diagnostics details { margin-top: 18px; }
+.runtime-diagnostics summary { cursor: pointer; font-size: 13px; }
+.runtime-diagnostics details p { font-size: 12px; line-height: 1.8; overflow-wrap: anywhere; }
+.runtime-cache-controls { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--line); }
+.runtime-cache-controls .field { max-width: 330px; }
+.runtime-warning { color: #9b6828; font-size: 12px; line-height: 1.8; }
+.runtime-diagnostics .data-table { font-size: 12px; }

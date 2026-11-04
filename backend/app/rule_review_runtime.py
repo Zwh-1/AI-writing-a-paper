@@ -15,8 +15,8 @@ def request_config(configuration,limit,primary=True):
         # Rule review needs the final JSON, even when general chat uses thinking.
         value['thinking_enabled']=False
         value.pop('reasoning_effort',None)
-        # Only explicit rate-limit rejections are retried by tasks._model_call.
-        value['max_attempts']=3
+        # Keep the caller's bounded attempt setting for recoverable transport failures.
+        value.setdefault('max_attempts',provider.DEFAULT['max_attempts'])
     return value
 
 

@@ -6,7 +6,7 @@ never promotes guidance, generated notes or source code into execution proof.
 from copy import deepcopy
 import time
 from fastapi import HTTPException
-from . import db, security, resource_refs as refs, material_policy as policy
+from . import db, security, resource_refs as refs, material_policy as policy, knowledge_units as units
 
 SCHEMA = 'writing.evidence_bundle.v1'
 CHANNELS = {'literature', 'guidance', 'project', 'products', 'rules'}
@@ -43,13 +43,17 @@ def _ref(pid, kind, identity, remote, **locator):
 
 
 def _preview(pid, ref, title, text, channel, remote, **extra):
-    refs.validate(pid, [ref], remote=remote)
+    # All callers resolve ref through _ref() immediately before building a
+    # preview. Revalidating an identical rule-package handle for every rule
+    # traverses all package sources hundreds of times without reading more.
     return {'id': ref['id'], 'title': title, 'source_ref': ref,
             'kind': ref['type'], 'channel': channel, 'preview_text': text[:240],
             'characters': len(text), 'read_scope': 'search_preview_not_evidence',
             'semantic_support': 'not_checked', **extra}
 
 
+@db.read_session()
+@units.cache_inputs()
 def search(pid, sid, query, *, limit=8, channels=None, source_refs=None, remote=True):
     """Discover current permitted materials; returns handles, never read receipts."""
     _, section = _section(pid, sid)
@@ -90,7 +94,10 @@ def search(pid, sid, query, *, limit=8, channels=None, source_refs=None, remote=
                 if exc.status_code not in (403, 404, 409):raise
     if 'project' in channels:
         from .writing_agent import evidence
-        rows = db.rows("SELECT id FROM evidence_items WHERE project_id=? AND validity IN ('current','historical') ORDER BY created_at DESC,id", (pid,))
+        # Literature and guidance have their own channels. Filter before get():
+        # validating thousands of unrelated imported units can exhaust a worker
+        # even though every one of those records would be discarded below.
+        rows = db.rows("SELECT id FROM evidence_items WHERE project_id=? AND validity IN ('current','historical') AND kind NOT IN ('literature','guidance_observation') ORDER BY created_at DESC,id", (pid,))
         for row in rows:
             try:
                 item = evidence.get(pid, row['id'], remote)
@@ -215,6 +222,8 @@ def _empty_patch():
                                 'document_readings', 'facts', 'research_products')}
 
 
+@db.read_session()
+@units.cache_inputs()
 def read(pid, sid, candidates, query, *, operation='generate', max_chars=24000, remote=True):
     """Resolve exact source handles. Client previews/text are never accepted."""
     _section(pid, sid); query = _query(query, 8)
@@ -304,6 +313,8 @@ def read(pid, sid, candidates, query, *, operation='generate', max_chars=24000, 
     return _finish(pid, sid, query, groups, patch, gaps, trace, remote, operation)
 
 
+@db.read_session()
+@units.cache_inputs()
 def prepare(pid, sid, query, *, operation='generate', limit=8, max_chars=24000,
             source_refs=None, channels=None, remote=True, library_context=None, guidance_context=None):
     """Prepare all writing lanes, reusing already read library/guidance contexts."""
@@ -423,6 +434,8 @@ def combine(pid, sid, bundles, query, *, operation='generate', remote=True):
     return result
 
 
+@db.read_session()
+@units.cache_inputs()
 def validate(pid, bundle, *, remote=True):
     """Fail closed on altered content, cross-project use or stale provenance."""
     if not isinstance(bundle, dict) or bundle.get('schema') != SCHEMA or bundle.get('project_id') != pid:
@@ -463,10 +476,34 @@ def for_writing(bundle):
 
 def for_model(bundle):
     """Compact catalogue; actual text is supplied once in the context patch."""
-    view = {key: deepcopy(bundle[key]) for key in ('schema', 'bundle_id', 'project_id', 'section_id', 'query', 'coverage', 'complete')}
-    for name in ('constraints', 'primary_evidence', 'guidance', 'derived_context'):
-        view[name] = [{key: deepcopy(value) for key, value in item.items() if key != 'text'} for item in bundle[name]]
-    view['gaps'] = deepcopy(bundle['gaps'])
+    view = {key: deepcopy(bundle[key]) for key in ('schema', 'bundle_id', 'section_id', 'coverage', 'complete')}
+    view['coverage']={key:value for key,value in view['coverage'].items() if key!='characters'}
+    fields={'id','title','source_ref','kind','conditions','reference_ids','read_scope','file_id','material_use'}
+    # Every applicable rule points at the same immutable rule-package version.
+    # Keep that provenance once; full rule statements already have their own
+    # mandatory context field and the sealed bundle stays in the local manifest.
+    constraint_sources={};constraint_groups={};view['constraints']=[]
+    for item in bundle['constraints']:
+        if item.get('rule_id'):
+            ref=item['source_ref'];constraint_sources[(ref['type'],ref['id'],ref['version'])]=deepcopy(ref)
+            key=(ref['type'],ref['id'],ref['version'],item.get('modality'),db.dumps(item.get('conditions',[])))
+            if key not in constraint_groups:
+                group={name:deepcopy(item[name]) for name in ('modality','conditions') if item.get(name)}
+                group['rule_ids']=[];constraint_groups[key]=group;view['constraints'].append(group)
+            if item['rule_id'] not in constraint_groups[key]['rule_ids']:
+                constraint_groups[key]['rule_ids'].append(item['rule_id'])
+        else:
+            view['constraints'].append({key:deepcopy(value) for key,value in item.items() if key in fields and value not in (None,[],{})})
+    if constraint_sources:view['constraint_sources']=list(constraint_sources.values())
+    for name in ('primary_evidence', 'guidance', 'derived_context'):
+        view[name] = [{key: deepcopy(value) for key, value in item.items() if key in fields and value not in (None,[],{})} for item in bundle[name]]
+        for item in view[name]:
+            if item.get('source_ref'):
+                item['source_ref']={key:value for key,value in item['source_ref'].items() if key in ('type','id','version')}
+    omitted_reason='请求打包后原文未提供，不允许用于本次正文'
+    omitted=[gap for gap in bundle['gaps'] if gap.get('reason')==omitted_reason]
+    view['gaps'] = [deepcopy(gap) for gap in bundle['gaps'] if gap.get('reason')!=omitted_reason]
+    if omitted:view['gaps'].append({'reason':omitted_reason,'deferred_items':len(omitted)})
     view['policy'] = '目录仅说明本次素材范围；具体原文位于sources/knowledge_units/project_evidence/research_products，未提供原文的项不能作为事实依据。指导资料不能证明本项目成果。'
     return view
 

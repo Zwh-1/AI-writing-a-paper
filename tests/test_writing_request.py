@@ -6,6 +6,8 @@ from test_workbench import client, project, manual_package, section
 from app import db, provider, tasks, security, summary_billing as billing
 from app import knowledge_service
 from app.writing_request import pack
+from app.writing_request import FORMAT_REPAIR_INPUT_RESERVE
+from app.source_payload import token_upper_bound
 
 
 def readings(text='原文的适用条件及否定必须保留。', selected=False, explicit=False):
@@ -31,6 +33,17 @@ def request(knowledge):
             'evidence_gaps':knowledge['gaps'],'writing_examples':[]}
 
 
+def actual_markdown_repair_suffix():
+    raw='# 第一章 绪论\n\n'+('这一段是模型返回的论文正文，但没有使用约定的JSON对象。'*12)
+    candidate,_,problem=tasks.candidate_from_text(raw)
+    assert candidate is None and 'JSON解析失败' in problem
+    suffix=('\n\n章节响应校验发现以下问题：'+problem+
+            '。请依据相同上下文重新生成完整章节候选。只返回合法JSON对象，顶层必须包含非空paragraphs数组，'
+            '至少一个段落的text必须是非空字符串；不要返回Markdown、代码围栏或解释。')
+    assert 1024<len(suffix.encode('utf-8'))<=FORMAT_REPAIR_INPUT_RESERVE
+    return suffix
+
+
 def test_identical_source_text_is_sent_once_and_full_unit_is_preserved():
     knowledge=readings('完整文献原文及否定条件。'*100)
     original=deepcopy(knowledge);context=request(knowledge)
@@ -41,6 +54,61 @@ def test_identical_source_text_is_sent_once_and_full_unit_is_preserved():
     assert 'recognition' not in db.dumps(context)
     assert report['loaded_unit_ids']==['unit'] and not report['deferred_documents']
     assert knowledge==original
+
+
+def test_format_repair_headroom_defers_only_optional_evidence_and_keeps_real_capacity():
+    initial_knowledge=readings('必须完整保留的选定原文。',selected=True)
+    initial_context=request(initial_knowledge)
+    initial_context['project_evidence']=[{'id':'optional','payload':{'text':'额外自动观察。'*500}}]
+    initial_context['automatic_project_evidence_ids']=['optional']
+    probe=deepcopy(initial_context);knowledge=deepcopy(initial_knowledge)
+    unrestricted=pack(probe,knowledge,'写作',{'context_limit':100000,'max_output_tokens':1000})
+    actual_limit=unrestricted['input_upper_bound']+1000+100
+    context=deepcopy(initial_context);knowledge=deepcopy(initial_knowledge)
+    cfg={'context_limit':actual_limit,'max_output_tokens':1000,
+         'reserved_followup_input':FORMAT_REPAIR_INPUT_RESERVE}
+    report=pack(context,knowledge,'写作',cfg)
+    assert cfg['context_limit']==report['context_limit']==actual_limit
+    assert report['packing_context_limit']==actual_limit-FORMAT_REPAIR_INPUT_RESERVE
+    assert report['reserved_followup_input']==FORMAT_REPAIR_INPUT_RESERVE
+    assert not context['project_evidence']
+    assert context['knowledge_units'][0]['text']=='必须完整保留的选定原文。'
+    assert context['rules']==initial_context['rules']
+    suffix=actual_markdown_repair_suffix()
+    assert len(suffix.encode('utf-8'))<=FORMAT_REPAIR_INPUT_RESERVE
+    assert token_upper_bound('写作'+suffix,db.dumps(context))+report['reserved_output']<=actual_limit
+    assert report['input_upper_bound']+report['reserved_output']+FORMAT_REPAIR_INPUT_RESERVE<=actual_limit
+
+
+def test_longer_format_retry_passes_the_real_stage_budget_check(client,monkeypatch):
+    from app.writing_flow import _cached_call
+    knowledge=readings('必须完整保留的选定原文。',selected=True);context=request(knowledge)
+    context['project_evidence']=[{'id':'optional','payload':{'text':'额外自动观察。'*500}}]
+    context['automatic_project_evidence_ids']=['optional']
+    probe=deepcopy(context)
+    baseline=pack(probe,deepcopy(knowledge),'写作',{'context_limit':100000,'max_output_tokens':1000})
+    limit=baseline['input_upper_bound']+1000+100
+    report=pack(context,knowledge,'写作',{'context_limit':limit,'max_output_tokens':1000,
+                                       'reserved_followup_input':FORMAT_REPAIR_INPUT_RESERVE})
+    cfg={**provider.config(),'context_limit':limit,'max_output_tokens':1000}
+    db.set_setting('provider',cfg)
+    pid=project(client);task=tasks.enqueue(pid,'write',{})
+    db.execute("UPDATE tasks SET status='running',attempt=1 WHERE id=?",(task['id'],))
+    task=db.one('SELECT * FROM tasks WHERE id=?',(task['id'],))
+    requests=[]
+    def call(task,system,user,manifest):
+        size=token_upper_bound(system,user)+manifest['request_options']['max_output_tokens']
+        assert size<=limit
+        requests.append(size)
+        return {'text':'仅供预算测试，不作为正文'}
+    monkeypatch.setattr(tasks,'model_call',call)
+    manifest={'request_options':{'max_output_tokens':1000},'context_budget':report}
+    _cached_call(task,'写作',context,manifest,stage='draft')
+    suffix=actual_markdown_repair_suffix()
+    _cached_call(task,'写作'+suffix,context,manifest,stage='candidate_format_repair',index=2)
+    assert len(requests)==2 and requests[1]>requests[0]
+    assert provider.config()['context_limit']==limit
+    assert not db.rows('SELECT id FROM generation_runs WHERE task_id=?',(task['id'],))
 
 
 def test_large_derived_navigation_is_deferred_before_actual_automatic_reading():
@@ -70,6 +138,31 @@ def test_large_automatic_document_is_deferred_whole_with_exact_coverage():
     assert not report['loaded_unit_ids'] and not report['loaded_source_ids']
     assert '已提供该文献' not in db.dumps(context['evidence_gaps'])
     assert context['evidence_gaps'][0]['kind']=='automatic_document_deferred'
+
+
+def test_deferred_document_catalogue_does_not_keep_consuming_request_budget():
+    knowledge=readings('完整原文不得截断。'*4000)
+    context=request(knowledge)
+    catalogue={'constraints':[{'rule_id':'mandatory','modality':'mandatory'}],
+        'primary_evidence':[{'source_ref':{'type':'unit','id':'unit'},'title':'资料目录说明。'*2000}],
+        'guidance':[],'derived_context':[],'coverage':{'resolved_items':2,'characters':30000},'complete':True,'gaps':[]}
+    context['evidence_bundle']=deepcopy(catalogue)
+    report=pack(context,knowledge,'写作',{'context_limit':8000,'max_output_tokens':1000})
+    assert context['knowledge_units']==[] and context['evidence_bundle']['primary_evidence']==[]
+    assert context['evidence_bundle']['constraints']==catalogue['constraints']
+    assert not context['evidence_bundle']['complete']
+    assert context['evidence_bundle']['coverage']['resolved_items']==1
+    assert catalogue['primary_evidence'] and report['input_upper_bound']+1000<=8000
+
+
+@pytest.mark.parametrize('limit',[3000,3250,3500,3750,4000,4250,4500])
+def test_optional_evidence_deferral_receipts_also_fit_request_budget(limit):
+    knowledge=readings('文献方法与条件。');context=request(knowledge)
+    context['project_evidence']=[{'id':f'auto-{i}','payload':{'text':'自动补充观察。'*50}} for i in range(6)]
+    context['automatic_project_evidence_ids']=[r['id'] for r in context['project_evidence']]
+    report=pack(context,knowledge,'写作',{'context_limit':limit,'max_output_tokens':500})
+    assert report['input_upper_bound']+500<=limit
+    assert context['rules']=='[mandatory] 必须保留限定与否定。'
 
 
 @pytest.mark.parametrize('selected,explicit',[(True,False),(False,True)])

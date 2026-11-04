@@ -25,7 +25,7 @@ def configure_pool(client, pid, endpoints, strategy=None):
     assert client.put('/api/v1/settings', json={'api_key': 'fake-primary-key',
                                                 'provider': {'base_url': 'https://ds.example/v1',
                                                              'model': 'deepseek-test',
-                                                             'max_attempts': 1}}).status_code == 200
+                                                             'max_attempts': 5}}).status_code == 200
     body = {'endpoints': endpoints}
     if strategy:
         body['strategy'] = strategy

@@ -44,3 +44,7 @@ docs/**
 
 # Build copies of formula fonts come from the pinned npm dependency.
 frontend/public/mathlive-fonts/
+
+# Generated public build identities are attached to artifacts, not source commits.
+/build-info.json
+/frontend/public/build-info.json

@@ -3,6 +3,7 @@ import multiprocessing
 import os
 import runpy
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -24,17 +25,29 @@ def main():
     runner=next((i for i,value in enumerate(sys.argv) if value.endswith('runner.py')),None)
     if runner is not None:
         sys.argv=[str(bundle/'runner.py'),*sys.argv[runner+1:]];runpy.run_path(str(bundle/'runner.py'),run_name='__main__');return
-    from app import db,security,tasks,config
+    from app import db,security,config
     db.init();port=int(os.environ.get('PAPER_PORT','8765'))
     with socket.socket() as probe:
         try:probe.bind(('127.0.0.1',port))
         except OSError:raise RuntimeError('端口已被占用，请关闭已运行的工作台或设置 PAPER_PORT。')
-    threading.Thread(target=tasks.run_forever,daemon=True).start()
+    # Keep watchdog/native-library failures in a separate supervised worker;
+    # os._exit in a worker must never terminate this browser server process.
+    worker_command=[sys.executable,str(bundle/'runner.py'),'worker'] if getattr(sys,'frozen',False) else [sys.executable,'-X','utf8',str(bundle/'runner.py'),'worker']
+    worker_environment={**os.environ,'PAPER_WORKER_MONITOR_PARENT':'1'}
+    worker=subprocess.Popen(worker_command,env=worker_environment,
+        stdin=subprocess.DEVNULL if os.name=='nt' else subprocess.PIPE,
+        creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
     def open_browser():
         if os.environ.get('PAPER_NO_BROWSER')=='1':return
         time.sleep(1.5);webbrowser.open(f'http://127.0.0.1:{port}/#token={security.BOOTSTRAP_TOKEN}')
     threading.Thread(target=open_browser,daemon=True).start()
     import uvicorn
-    uvicorn.run('app.main:app',host='127.0.0.1',port=port,log_level='warning')
+    try:uvicorn.run('app.main:app',host='127.0.0.1',port=port,log_level='warning')
+    finally:
+        if worker.stdin is not None:worker.stdin.close()
+        if worker.poll() is None:
+            worker.terminate()
+            try:worker.wait(timeout=8)
+            except subprocess.TimeoutExpired:worker.kill();worker.wait()
 
 if __name__=='__main__':main()

@@ -75,6 +75,8 @@ def _initialize():
 def settings():
     _initialize()
     result = pool.settings()
+    from . import official_api_policy
+    result['official_api_policy'] = official_api_policy.status()
     result.update(active_endpoint_id=pool.config().get('active_endpoint_id'),
                   max_endpoints=MAX_PROFILES)
     for ep in result['endpoints']:
@@ -345,6 +347,18 @@ def inspect_endpoint(eid, kind):
 @router.get('/settings')
 def get_settings():
     return settings()
+
+
+@router.get('/official-api-policy')
+def get_official_api_policy():
+    from . import official_api_policy
+    return official_api_policy.status()
+
+
+@router.put('/official-api-policy')
+def save_official_api_policy(body: dict):
+    from . import official_api_policy
+    return official_api_policy.save(body)
 
 
 @router.put('/strategy')

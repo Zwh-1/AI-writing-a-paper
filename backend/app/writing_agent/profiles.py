@@ -7,7 +7,11 @@ OPTIONS={'max_output_tokens','context_limit','timeout_seconds','thinking_enabled
 def resolve_config(configuration):
     route=configuration.get('route','primary')
     if route not in ('primary','gpt'):fail('INVALID_ROUTE','模型路线无效')
-    cfg=dict(model_routing.config() if route=='gpt' else provider.config());key=security.get_key('gpt-fallback' if route=='gpt' else '')
+    scoped=provider._REQUEST.get() or {}
+    matching_scope=bool(scoped and ((route=='gpt' and scoped.get('route')=='gpt') or
+                                    (route=='primary' and scoped.get('route') in (None,'deepseek'))))
+    cfg=dict(scoped['config'] if matching_scope else model_routing.config() if route=='gpt' else provider.config())
+    key=scoped['key'] if matching_scope else security.get_key('gpt-fallback' if route=='gpt' else '')
     for name in ('max_output_tokens','context_limit','timeout_seconds'):
         if name in configuration:
             value=configuration[name]
@@ -21,7 +25,7 @@ def resolve_config(configuration):
     if effort is not None:
         if effort not in ('low','medium','high','max'):fail('INVALID_PROFILE','推理强度无效')
         cfg['reasoning_effort']=effort
-    cfg.update(max_attempts=1,streaming=False,json_mode=True,tool_mode=configuration.get('tool_mode','json'))
+    cfg.update(streaming=False,json_mode=True,tool_mode=configuration.get('tool_mode','json'))
     if 'reconcile_billing' in configuration:
         if type(configuration['reconcile_billing']) is not bool:fail('INVALID_PROFILE','账单核对开关无效')
         cfg['reconcile_billing']=configuration['reconcile_billing']

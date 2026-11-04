@@ -16,6 +16,8 @@ from .api.v2 import install as install_api_v2
 @asynccontextmanager
 async def lifespan(app):
     db.init()
+    from .runtime_identity import loaded
+    loaded('server')
     session_directory=Path(os.environ.get('PAPER_SESSION_DIR',str(ROOT/'.runtime')))
     session_directory.mkdir(parents=True,exist_ok=True)
     (session_directory/f'session-{PORT}.json').write_text(db.dumps({'port':PORT,'bootstrap_token':security.BOOTSTRAP_TOKEN,'pid':os.getpid(),'data_directory':str(DATA)}),encoding='utf-8')
@@ -50,7 +52,12 @@ async def value_error(req,e): return JSONResponse({'detail':security.redact(e)},
 @app.exception_handler(provider.ProviderError)
 async def upstream_error(req,e): return JSONResponse({'detail':security.redact(e),'outcome_unknown':e.unknown},502)
 @app.get('/api/v1/health')
-def health(): return {'status':'ok','version':APP_VERSION,'key_configured':security.key_status()['configured']}
+def health():
+    from .runtime_identity import loaded
+    identity=loaded('server')
+    return {'status':'ok','version':APP_VERSION,'key_configured':security.key_status()['configured'],
+            'build_id':identity['build_id'],'loaded_at':identity['loaded_at'],
+            'capabilities':identity['capabilities'],'health_scope':'http_liveness'}
 @app.post('/api/v1/session')
 def session(body:dict,request:Request):
     token=body.get('token','')
@@ -727,7 +734,7 @@ def save_settings(body:dict):
     if not 15<=float(cfg['timeout_seconds'])<=3600:raise HTTPException(422,'请求超时应在15至3600秒之间')
     if not 0<float(cfg['max_request_cost'])<=1000000:raise HTTPException(422,'单次预留费用必须为正数')
     if not 512<=int(cfg['context_limit'])<=2000000:raise HTTPException(422,'应用上下文预算范围无效')
-    if not 1<=int(cfg.get('max_attempts',3))<=3:raise HTTPException(422,'自动尝试次数应在1至3之间')
+    if type(cfg.get('max_attempts',5)) is not int or not 1<=cfg.get('max_attempts',5)<=5:raise HTTPException(422,'最多尝试次数（含首次）应为1至5的整数')
     cfg['base_url']=url;cfg={k:v for k,v in cfg.items() if k in provider.DEFAULT}
     if 'api_key' in body:
         if not isinstance(body['api_key'],str):raise HTTPException(422,'API key必须是单行文字')

@@ -8,6 +8,7 @@ export type TaskHandle = {
   status: string;
   progress: number;
   phase?: string;
+  observation_error?: string;
   error?: string;
   result?: unknown;
 };
@@ -76,10 +77,25 @@ export function observeTask(id: string): Promise<TaskHandle> {
   const old = observing.get(id);
   if (old) return old;
   const work = (async () => {
+    let failures = 0;
     for (;;) {
-      const value = (await api(
-        "/tasks/" + encodeURIComponent(id),
-      )) as TaskHandle;
+      let value: TaskHandle;
+      try {
+        value = (await api("/tasks/" + encodeURIComponent(id), { timeout: 10000 })) as TaskHandle;
+        failures = 0;
+      } catch (failure) {
+        const status = (failure as { status?: number }).status;
+        if (status === 401 || status === 403 || status === 404) throw failure;
+        failures += 1;
+        const saved = current.get(id);
+        if (saved) {
+          const observed = { ...saved, observation_error: "进度连接暂时中断，正在重连；任务仍可能继续执行。" };
+          listeners.get(id)?.forEach(fn => fn(observed));
+        }
+        // Retry this read only. Never replay the command that created a task.
+        await new Promise(resolve => setTimeout(resolve, Math.min(10000, 900 * 2 ** Math.min(failures, 4))));
+        continue;
+      }
       if (!isTask(value)) throw new Error("任务接口返回了无效任务");
       current.set(id, value);
       listeners.get(id)?.forEach((fn) => fn(value));

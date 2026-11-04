@@ -4,6 +4,7 @@ import AssetWorkspace from './assets/AssetWorkspace';
 import ProductLink from './products/ProductLink';
 import ResearchSettings from './settings/ResearchSettings';
 import ResearchSync from './settings/ResearchSync';
+import RuntimeDiagnostics from './settings/RuntimeDiagnostics';
 import {useTask} from './tasks/useCommand';
 import SentenceLocator from "./SentenceLocator";
 import WritingSources from "./WritingSources";
@@ -1761,6 +1762,9 @@ const ThesisTable = Table.extend({
       caption: { default: "", parseHTML: (element: HTMLElement) => element.getAttribute("data-caption") || "", renderHTML: (attrs: Row) => ({ "data-caption": attrs.caption }) },
       note: { default: "", parseHTML: (element: HTMLElement) => element.getAttribute("data-note") || "", renderHTML: (attrs: Row) => ({ "data-note": attrs.note }) },
       artifactId: { default: null, parseHTML: (element: HTMLElement) => element.getAttribute("data-table-artifact"), renderHTML: (attrs: Row) => attrs.artifactId ? ({ "data-table-artifact": attrs.artifactId }) : ({}) },
+      columnWidths: { default: null, renderHTML: () => ({}) },
+      fontSize: { default: null, renderHTML: () => ({}) },
+      bodyAlignment: { default: null, renderHTML: () => ({}) },
     };
   },
 });
@@ -1772,6 +1776,7 @@ const Figure = Node.create({
     return {
       artifactId: { default: "" },
       assetVersionId: { default: "" },
+      svgSha256: { default: null, renderHTML: () => ({}) },
       caption: { default: "" },
       nodeId: { default: null },
       diagramType: { default: "" }, figurePurpose: { default: "" }, explanationNodeId: { default: "" }, relatedSectionIds: { default: [] },
@@ -3680,6 +3685,7 @@ function SettingsPage() {
       <DeepSeekSettings onChanged={refresh} />
       <GptFallbackSettings pid={pid} />
       <ImageGenerationSettings />
+      <RuntimeDiagnostics pid={pid} />
       <ResearchSettings key={pid} pid={pid} files={[]} onRefresh={async()=>{refresh();}}/>
       <ResearchSync key={pid} pid={pid}/>
       <div className="settings-layout">

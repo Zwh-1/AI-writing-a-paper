@@ -1,16 +1,24 @@
 import hashlib,time,threading,traceback,base64,mimetypes,sqlite3,os,re,json
 from copy import deepcopy
+from contextlib import nullcontext
 from fastapi import HTTPException
 from pydantic import ValidationError
 from . import db,parsers,rules,documents,provider
 from .schemas import SectionCandidate,OutlineCandidate
 from .summary_billing import BudgetExceeded,key_hash
 from .security import require_project,require_section,safe_object,redact,put_blob
+from .process_exit import exit_immediately
 STOP=threading.Event()
 def event(tid,phase,progress=0,detail=None):
     from .paper_writing import map_progress
     phase,progress=map_progress(tid,phase,progress)
-    db.execute('UPDATE tasks SET phase=?,progress=MAX(progress,?),heartbeat=?,lease_until=?,updated_at=? WHERE id=?',(phase,progress,time.time(),time.time()+60,db.now(),tid))
+    from .task_transitions import expected_attempt
+    attempt=expected_attempt(tid)
+    with db.transaction() as connection:
+        cursor=connection.execute('UPDATE tasks SET phase=?,progress=MAX(progress,?),heartbeat=?,lease_until=?,updated_at=? WHERE id=?'+
+            (' AND attempt=? AND status=\'running\'' if attempt is not None else ''),
+            (phase,progress,time.time(),time.time()+60,db.now(),tid,*((attempt,) if attempt is not None else ())))
+        if cursor.rowcount==0 and attempt is not None:raise InterruptedError('旧任务代次不能更新当前进度')
     state=db.one('SELECT progress FROM tasks WHERE id=?',(tid,))
     if state:progress=state['progress']
     db.execute('INSERT INTO task_events(task_id,event_type,payload,created_at) VALUES(?,?,?,?)',(tid,'progress',db.dumps({'phase':phase,'progress':progress,'detail':detail}),db.now()))
@@ -39,7 +47,15 @@ def enqueue(pid,kind,payload,key=None):
             if old:
                 if old['input_hash']!=digest: raise HTTPException(409,'同一幂等键不能对应不同任务')
                 return dict(old)
+        from .runtime_identity import is_draining
+        if is_draining():
+            from .task_transitions import active_owner
+            owner=active_owner()
+            if not owner or owner['project_id']!=pid:
+                raise HTTPException(409,'执行器正在排空任务，暂不接受新任务；已有检查点和未知请求保持不变')
         tid=db.uid();stamp=db.now()
+        from .ai_cache_policy import freeze_payload
+        payload=freeze_payload(kind,payload)
         c.execute('INSERT INTO tasks(id,project_id,kind,payload,idempotency_key,input_hash,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)',(tid,pid,kind,db.dumps(payload),key,digest,stamp,stamp))
     return db.one('SELECT * FROM tasks WHERE id=?',(tid,))
 def writing_preflight(pid,payload):
@@ -69,9 +85,22 @@ def writing_preflight(pid,payload):
 
 def model_call(task,system,user,manifest,images=None):
     from .model_routing import call
-    return call(_model_call,task,system,user,manifest,images)
+    # Data-only writers can enter through this common path. Native agent
+    # histories are prepared by their adapter and must keep message/tool order.
+    from . import prompt_layout
+    if prompt_layout.enabled(task) and manifest.get('prompt_layout_version')!='cache_v2' and not manifest.get('agent_transport'):
+        context=db.loads(user,None)
+        if isinstance(context,dict):
+            system,context,metadata=prompt_layout.prepare(task,system,context,
+                manifest.get('writing_stage',manifest.get('stage',task['kind'])),
+                index=manifest.get('writing_unit_index',0))
+            user=db.dumps(context);manifest={**manifest,**metadata}
+    from .request_execution import logical_scope
+    with provider.attempt_budget(5),logical_scope():
+        return call(_model_call,task,system,user,manifest,images)
 
 @provider.frozen_request
+@provider.with_attempt_budget
 def _model_call(task,system,user,manifest,images=None):
     from .expense_evidence import resolve_config
     snapshot=provider._REQUEST.get()
@@ -79,57 +108,112 @@ def _model_call(task,system,user,manifest,images=None):
     with provider.request_scope(cfg,snapshot['key'],route=snapshot.get('route')):
         return _metered_model_call(task,system,user,manifest,images)
 
+@db.read_session()
+def _validate_model_source_inputs(pid,manifest):
+    from .knowledge_units import cache_inputs
+    # Batch original hashes only during this preflight; do not retain unit
+    # objects or permissions across budget reservation or a later send check.
+    with cache_inputs(fresh=True):
+        from .section_materials import validate as validate_materials
+        validate_materials(pid,manifest.get('section_materials'),remote=True)
+        if manifest.get('evidence_bundle'):
+            from .writing_retrieval import validate as validate_bundle
+            validate_bundle(pid,manifest['evidence_bundle'],remote=True)
+        if manifest.get('resource_refs'):
+            from .resource_refs import validate as validate_resources
+            validate_resources(pid,manifest['resource_refs'],remote=True)
+        if manifest.get('knowledge_refs'):
+            from .knowledge_lineage import validate_refs
+            validate_refs(pid,manifest['knowledge_refs'],remote=True)
+        from .knowledge_units import get as get_knowledge_unit
+        from .knowledge_service import source_is_excluded
+        from .document_reading import context as reading_context
+        for identity,version in manifest.get('document_reading_versions',{}).items():
+            reading=reading_context(pid,identity,remote=True)
+            if reading['version']!=version:raise ValueError('发送前文献阅读范围已变化，请重新准备依据')
+        for uid,version in manifest.get('knowledge_unit_versions',{}).items():
+            item=get_knowledge_unit(pid,uid,remote=True)
+            if item['content_hash']!=version:raise ValueError('发送前证据版本已变化，请重新读取')
+        for scope in manifest.get('knowledge_read_scopes',{}).values():
+            for uid in scope.get('passage_ids',[]):get_knowledge_unit(pid,uid,remote=True)
+        if any(source_is_excluded(pid,sid) for sid in manifest.get('source_ids',[])):
+            raise ValueError('发送前来源已被排除，不能继续使用旧检索片段')
+
+
+@db.read_session()
+def _validate_model_presend(task,manifest):
+    from .knowledge_units import cache_inputs
+    # This is a fresh phase after reservation, ending before events or network.
+    with cache_inputs(fresh=True):
+        pid=task['project_id']
+        if manifest.get('live_input_versions') is not None:
+            from .writing_live import validate as validate_live
+            validate_live(pid,manifest,task['id'])
+        if task['kind']=='write_paper':
+            from .paper_writing import validate_request
+            validate_request(task)
+        if manifest.get('visual_context'):
+            from .paper_visuals import check_context
+            check_context(pid,manifest['visual_context'])
+        if manifest.get('abstract_translation'):
+            from .abstract_translation import check_source
+            check_source(pid,manifest['abstract_translation'])
+        if manifest.get('writing_state',{}).get('continuity_outline_hash'):
+            from .writing_agent.impact import check_manifest
+            conflicts=check_manifest(pid,manifest['writing_state'])
+            if conflicts:raise ValueError('写作上下文已变化，请重新生成：'+'、'.join(conflicts))
+        if manifest.get('operation')=='polish':
+            from .writing_agent.provenance import revision_permissions
+            revision_permissions(pid,manifest['base_revision_id'])
+        if manifest.get('knowledge_refs'):
+            from .knowledge_lineage import validate_refs
+            validate_refs(pid,manifest['knowledge_refs'],remote=True)
+        for fid in manifest.get('file_ids',[]):
+            f=db.one('SELECT * FROM files WHERE id=? AND project_id=?',(fid,pid))
+            if not f or not __import__('app.security',fromlist=['file_allows_remote']).file_allows_remote(fid,pid): raise ValueError('资料或派生内容当前禁止外发')
+
+
 def _metered_model_call(task,system,user,manifest,images=None):
+    from .model_routing import _check_cancelled
+    _check_cancelled(task)
     cfg=provider.config();p=require_project(task['project_id']);
+    from .official_api_policy import assert_allowed
+    assert_allowed(cfg)
+    if provider.attempts_remaining()<=0:
+        limit=min(max(int(cfg.get('max_attempts',5)),1),5)
+        error=provider.ProviderError(f'模型请求已尝试{provider.attempts_used()}/{limit}次，机会已用尽；未发送新的请求。')
+        error.code='MODEL_ATTEMPTS_EXHAUSTED';error.attempt_budget_exhausted=True
+        raise error
     from .expense_evidence import preflight
-    from .section_materials import validate as validate_materials
-    validate_materials(p['id'],manifest.get('section_materials'),remote=True)
-    if manifest.get('evidence_bundle'):
-        from .writing_retrieval import validate as validate_bundle
-        validate_bundle(p['id'],manifest['evidence_bundle'],remote=True)
-    if manifest.get('resource_refs'):
-        from .resource_refs import validate as validate_resources
-        validate_resources(p['id'],manifest['resource_refs'],remote=True)
-    if manifest.get('knowledge_refs'):
-        from .knowledge_lineage import validate_refs
-        validate_refs(p['id'],manifest['knowledge_refs'],remote=True)
-    from .knowledge_units import get as get_knowledge_unit
-    from .knowledge_service import source_is_excluded
-    from .document_reading import context as reading_context
-    for identity,version in manifest.get('document_reading_versions',{}).items():
-        reading=reading_context(p['id'],identity,remote=True)
-        if reading['version']!=version:raise ValueError('发送前文献阅读范围已变化，请重新准备依据')
-    for uid,version in manifest.get('knowledge_unit_versions',{}).items():
-        item=get_knowledge_unit(p['id'],uid,remote=True)
-        if item['content_hash']!=version:raise ValueError('发送前证据版本已变化，请重新读取')
-    for scope in manifest.get('knowledge_read_scopes',{}).values():
-        for uid in scope.get('passage_ids',[]):get_knowledge_unit(p['id'],uid,remote=True)
-    if any(source_is_excluded(p['id'],sid) for sid in manifest.get('source_ids',[])):
-        raise ValueError('发送前来源已被排除，不能继续使用旧检索片段')
+    from .budget_usage import charge,charge_tasks
+    _validate_model_source_inputs(p['id'],manifest)
     from .source_payload import token_upper_bound
     from .summary_billing import request_reservation
     if token_upper_bound(system,user)+int(cfg.get('max_output_tokens',8192))>int(cfg.get('context_limit',100000)):raise ValueError('上下文超过本次接口快照的预算，强制规则未被丢弃')
     rid=db.uid();reservation,cost_evidence=request_reservation(cfg,system,user)
+    from .execution_policy import check_stage
+    check_stage(task,manifest,reservation)
     manifest={**manifest,'cost_evidence':cost_evidence,'request_characters':len(system)+len(user)}
     with db.transaction() as c:
+        check_stage(task,manifest,reservation)
         pricing_basis=preflight(p['id'],cfg,provider._REQUEST.get()['key'],images=bool(images),task=task,reservation=reservation)
         if pricing_basis:manifest['expense_pricing_basis']=pricing_basis
         if pricing_basis and pricing_basis.get('paid_testing'):
             manifest['paid_testing_allocation_id']=pricing_basis['paid_testing']['allocation_id']
-        used=c.execute("SELECT COALESCE(SUM(budget_charge),0) FROM generation_budget_usage WHERE project_id=? AND status NOT IN ('rejected','failed_before_send')",(p['id'],)).fetchone()[0]
+        used=charge(p['id'])
         project_ceiling=p['budget']+(pricing_basis['paid_testing']['limit'] if pricing_basis and pricing_basis.get('paid_testing') else 0)
         if used+reservation>project_ceiling: raise BudgetExceeded(f'项目预算不足：已知费用及预留{used:.2f}，本次预留{reservation:.2f}；可核对服务商账单释放多余预留')
         if task['kind']=='write_paper':
             cap=db.loads(task['payload'],{})['budget_limit']
-            charged=c.execute("SELECT COALESCE(SUM(COALESCE(cost,reserved)),0) FROM generation_runs WHERE task_id=? AND status NOT IN ('rejected','failed_before_send')",(task['id'],)).fetchone()[0]
+            charged=charge(p['id'],task_id=task['id'])
             if charged+reservation>cap:raise BudgetExceeded('整篇写作已达到本次总预算；已保存全部完成候选，调整预算后可继续，无需重新生成已完成内容')
         if manifest.get('knowledge_operation'):
             import math
             cap=db.loads(task.get('payload'),{}).get('budget_limit',p['budget'])
             if isinstance(cap,bool) or not isinstance(cap,(int,float)) or not math.isfinite(cap) or cap<0:raise ValueError('知识任务预算必须为非负有限数值')
             scope_id=manifest.get('knowledge_budget_scope_id',task['id'])
-            charge=c.execute("SELECT COALESCE(SUM(COALESCE(cost,reserved)),0) FROM generation_runs WHERE project_id=? AND (task_id=? OR json_extract(manifest,'$.knowledge_budget_scope_id')=?) AND status NOT IN ('rejected','failed_before_send')",(p['id'],scope_id,scope_id)).fetchone()[0]
-            if charge+reservation>cap:raise BudgetExceeded('本次知识任务预算不足，已保存原文读取和完成批次')
+            scope_charge=charge_tasks(p['id'],[scope_id],manifest_scope=('knowledge_budget_scope_id',scope_id))
+            if scope_charge+reservation>cap:raise BudgetExceeded('本次知识任务预算不足，已保存原文读取和完成批次')
         for field,table in (('writing_session_id','writing_sessions'),('diagnostic_run_id','diagnostic_runs'),('diagnostic_comparison_id','diagnostic_comparisons')):
             identity=manifest.get(field)
             if identity:
@@ -166,43 +250,32 @@ def _metered_model_call(task,system,user,manifest,images=None):
             manifest['remote_actor']=remote_actor
         manifest['client_request_id']=rid
         manifest['credential_hash']=key_hash(provider._REQUEST.get()['key']);manifest['provider']={k:v for k,v in cfg.items()};manifest['prompt_version']=task['kind']+':'+hashlib.sha256(system.encode()).hexdigest()[:12];manifest['system_prompt_blob']=put_blob(system.encode());manifest['outgoing_context_hash']=hashlib.sha256((system+'\n'+user).encode()).hexdigest()
+        from .ai_request_cache import wire_key
+        from . import prompt_layout
+        payload=db.loads(task.get('payload'),{})
+        manifest.setdefault('prompt_layout_version',prompt_layout.version(task))
+        manifest.setdefault('model_view_version',payload.get('model_view_version','legacy'))
+        manifest['ai_wire_fingerprint']=wire_key(task,system,user,manifest,cfg,manifest['credential_hash'],images)
+        manifest['task_attempt']=task.get('attempt',0)
         c.execute('INSERT INTO generation_runs(id,task_id,project_id,status,model,protocol,manifest,reserved,created_at) VALUES(?,?,?,?,?,?,?,?,?)',(rid,task['id'],p['id'],'pending',cfg['model'],cfg['protocol'],db.dumps(manifest),reservation,db.now()))
     request_started=False
     trace_token=provider._CLIENT_REQUEST_ID.set(rid)
+    from . import request_execution
+    def actual_preflight(actual,key):
+        return _validate_actual_attempt(task,rid,manifest,actual,key,system,user,images)
+    execution=request_execution.scope(task,rid,manifest,cfg,system,user,images,preflight=actual_preflight)
+    execution_entered=False
     try:
+        execution.__enter__();execution_entered=True
         # Recheck every source and rule provenance immediately before sending.
-        if manifest.get('live_input_versions') is not None:
-            from .writing_live import validate as validate_live
-            validate_live(p['id'],manifest,task['id'])
-        if task['kind']=='write_paper':
-            from .paper_writing import validate_request
-            validate_request(task)
-        if manifest.get('visual_context'):
-            from .paper_visuals import check_context
-            check_context(p['id'],manifest['visual_context'])
-        if manifest.get('abstract_translation'):
-            from .abstract_translation import check_source
-            check_source(p['id'],manifest['abstract_translation'])
-        if manifest.get('writing_state',{}).get('continuity_outline_hash'):
-            from .writing_agent.impact import check_manifest
-            conflicts=check_manifest(p['id'],manifest['writing_state'])
-            if conflicts:raise ValueError('写作上下文已变化，请重新生成：'+'、'.join(conflicts))
-        if manifest.get('operation')=='polish':
-            from .writing_agent.provenance import revision_permissions
-            revision_permissions(p['id'],manifest['base_revision_id'])
-        if manifest.get('knowledge_refs'):
-            from .knowledge_lineage import validate_refs
-            validate_refs(p['id'],manifest['knowledge_refs'],remote=True)
-        for fid in manifest.get('file_ids',[]):
-            f=db.one('SELECT * FROM files WHERE id=? AND project_id=?',(fid,p['id']))
-            if not f or not __import__('app.security',fromlist=['file_allows_remote']).file_allows_remote(fid,p['id']): raise ValueError('资料或派生内容当前禁止外发')
+        _validate_model_presend(task,manifest)
         event(task['id'],manifest.get('progress_phase','正在请求模型；等待远端完成'),manifest.get('progress_percent',50))
         db.execute("UPDATE generation_runs SET status='sent' WHERE id=?",(rid,))
         request_started=True
         from . import deepseek_pool
         pool_cfg=deepseek_pool.config()
         use_streaming=cfg.get('streaming')
-        if pool_cfg['endpoints'] and pool_cfg['strategy'].get('mode')!='manual' and (provider._REQUEST.get() or {}).get('route') in (None,'deepseek'):
+        if not cfg.get('provider_endpoint_id') and 'streaming' not in (provider._REQUEST.get() or {}).get('request_options',{}) and pool_cfg['endpoints'] and pool_cfg['strategy'].get('mode')!='manual' and (provider._REQUEST.get() or {}).get('route') in (None,'deepseek'):
             active=deepseek_pool.active_endpoint()
             if active is not None:
                 use_streaming=bool(active.get('streaming',False))
@@ -216,43 +289,130 @@ def _metered_model_call(task,system,user,manifest,images=None):
                     c.execute('INSERT INTO stream_chunks VALUES(?,?,?,?,?)',(rid,seq,text,'upstream_delta',db.now()))
             result=provider_stream.pool_generate(system,user,on_delta=delta)
         else:result=provider.pool_generate(system,user,images)
-        db.execute('UPDATE generation_runs SET status=?,usage=?,cost=?,remote_id=?,manifest=? WHERE id=?',('completed',db.dumps(result['usage']),result['cost'],result['remote_id'],db.dumps({**manifest,'response_evidence':result.get('response_evidence',{}),'wire_request_hash':result['request_hash'],'output_blob':put_blob(result['text'].encode())}),rid))
         if 'provider_snapshot' not in result:result['provider_snapshot']={k:cfg[k] for k in ('base_url','protocol','model')}
+        manifest['provider_snapshot']=result['provider_snapshot']
+        manifest['actual_provider']={**result.get('actual_provider_config',cfg),
+                                    **manifest.get('actual_provider',{}),**result['provider_snapshot']}
+        manifest['actual_provider_credential_hash']=result.get('actual_provider_credential_hash',manifest['credential_hash'])
+        manifest['ai_wire_fingerprint']=wire_key(task,system,user,manifest,
+            {**cfg,**result['provider_snapshot']},manifest['actual_provider_credential_hash'],images,
+            wire_request_hash=result.get('request_hash'))
         if 'pool_used' in result:
             manifest['pool_used']=result['pool_used']
             if result.get('pool_endpoint'):manifest['pool_endpoint']=result['pool_endpoint']
             if result.get('pool_attempt') is not None:manifest['pool_attempt']=result['pool_attempt']
-            db.execute('UPDATE generation_runs SET manifest=? WHERE id=?',(db.dumps({**manifest,'response_evidence':result.get('response_evidence',{}),'wire_request_hash':result['request_hash'],'output_blob':put_blob(result['text'].encode())}),rid))
+        db.execute('UPDATE generation_runs SET status=?,usage=?,cost=?,remote_id=?,manifest=? WHERE id=?',
+            ('completed',db.dumps(result['usage']),result['cost'],result['remote_id'],db.dumps({**manifest,
+             'response_evidence':result.get('response_evidence',{}),'wire_request_hash':result['request_hash'],
+             'output_blob':put_blob(result['text'].encode())}),rid))
         result['run_id']=rid
         return result
     except Exception as e:
+        if isinstance(e,provider.ProviderError):
+            e.run_id=rid
+            e.has_stream_output=bool(db.one('SELECT 1 FROM stream_chunks WHERE run_id=? LIMIT 1',(rid,)))
+            if e.has_stream_output:
+                e.unknown=True;e.retryable=False;e.fallback_allowed=False;e.safe_failure=False
         partial=e.response_result if isinstance(e,provider.ProviderError) else None
-        presend=isinstance(e,provider.ProviderError) and not e.unknown and getattr(e,'failure_phase',None)=='connect_before_http'
-        status='completed_invalid' if partial is not None else 'failed_before_send' if presend else 'outcome_unknown' if isinstance(e,provider.ProviderError) and e.unknown or request_started and not isinstance(e,provider.ProviderError) else 'rejected'
+        presend=(isinstance(e,provider.ProviderError) and not e.unknown and getattr(e,'failure_phase',None) in ('connect_before_http','policy_before_http')
+                 or getattr(e,'failure_phase',None)=='attempt_preflight_before_http' or not execution_entered)
+        known_cancel=(isinstance(e,InterruptedError) and getattr(e,'failure_phase',None)=='cancel_before_http'
+                      and not db.one('SELECT 1 FROM stream_chunks WHERE run_id=? LIMIT 1',(rid,)))
+        status='completed_invalid' if partial is not None else 'failed_before_send' if presend else 'rejected' if known_cancel else 'outcome_unknown' if isinstance(e,provider.ProviderError) and e.unknown or request_started and not isinstance(e,provider.ProviderError) else 'rejected'
         if partial is not None:
-            saved={**manifest,'response_evidence':partial.get('response_evidence',{}),'wire_request_hash':partial['request_hash'],'output_blob':put_blob(partial['text'].encode())}
+            saved={**manifest,'provider_snapshot':partial.get('provider_snapshot',{k:cfg[k] for k in ('base_url','protocol','model')}),
+                   'actual_provider':{**partial.get('actual_provider_config',cfg),**manifest.get('actual_provider',{}),
+                                      **partial.get('provider_snapshot',{})},
+                   'actual_provider_credential_hash':partial.get('actual_provider_credential_hash',manifest['credential_hash']),
+                   'response_evidence':partial.get('response_evidence',{}),'wire_request_hash':partial['request_hash'],'output_blob':put_blob(partial['text'].encode())}
             db.execute('UPDATE generation_runs SET status=?,error=?,usage=?,cost=?,remote_id=?,manifest=? WHERE id=?',(status,redact(e),db.dumps(partial['usage']),partial['cost'],partial['remote_id'],db.dumps(saved),rid))
         else:
             if getattr(e,'response_evidence',None):manifest={**manifest,'response_evidence':e.response_evidence}
-            if presend:manifest={**manifest,'transport_failure':{'phase':'connect_before_http','exception':getattr(e,'transport_error_type',None),'http_request_sent':False,'cost_not_inferred':True}}
+            if presend:manifest={**manifest,'transport_failure':{'phase':getattr(e,'failure_phase','connect_before_http'),'exception':getattr(e,'transport_error_type',None),'http_request_sent':False,'cost_not_inferred':True}}
             db.execute('UPDATE generation_runs SET status=?,error=?,manifest=? WHERE id=?',(status,redact(e),db.dumps(manifest),rid))
-        attempt=int(manifest.get('automatic_retry_index',0));maximum=min(max(int(cfg.get('max_attempts',3)),1),3)
-        if isinstance(e,provider.ProviderError) and e.retryable and not e.unknown and attempt+1<maximum:
+        attempt=int(manifest.get('automatic_retry_index',0));maximum=min(max(int(cfg.get('max_attempts',5)),1),5)
+        safe_retry=isinstance(e,provider.ProviderError) and not e.unknown and e.response_result is None and (
+            e.retryable or getattr(e,'failure_phase',None)=='connect_before_http')
+        if safe_retry and attempt+1<maximum and provider.attempts_remaining()>0:
             # A request that failed before the HTTP request left this machine cost
             # nothing, so backing off buys nothing either: go straight back and try
             # another connection. The gateway drops a large share of handshakes.
             delay=e.retry_after if e.retry_after is not None else 0.4 if presend else min(12,2**(attempt+1))
             cause='尚未建立HTTP连接' if presend else '请求被限流'
-            event(task['id'],f'{cause}，等待{delay:g}秒后进行第{attempt+2}次尝试',45)
+            event(task['id'],f'{cause}，等待{delay:g}秒后进行第{attempt+2}/{maximum}次尝试',45,
+                  {'attempt':attempt+2,'maximum_attempts':maximum,'previous_error':redact(e)})
             deadline=time.monotonic()+delay
             while time.monotonic()<deadline:
                 if STOP.wait(min(.5,max(0,deadline-time.monotonic()))):raise InterruptedError('任务进程正在停止')
                 t=db.one('SELECT cancel_requested FROM tasks WHERE id=?',(task['id'],))
                 if t and t['cancel_requested']:raise InterruptedError('用户已请求取消')
             return _model_call(task,system,user,{**manifest,'automatic_retry_index':attempt+1},images)
+        if (safe_retry or getattr(e,'attempt_budget_exhausted',False)) and maximum>1 and (attempt+1>=maximum or provider.attempts_remaining()<=0):
+            used=max(attempt+1,provider.attempts_used())
+            e.args=(f'模型请求已尝试{min(used,maximum)}/{maximum}次，仍未成功：'+str(e),)
         raise
     finally:
-        provider._CLIENT_REQUEST_ID.reset(trace_token)
+        try:
+            if execution_entered:execution.__exit__(None,None,None)
+        finally:provider._CLIENT_REQUEST_ID.reset(trace_token)
+
+
+def _validate_actual_attempt(task,run_id,manifest,cfg,key,system,user,images=None):
+    """Recheck the selected transport, including pool failover's own capacity and price."""
+    from .task_transitions import assert_current
+    from .official_api_policy import assert_allowed
+    from .source_payload import token_upper_bound
+    from .summary_billing import request_reservation
+    from .expense_evidence import preflight,budget_currency,resolve_config
+    from .budget_usage import charge,charge_tasks
+    assert_current(task);assert_allowed(cfg)
+    cfg.update(resolve_config(task['project_id'],cfg,key))
+    _validate_model_source_inputs(task['project_id'],manifest)
+    _validate_model_presend(task,manifest)
+    if token_upper_bound(system,user)+int(cfg.get('max_output_tokens',8192))>int(cfg.get('context_limit',100000)):
+        raise ValueError('实际后备端点上下文容量不足；未发送请求，当前候选已保留')
+    if str(cfg.get('currency','USD')).upper()!=str(budget_currency(task['project_id'])).upper():
+        raise BudgetExceeded('实际后备端点与项目预算币种不同，未发送请求')
+    hold,evidence=request_reservation(cfg,system,user)
+    from .execution_policy import check_stage
+    check_stage(task,manifest,hold,exclude_run_ids=(run_id,))
+    payload=db.loads(task.get('payload'),{})
+    exclude=(run_id,)
+    with db.transaction():
+        check_stage(task,manifest,hold,exclude_run_ids=(run_id,))
+        project=require_project(task['project_id'])
+        basis=preflight(task['project_id'],cfg,key,images=bool(images),task=task,reservation=hold,exclude_run_id=run_id)
+        ceiling=project['budget']+(basis['paid_testing']['limit'] if basis and basis.get('paid_testing') else 0)
+        if charge(task['project_id'],exclude_run_ids=exclude)+hold>ceiling:
+            raise BudgetExceeded('实际端点请求超过项目剩余预算，未发送请求')
+        if task['kind']=='write_paper' and charge(task['project_id'],task_id=task['id'],exclude_run_ids=exclude)+hold>payload['budget_limit']:
+            raise BudgetExceeded('实际端点请求超过整篇任务预算，已保留进度')
+        if manifest.get('knowledge_operation'):
+            scope_id=manifest.get('knowledge_budget_scope_id',task['id'])
+            # This scope includes the owning task and its delegated knowledge operations.
+            used=charge_tasks(task['project_id'],[task['id']],manifest_scope=('knowledge_budget_scope_id',scope_id),exclude_run_ids=exclude)
+            if used+hold>payload.get('budget_limit',project['budget']):raise BudgetExceeded('实际端点请求超过知识任务预算')
+        for field,table in (('writing_session_id','writing_sessions'),('diagnostic_run_id','diagnostic_runs'),('diagnostic_comparison_id','diagnostic_comparisons')):
+            if manifest.get(field):
+                scope=db.one('SELECT policy_json FROM '+table+' WHERE id=? AND project_id=?',(manifest[field],task['project_id']))
+                if not scope:raise ValueError('实际端点预算范围不存在')
+                if charge(task['project_id'],manifest_scope=(field,manifest[field]),exclude_run_ids=exclude)+hold>db.loads(scope['policy_json'],{}).get('budget_limit',project['budget']):
+                    raise BudgetExceeded('实际端点请求超过会话预算')
+        if manifest.get('rule_job_id'):
+            job=db.one('SELECT * FROM rule_jobs WHERE id=? AND project_id=?',(manifest['rule_job_id'],task['project_id']))
+            if not job:raise ValueError('规则任务不存在')
+            used=charge(task['project_id'],manifest_scope=('rule_job_id',job['id']),exclude_run_ids=exclude)
+            if used+hold>job['budget_limit']:raise BudgetExceeded('实际端点超过规则任务预算')
+            if manifest.get('provider_route')=='gpt':
+                used=charge(task['project_id'],manifest_scope={'rule_job_id':job['id'],'provider_route':'gpt'},exclude_run_ids=exclude)
+                if not job['allow_gpt'] or used+hold>job['gpt_budget']:raise BudgetExceeded('实际GPT端点超过规则子预算或尚未授权')
+        row=db.one('SELECT manifest FROM generation_runs WHERE id=?',(run_id,))
+        metadata=db.loads(row['manifest'],{})
+        metadata.update(actual_provider=cfg,actual_provider_credential_hash=key_hash(key),cost_evidence=evidence)
+        db.execute('UPDATE generation_runs SET reserved=?,manifest=? WHERE id=?',(hold,db.dumps(metadata),run_id))
+        manifest.setdefault('requested_cost_evidence',manifest.get('cost_evidence'))
+        manifest.update(actual_provider=cfg,actual_provider_credential_hash=key_hash(key),cost_evidence=evidence)
+    return hold
 
 def writing(task,payload):
     if task['kind']=='write' and payload.get('operation','generate') not in ('polish','translate'):
@@ -260,7 +420,8 @@ def writing(task,payload):
         event(task['id'],'核对并刷新绑定项目的代码依据',10)
         refresh_repository(task['project_id'])
     from .model_routing import task_scope
-    with task_scope(task):return _writing(task,payload)
+    from .prompt_layout import material_scope
+    with task_scope(task),material_scope(task):return _writing(task,payload)
 
 
 def candidate_from_text(text):
@@ -276,7 +437,7 @@ def candidate_from_text(text):
     except (ValueError,TypeError) as error:
         return None,text,f'JSON解析失败：{error}'
     try:
-        candidate=SectionCandidate.model_validate(payload).model_dump(exclude_none=True)
+        candidate=SectionCandidate.model_validate(_canonical_claim_citations(payload)).model_dump(exclude_none=True)
     except ValidationError as error:
         details=[]
         for issue in error.errors(include_input=False,include_context=False)[:12]:
@@ -444,7 +605,35 @@ def salvage_document(text, references=None):
 
 
 
-CANDIDATE_FORMAT_RETRIES=2
+CANDIDATE_FORMAT_RETRIES=4
+
+
+def _canonical_claim_citations(payload):
+    """Move explicit claim-level bibliography links to typed citation intents.
+
+    Some providers place reference_ids beside the claim's already explicit
+    source links. This is a lossless field translation, not a support verdict.
+    The normal compiler still checks original ownership, versions and quotes.
+    """
+    if not isinstance(payload,dict):return payload
+    payload=deepcopy(payload)
+    for paragraph in payload.get('paragraphs',[]) if isinstance(payload.get('paragraphs'),list) else []:
+        if not isinstance(paragraph,dict) or not isinstance(paragraph.get('citation_intents',[]),list):continue
+        for claim in paragraph.get('claim_spans',[]) if isinstance(paragraph.get('claim_spans'),list) else []:
+            if not isinstance(claim,dict) or 'reference_ids' not in claim:continue
+            references=claim['reference_ids'];identity=claim.get('local_id')
+            if (not isinstance(references,list) or len(references)>60
+                    or any(not isinstance(value,str) or not value.strip() for value in references)
+                    or not isinstance(identity,str) or not identity.strip()):continue
+            intents=paragraph.setdefault('citation_intents',[])
+            for reference in dict.fromkeys(references):
+                if any(isinstance(row,dict) and row.get('claim_id')==identity and row.get('reference_id')==reference for row in intents):continue
+                intent={'claim_id':identity,'reference_id':reference,'kind':'paraphrase'}
+                for field in ('source_ids','evidence_ids','knowledge_unit_ids','document_reading_ids'):
+                    if field in claim:intent[field]=deepcopy(claim[field])
+                intents.append(intent)
+            claim.pop('reference_ids')
+    return payload
 
 # 模型有时会把文献/来源/证据标识以 [32位hex] 或 [cite:xxx] 形式直接写进段落文本，
 # 这些是候选协议标记而非正文内容，必须从正文剥离并还原为结构化引用节点，
@@ -470,7 +659,9 @@ def record_candidate_validation(task,section,attempts,raw_text):
                (db.dumps(saved),db.now(),task['id']))
 
 
+@db.read_session()
 def _writing(task,payload):
+    from . import prompt_layout
     pid=task['project_id'];p,s=writing_preflight(pid,payload);package=db.one('SELECT * FROM rule_packages WHERE id=?',(payload.get('rule_package_id') or p['rule_package_id'],))
     if not package or package['project_id']!=pid: raise ValueError('规则包不存在')
     if s['kind']=='abstract_en':
@@ -482,7 +673,7 @@ def _writing(task,payload):
         return run(task,p,s,payload,package)
     applicable=rules.applicable(package,s,operation);content_rules=[r for r in applicable if r['category']!='format']
     if not content_rules: raise ValueError('当前章节没有适用内容规则，请完善规则范围')
-    event(task['id'],'加载规则与检索证据',15)
+    event(task['id'],'核对项目代码与章节依据',15)
     chapter_terms={'system_design':'架构 模块 数据库 接口 设计','implementation':'实现 功能 模块 代码','requirements':'需求 用户 业务 功能','results':'实验 测试 样本 指标 结果 性能','methods':'研究方法 实验 过程 技术路线','literature':'文献 研究 方法 比较 局限','introduction':'研究背景 意义 问题 现状','abstract':'研究 问题 方法 结果 结论','conclusion':'结果 结论 不足 展望'}
     query=s['title']+' '+s['goal']+' '+payload.get('instruction','')+' '+chapter_terms.get(s['kind'],'')
     if task['kind']=='write_paper':
@@ -491,14 +682,17 @@ def _writing(task,payload):
         query+=' '+' '.join(f['message'] for f in revision_payload.get('revision_findings',[]) if s['id'] in f['section_ids'])
     from .writing_live import prepare as prepare_live
     live_context,live_manifest,project_evidence=prepare_live(pid,s,query,task['id'])
+    event(task['id'],'检索并准备文献原文',18)
     project_files={item['payload'].get('file_id') for item in project_evidence if item['payload'].get('file_id')}
     query+=' '+str(live_context['thesis_core'].get('research_question',''))+' '+str(live_context['section_contract'].get('goal',''))
     from .knowledge_service import prepare_writing
     cfg=provider.config();literature_budget=max(0,int(cfg.get('context_limit',32000))//3)
     knowledge_context=prepare_writing(pid,query[:5000],s['id'],limit=8,budget_bytes=literature_budget)
+    event(task['id'],'核对研究事实与来源权限',22)
     evidence=knowledge_context['sources']
     evidence=[dict(item) for item in evidence]
-    refs=db.rows('SELECT * FROM bibliography WHERE project_id=?',(pid,));facts=db.rows('SELECT * FROM facts WHERE project_id=?',(pid,));allowed_facts=[];file_ids={e['file_id'] for e in evidence}
+    stable_order=' ORDER BY id' if prompt_layout.enabled(task) else ''
+    refs=db.rows('SELECT * FROM bibliography WHERE project_id=?'+stable_order,(pid,));facts=db.rows('SELECT * FROM facts WHERE project_id=?'+stable_order,(pid,));allowed_facts=[];file_ids={e['file_id'] for e in evidence}
     for f in facts:
         source_ids=db.loads(f['source_ids'],[]); permitted=True
         for source_id in source_ids:
@@ -566,10 +760,11 @@ def _writing(task,payload):
         if not ok:raise ValueError('当前草稿含现已禁止外发资料的派生内容，无法发送进行改写')
         file_ids.update(origins)
     from .writing_continuity import collect,selection_context
+    event(task['id'],'读取全文草稿与章节衔接',24)
     continuity,continuity_manifest,continuity_files=collect(pid,s['id'],permission_check=provenance_allowed)
     outline=continuity['outline'];related=continuity['related_sections'];file_ids.update(continuity_files)
     locked={x['node_id'] for x in db.rows('SELECT node_id FROM locks WHERE section_id=?',(s['id'],))}
-    terms=db.rows('SELECT zh,en FROM terms WHERE project_id=?',(pid,))
+    terms=db.rows('SELECT zh,en FROM terms WHERE project_id=?'+(' ORDER BY zh,en,id' if prompt_layout.enabled(task) else ''),(pid,))
     existing_doc=db.loads(current['document'],{}) if current else {'type':'doc','content':[]}
     paper_candidate=None
     if task['kind']=='write_paper':
@@ -599,6 +794,7 @@ def _writing(task,payload):
     product_inputs,material_inputs=material_snapshot(pid,s['id'],remote=True)
     product_refs=[value['source_ref'] for value in product_inputs]
     context['research_products']=[{key:value[key] for key in ('title','text','source_ref','kind','classification')} for value in product_inputs]
+    context['required_research_product_refs']=deepcopy(product_refs)
     file_ids.update(product_files(pid,product_refs))
     from . import writing_ops, writing_brief
     operation_key = ('whole_paper' if task['kind'] == 'write_paper'
@@ -630,7 +826,9 @@ def _writing(task,payload):
     from .source_payload import compact_locator
     for source in context['sources']:source['location']=compact_locator(source['location'])
     system=(ROOT/"prompts"/"writing.system.txt").read_text(encoding="utf-8").strip()
-    system+=' '+context['operation_goal']
+    from . import prompt_layout
+    if prompt_layout.version(task)=='legacy':system+=' '+context['operation_goal']
+    else:system+=' 请依据operation_goal与instruction执行当前任务，保留全部范围、原文及规则约束。'
     system+=' 每段可以返回fact_ids（给定事实ID）。已有受保护块必须用{"preserve_node_id":"其node_id"}保留，不能重写其内容。'
     system+=' knowledge_units是读取过的原文单元及上下文；可用knowledge_unit_ids关联其unit_id。切片仅定位，核对状态不代表论断获得支持。必须保留条件、否定、表注与结论强度；有争议或缺少上下文时列入missing_materials，不猜测。'
     system+=' knowledge_units的material_use_ref指向knowledge_file_policies中相同file_id的完整资料用途政策，不能把教学材料或范例当作本项目成果。'
@@ -643,11 +841,13 @@ def _writing(task,payload):
     if paper_candidate:system+=' 本次existing_blocks是尚未采用的待修订候选。正确的旧段落可返回preserve_node_id完整保留，已有结构化引用与图表不得改成普通文字编号；新增论断仍需本次实际提供的原文依据，旧候选不是事实证明。'
     if targets:system+=' 本次仅改写选中的段落，不能加入其他章节或重复选区之外内容。'
     from .guidance_preparation import prepare as prepare_guidance
+    event(task['id'],'读取写作规范与示例',27)
     guidance=prepare_guidance(pid,s['id'],query)
     file_ids.update(guidance['file_ids'])
     context['writing_examples']=guidance['examples']
     context['guidance_gaps']=guidance['gaps']
     from . import writing_flow, writing_retrieval
+    event(task['id'],'整理素材与章节论证计划',29)
     context,evidence_bundle,argument_plan,context_coverage=writing_flow.prepare(pid,s,context,knowledge_context,guidance,query)
     # Keep canonical reading records in the existing packer and allow-list path.
     # Model units use the same text with compact passage locations.
@@ -666,9 +866,12 @@ def _writing(task,payload):
     project_evidence=[current_evidence(pid,row['id'],remote=True) for row in context.get('project_evidence',[])]
     if evidence_bundle:file_ids.update(evidence_bundle['compatibility']['file_ids'])
     system+=' argument_plan按实际任务和已登记主张组织每段职责。避免多段重复同一结论。可为实质主张返回claim_spans：[{"local_id":"c1","text":"正文中唯一原句","role":"fact|inference","evidence_ids":[],"source_ids":[],"knowledge_unit_ids":[],"fact_ids":[]}]，并用citation_intents:[{"claim_id":"c1","reference_id":"实际文献ID","source_ids":[],"knowledge_unit_ids":[],"kind":"paraphrase"}]在对应原句后插引用。范围与哈希可省略由程序确定，禁止杜撰ID。缺少依据时返回retrieval_requests:[{"query":"需补读的问题"}]和missing_materials，不用无依据强断言填充。evidence_bundle目录只作实际读取范围说明，原文分别在sources/knowledge_units/project_evidence/research_products。'
-    from .writing_request import pack
-    cfg=provider.config();output_limit=min(int(cfg.get('max_output_tokens',8192)),2048 if s['kind']=='abstract' else max(2048,int(s['target_words'])*2+1024))
-    request_cfg={**cfg,'max_output_tokens':output_limit}
+    from .writing_request import pack,FORMAT_REPAIR_INPUT_RESERVE
+    # Structured citations and claim ranges share the output with the prose.
+    # Reserve enough for the complete JSON instead of sizing only plain text.
+    cfg=provider.config();output_limit=min(int(cfg.get('max_output_tokens',8192)),4096 if s['kind']=='abstract' else max(8192,int(s['target_words'])*5+2048))
+    request_cfg={**cfg,'max_output_tokens':output_limit,'reserved_followup_input':FORMAT_REPAIR_INPUT_RESERVE,
+                 'prompt_layout_version':prompt_layout.version(task)}
     try:request_budget=pack(context,knowledge_context,system,request_cfg)
     except HTTPException as error:
         if isinstance(error.detail,dict) and error.detail.get('context_budget'):
@@ -681,8 +884,20 @@ def _writing(task,payload):
         context['evidence_bundle']=writing_retrieval.for_model(evidence_bundle)
     loaded_reference_ids={r['id'] for r in context['references']}
     refs=[r for r in refs if r['id'] in loaded_reference_ids]
-    user=db.dumps(context)
+    from .writing_request import compact_model_context
+    budget_system,budget_view,layout_meta=prompt_layout.prepare(task,system,context,'draft')
+    user=db.dumps(budget_view)
+    from .source_payload import token_upper_bound
+    request_budget['input_upper_bound']=token_upper_bound(budget_system,user)
+    request_budget['component_bytes']={key:len(db.dumps(value).encode('utf-8')) for key,value in budget_view.items()}
+    if request_budget['input_upper_bound']+request_budget['reserved_output']+request_budget['reserved_followup_input']>request_budget['context_limit']:
+        checkpoint=db.loads(db.one('SELECT result FROM tasks WHERE id=?',(task['id'],))['result'],{}) or {}
+        db.execute('UPDATE tasks SET result=? WHERE id=?',(db.dumps({**checkpoint,'context_budget':request_budget}),task['id']))
+        raise HTTPException(422,{'code':'WRITING_CONTEXT_BUDGET_EXCEEDED',
+                                 'message':'实际写作请求在来源校验后超过接口容量，已保留进度；请调整阅读范围或已确认的接口容量。',
+                                 'context_budget':request_budget})
     ids=[r['id'] for r in content_rules];manifest={'rule_package_id':package['id'],'required_rule_ids':ids,'loaded_rule_ids':ids,'rule_text_hash':hashlib.sha256(rule_text.encode()).hexdigest(),'base_revision_id':payload.get('base_revision_id'),'section_id':s['id'],'source_ids':[e['id'] for e in evidence],'file_ids':sorted(file_ids),'fact_revisions':{f['id']:f['revision'] for f in allowed_facts}}
+    manifest.update(layout_meta)
     manifest['knowledge_documents']={e['knowledge_document_id']:e['knowledge_document_version'] for e in evidence if e.get('knowledge_document_id')}
     manifest['context_budget']=request_budget
     manifest['resource_refs']=product_refs
@@ -699,11 +914,14 @@ def _writing(task,payload):
     if task['kind']=='write_paper':
         manifest['paper_draft_hashes']={row['section_id']:hashlib.sha256(db.dumps(row['text']).encode()).hexdigest() for row in context.get('paper_draft_sections',[])}
     manifest['knowledge_unit_versions']={u['unit_id']:u['unit_hash'] for u in knowledge_context['knowledge_units']}
-    manifest['knowledge_read_scopes']={u['unit_id']:{'parse_id':u['parse_id'],'scope':u['scope'],'passage_ids':[p['id'] for p in u['passages']]} for u in knowledge_context['knowledge_units']}
+    from .writing_evidence_quality import resolve_unit_readings
+    manifest['knowledge_read_scopes']={}
     for unit in knowledge_context['knowledge_units']:
-        scope=manifest['knowledge_read_scopes'][unit['unit_id']]
-        if unit.get('char_start') is not None:
-            scope.setdefault('reading_ranges',[]).append({'char_start':unit['char_start'],'char_end':unit['char_end'],'reading_id':unit.get('reading_id')})
+        observations=resolve_unit_readings(pid,unit,remote=True)
+        manifest['knowledge_read_scopes'][unit['unit_id']]={
+            'parse_id':unit['parse_id'],'scope':unit['scope'],
+            'passage_ids':list(dict.fromkeys(row['unit_id'] for row in observations)),
+            'reading_ranges':[{key:row.get(key) for key in ('unit_id','char_start','char_end','reading_id')} for row in observations]}
     manifest['knowledge_selection']=sorted(knowledge_context['selected_unit_ids'])
     manifest['knowledge_refs']=knowledge_context.get('knowledge_refs',[])
     manifest['document_reading_versions']={r['reading_id']:r['version'] for r in [*knowledge_context.get('document_readings',[]),*guidance['readings']]}
@@ -742,26 +960,37 @@ def _writing(task,payload):
     writing_flow.sync_manifest(pid,context,manifest)
     if not all('['+rid+']' in user for rid in ids): raise ValueError('规则加载检查失败')
     event(task['id'],'写作上下文已就绪；正在检查本次费用预留',35,{'input_upper_bound':request_budget['input_upper_bound'],'deferred_documents':len(request_budget['deferred_documents'])})
-    result=writing_flow.generate(task,s,system,context,{**manifest,'candidate_format_attempt':1},candidate_from_text)
-    event(task['id'],'检查结构、来源与引用',85)
-    data,used_text,problem=candidate_from_text(result['text'])
-    validation_attempts=[{'attempt':1,'valid':data is not None,'error':problem or None}]
-    if data is None:
-        record_candidate_validation(task,s,validation_attempts,used_text)
-    while data is None and len(validation_attempts)<=CANDIDATE_FORMAT_RETRIES:
-        attempt=len(validation_attempts)+1
-        event(task['id'],f'章节响应未通过候选契约校验，正在进行第{attempt}次格式修复请求',85+attempt,
-              {'attempt':attempt,'validation_error':problem})
-        repair_system=(system+'\n\n章节响应校验发现以下问题：'+problem+
-                       '。请依据相同上下文重新生成完整章节候选。只返回合法JSON对象，顶层必须包含非空paragraphs数组，'
-                       '至少一个段落的text必须是非空字符串；不要返回Markdown、代码围栏或解释。')
-        retry_manifest={**manifest,'candidate_format_attempt':attempt,
-                        'candidate_format_repair':True,'candidate_validation_error':problem}
-        retry=writing_flow._cached_call(task,repair_system,context,retry_manifest,stage='candidate_format_repair',index=attempt)
-        data,used_text,problem=candidate_from_text(retry['text'])
-        validation_attempts.append({'attempt':attempt,'valid':data is not None,'error':problem or None})
+    flow_policy=writing_flow.settings(pid)
+    unit_mode=flow_policy['enabled'] and int(s.get('target_words') or 1500)>=flow_policy['unit_threshold_words'] and context.get('operation')=='generate'
+    # Each argument unit owns its own allowance. A short chapter's initial
+    # call and format repairs share one allowance, rather than five each.
+    with nullcontext() if unit_mode else provider.attempt_budget(5):
+        result=writing_flow.generate(task,s,system,context,{**manifest,'candidate_format_attempt':1},candidate_from_text)
+        event(task['id'],'检查结构、来源与引用',85)
+        data,used_text,problem=candidate_from_text(result['text'])
+        validation_attempts=[{'attempt':1,'valid':data is not None,'error':problem or None}]
         if data is None:
             record_candidate_validation(task,s,validation_attempts,used_text)
+        while data is None and len(validation_attempts)<=CANDIDATE_FORMAT_RETRIES:
+            attempt=len(validation_attempts)+1
+            event(task['id'],f'章节响应未通过候选契约校验，正在进行第{attempt}/5次格式修复请求',85+attempt,
+                  {'attempt':attempt,'maximum_attempts':5,'validation_error':problem})
+            repair_system=(system+'\n\n章节响应校验发现以下问题：'+problem+
+                           f'。这是第{attempt}/5次结构修复。请依据相同上下文重新生成完整章节候选。只返回合法JSON对象，顶层必须包含非空paragraphs数组，'
+                           '至少一个段落的text必须是非空字符串；不要返回Markdown、代码围栏或解释。')
+            repair_context=context
+            if prompt_layout.version(task)=='cache_v2':
+                repair_system=system+' 依据request_parameters中的候选校验问题修复完整章节，只返回符合paragraphs契约的JSON，保留相同原文与范围。'
+                repair_context={**context,'request_parameters':{
+                    **context.get('request_parameters',{}),'repair_attempt':attempt,
+                    'maximum_attempts':5,'validation_error':problem}}
+            retry_manifest={**manifest,'candidate_format_attempt':attempt,
+                            'candidate_format_repair':True,'candidate_validation_error':problem}
+            retry=writing_flow._cached_call(task,repair_system,repair_context,retry_manifest,stage='candidate_format_repair',index=attempt)
+            data,used_text,problem=candidate_from_text(retry['text'])
+            validation_attempts.append({'attempt':attempt,'valid':data is not None,'error':problem or None})
+            if data is None:
+                record_candidate_validation(task,s,validation_attempts,used_text)
     manifest['candidate_validation']={'contract':'SectionCandidate',
                                       'retry_count':len(validation_attempts)-1,
                                       'attempts':validation_attempts}
@@ -1173,12 +1402,17 @@ def heartbeat_task(tid,attempt,done,interval=10):
 
 
 def run_one():
+    from .task_transitions import ownership,transition
+    from .runtime_identity import is_draining
+    if is_draining():return False
     with db.transaction() as c:
+        if is_draining():return False
         row=c.execute("SELECT * FROM tasks WHERE status='queued' ORDER BY created_at LIMIT 1").fetchone()
         if not row: return False
         task=dict(row);task['attempt']+=1;c.execute("UPDATE tasks SET status='running',attempt=attempt+1,lease_until=?,heartbeat=?,updated_at=? WHERE id=?",(time.time()+60,time.time(),db.now(),task['id']))
     done=threading.Event()
     thread=threading.Thread(target=heartbeat_task,args=(task['id'],task['attempt'],done),daemon=True);thread.start()
+    owner=ownership(task);owner.__enter__()
     try:
         event(task['id'],'准备执行',5);result=dispatch(task)
         if task['kind']=='write':
@@ -1186,8 +1420,7 @@ def run_one():
             candidate_text=documents.plain(candidate_document) if isinstance(candidate_document,dict) else ''
             if not candidate_text.strip():
                 if isinstance(result,dict):
-                    db.execute('UPDATE tasks SET result=?,updated_at=? WHERE id=?',
-                               (db.dumps(result),db.now(),task['id']))
+                    transition(task['id'],task['attempt'],'running',result=db.dumps(result))
                     detail=result.get('validation_error')
                 else:
                     detail=None
@@ -1204,8 +1437,9 @@ def run_one():
                 state='queued'
             event(task['id'],'可用结果已保存；剩余范围等待预算或异常复核',min(95,5+int(90*result['processed_source_units']/result['selected_source_units'])))
         else:event(task['id'],'处理完成',100)
-        db.execute('UPDATE tasks SET status=?,result=?,updated_at=?,lease_until=NULL WHERE id=? AND attempt=?',(state,db.dumps(result),db.now(),task['id'],task['attempt']))
-    except InterruptedError as e: db.execute("UPDATE tasks SET status='cancelled',error=?,updated_at=?,lease_until=NULL WHERE id=?",(str(e),db.now(),task['id']))
+        transition(task['id'],task['attempt'],'running',status=state,result=db.dumps(result),lease_until=None)
+    except InterruptedError as e:
+        transition(task['id'],task['attempt'],'running',status='cancelled',error=str(e),lease_until=None)
     except Exception as e:
         status='budget_blocked' if isinstance(e,BudgetExceeded) else 'outcome_unknown' if isinstance(e,provider.ProviderError) and e.unknown else 'failed'
         if task['kind']=='knowledge_compare':db.execute("UPDATE knowledge_comparisons SET state=? WHERE task_id=? AND state='running'",(status,task['id']))
@@ -1215,39 +1449,51 @@ def run_one():
         if completed:
             meta=db.loads(completed['manifest'],{});output=meta.get('output_blob')
             if output and safe_object(output).is_file():result_value=db.dumps({**saved_result,'raw_text':safe_object(output).read_text(encoding='utf-8'),'document':None,'validation_error':redact(e),'manifest':meta})
-        db.execute('UPDATE tasks SET status=?,error=?,result=?,updated_at=?,lease_until=NULL WHERE id=? AND attempt=?',(status,redact(e.detail if isinstance(e,HTTPException) else e),result_value,db.now(),task['id'],task['attempt']))
-    finally: done.set();thread.join(timeout=1)
+        transition(task['id'],task['attempt'],'running',status=status,
+                   error=redact(e.detail if isinstance(e,HTTPException) else e),result=result_value,lease_until=None)
+    finally:
+        owner.__exit__(None,None,None);done.set();thread.join(timeout=1)
     return True
 
 def recover():
-    for t in db.rows("SELECT * FROM tasks WHERE status='running' AND (lease_until IS NULL OR lease_until<?)",(time.time(),)):
-        if t['kind']=='write_paper':
-            from .paper_writing import recover as recover_paper
-            recover_paper(t)
-            continue
-        if t['kind']=='agent_step':
-            from .writing_agent.coordinator import recover_task
-            recover_task(t)
-            continue
-        saved_result=db.loads(t.get('result'),{}) or {}
-        payload=db.loads(t['payload'],{})
-        if t['kind']=='rules_ai' and payload.get('automatic'):
-            # Replayed completed responses are validated by the pipeline. Sent
-            # requests are isolated and keep their budget reservation.
-            for run in db.rows("SELECT * FROM generation_runs WHERE task_id=? AND status IN ('pending','sent','outcome_unknown')",(t['id'],)):
-                meta=db.loads(run['manifest'],{})
-                db.execute("UPDATE generation_runs SET status='outcome_unknown' WHERE id=?",(run['id'],))
-                for key in meta.get('item_keys',[]):db.execute("UPDATE rule_work_items SET state='unresolved_remote',error='进程中断，等待核对远端执行结果' WHERE project_id=? AND item_key=?",(t['project_id'],key))
-            db.execute("UPDATE tasks SET status='queued',error=NULL,updated_at=? WHERE id=?",(db.now(),t['id']))
-            continue
-        call=db.one("SELECT * FROM generation_runs WHERE task_id=? AND status IN ('sent','pending','completed','completed_invalid','outcome_unknown') ORDER BY created_at DESC LIMIT 1",(t['id'],))
-        status='queued';message=None;result=None
-        if call and call['status'] in ('completed','completed_invalid'):
-            status='incomplete';message='远端已完成，本地流程中断。已保留响应；明确重试可能再次计费。'
-            manifest=db.loads(call['manifest'],{});output=manifest.get('output_blob')
-            if output and safe_object(output).is_file():result=db.dumps({**saved_result,'raw_text':safe_object(output).read_text(encoding='utf-8'),'document':None,'validation_error':message,'manifest':manifest})
-        elif call:status='outcome_unknown';message='进程中断，远端执行未知，请核实后决定是否重试'
-        db.execute('UPDATE tasks SET status=?,error=?,result=COALESCE(?,result),updated_at=? WHERE id=?',(status,message,result,db.now(),t['id']))
+    for candidate in db.rows("SELECT * FROM tasks WHERE status='running' AND (lease_until IS NULL OR lease_until<?)",(time.time(),)):
+        with db.transaction():
+            live=db.one('SELECT * FROM tasks WHERE id=?',(candidate['id'],))
+            if not live or live['status']!='running' or live['attempt']!=candidate['attempt']:
+                continue
+            if live['lease_until'] is not None and live['lease_until']>=time.time():continue
+            _recover_owned_task(live)
+
+
+def _recover_owned_task(t):
+    from .task_transitions import transition
+    if t['kind']=='write_paper':
+        from .paper_writing import recover as recover_paper
+        recover_paper(t)
+        return
+    if t['kind']=='agent_step':
+        from .writing_agent.coordinator import recover_task
+        recover_task(t)
+        return
+    saved_result=db.loads(t.get('result'),{}) or {}
+    payload=db.loads(t['payload'],{})
+    if t['kind']=='rules_ai' and payload.get('automatic'):
+        for run in db.rows("SELECT * FROM generation_runs WHERE task_id=? AND status IN ('pending','sent','outcome_unknown')",(t['id'],)):
+            meta=db.loads(run['manifest'],{})
+            db.execute("UPDATE generation_runs SET status='outcome_unknown' WHERE id=?",(run['id'],))
+            for key in meta.get('item_keys',[]):db.execute("UPDATE rule_work_items SET state='unresolved_remote',error='进程中断，等待核对远端执行结果' WHERE project_id=? AND item_key=?",(t['project_id'],key))
+        transition(t['id'],t['attempt'],'running',status='queued',error=None)
+        return
+    call=db.one("SELECT * FROM generation_runs WHERE task_id=? AND status IN ('sent','pending','completed','completed_invalid','outcome_unknown') ORDER BY created_at DESC LIMIT 1",(t['id'],))
+    status='queued';message=None;result=None
+    if call and call['status'] in ('completed','completed_invalid'):
+        status='incomplete';message='远端已完成，本地流程中断。已保留响应；明确重试可能再次计费。'
+        manifest=db.loads(call['manifest'],{});output=manifest.get('output_blob')
+        if output and safe_object(output).is_file():result=db.dumps({**saved_result,'raw_text':safe_object(output).read_text(encoding='utf-8'),'document':None,'validation_error':message,'manifest':manifest})
+    elif call:status='outcome_unknown';message='进程中断，远端执行未知，请核实后决定是否重试'
+    values={'status':status,'error':message}
+    if result is not None:values['result']=result
+    transition(t['id'],t['attempt'],'running',**values)
 
 _STALL={'task':None,'marker':None,'since':0.0}
 
@@ -1267,17 +1513,17 @@ def watchdog(interval=30):
         try:
             limit=float(db.setting('task_stall_seconds',900) or 0)
             if limit<=0:continue
-            task=db.one("SELECT id,project_id,kind,progress FROM tasks WHERE status='running' ORDER BY updated_at LIMIT 1")
+            task=db.one("SELECT id,project_id,kind,phase,progress FROM tasks WHERE status='running' ORDER BY updated_at LIMIT 1")
             if not task:_STALL.update(task=None,marker=None);continue
             latest=db.one('SELECT MAX(created_at) AS at FROM generation_runs WHERE task_id=?',(task['id'],))
-            marker=(task['progress'],latest['at'] if latest else None)
+            marker=(task['phase'],task['progress'],latest['at'] if latest else None)
             if _STALL['task']!=task['id'] or _STALL['marker']!=marker:
                 _STALL.update(task=task['id'],marker=marker,since=time.time());continue
             idle=time.time()-_STALL['since']
             if idle<limit:continue
             db.audit(task['project_id'],'task_stall_restart',{'task_id':task['id'],'kind':task['kind'],'idle_seconds':round(idle),'progress':task['progress'],'reason':'running task produced no model request and no progress for the stall limit'})
             db.execute('UPDATE tasks SET lease_until=?,updated_at=? WHERE id=?',(time.time()-1,db.now(),task['id']))
-            os._exit(3)
+            exit_immediately(3)
         except Exception:
             continue
 
@@ -1314,12 +1560,14 @@ def wake_rule_jobs():
             reconciled.add(pid)
         job=db.one('SELECT * FROM rule_jobs WHERE id=?',(payload.get('rule_job_id'),))
         used=summary_billing.job_charge(payload.get('rule_job_id'))
-        cfg=model_routing.config() if payload.get('provider_profile')=='gpt' else provider.config()
+        uses_gpt=(payload.get('provider_profile')=='gpt'
+                  or model_routing._automatic_route(task,payload).get('route')=='gpt')
+        cfg=model_routing.config() if uses_gpt else provider.config()
         result=db.loads(task.get('result'),{}) or {}
         reservation=result.get('budget',{}).get('reservation')
         if not summary_billing.finite(reservation) or reservation<=0:
             reservation=float(cfg.get('max_request_cost',2))
-        gpt_ready=payload.get('provider_profile')!='gpt' or bool(job and job['allow_gpt'] and summary_billing.job_charge(job['id'],'gpt')+reservation<=float(job['gpt_budget']))
+        gpt_ready=not uses_gpt or bool(model_routing.ready() and job and job['allow_gpt'] and summary_billing.job_charge(job['id'],'gpt')+reservation<=float(job['gpt_budget']))
         if job and used+reservation<=float(job['budget_limit']) and gpt_ready and summary_billing.budget(pid,reservation)['can_call']:
             # Reuse the same job ledger and work items; a budget wake never
             # resends unresolved remote requests or creates another GPT budget.

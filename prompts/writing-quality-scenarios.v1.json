@@ -1,0 +1,13 @@
+{
+  "schema": "writing-quality-scenarios.v1",
+  "material_origin": "Public synthetic examples authored for deterministic regression; no private paper data",
+  "human_gold_approved": false,
+  "cases": [
+    {"id":"condition","risk_category":"condition_truth","input":{"source":"该方法仅在单用户条件下观察到维护性改善。","instruction":"写一句结论并保留适用范围。"},"checks":[{"name":"condition_literal_retained","path":["text"],"operation":"contains","value":"单用户"},{"name":"no_universal_claim","path":["text"],"operation":"absent","value":"所有场景"}]},
+    {"id":"negation","risk_category":"evidence_support","input":{"source":"用例A尚未执行；没有性能测量数据。","instruction":"陈述当前验证状态。"},"checks":[{"name":"not_executed_literal_retained","path":["text"],"operation":"contains","value":"尚未执行"},{"name":"no_false_test_success","path":["text"],"operation":"absent","value":"测试全部通过"}]},
+    {"id":"wrong_citation","risk_category":"novel_claims","input":{"claims":[{"claim_id":"c1","source_ids":["s1"]}],"sources":[{"id":"s1","text":"仅说明模块边界。"},{"id":"s2","text":"仅说明页面布局。"}]},"checks":[{"name":"correct_source_identity","path":["source_id"],"operation":"equals","value":"s1"}]},
+    {"id":"patch","risk_category":"revision_preservation","input":{"paragraphs":[{"id":"p1","text":"正确段落保持原样。"},{"id":"p2","text":"错误：已执行性能测试。"}],"editable_paragraph_ids":["p2"]},"checks":[{"name":"correct_paragraph_unchanged","path":["paragraphs",0,"text"],"operation":"equals","value":"正确段落保持原样。"},{"name":"unverified_result_removed","path":["paragraphs",1,"text"],"operation":"absent","value":"已执行性能测试"}]},
+    {"id":"local_verification","risk_category":"verification_calibration","input":{"provided_paragraph_indices":[4,5,6],"omitted_sections":["results","conclusion"]},"checks":[{"name":"window_scope_explicit","path":["scope"],"operation":"equals","value":"claim_window_v2"},{"name":"no_full_coherence_claim","path":["global_coherence","coverage_complete"],"operation":"equals","value":false}]},
+    {"id":"insufficient","risk_category":"judgment_realization","input":{"claim":"系统吞吐率提高20%。","sources":[{"id":"s1","text":"计划在后续开展性能测试。"}]},"checks":[{"name":"insufficient_stays_unknown","path":["support"],"operation":"equals","value":"unknown"},{"name":"no_fabricated_measurement","path":["measured"],"operation":"equals","value":false}]}
+  ]
+}

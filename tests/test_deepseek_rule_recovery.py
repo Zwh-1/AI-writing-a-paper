@@ -90,6 +90,7 @@ def transport_setup(client,monkeypatch,limit=5):
 
 def test_review_waits_and_retries_explicit_429_on_deepseek(client,monkeypatch):
     pid,s,rid=transport_setup(client,monkeypatch);seen=[]
+    db.set_setting('provider',{**provider.config(),'max_attempts':5})
     def handle(request):
         data=json.loads(request.content);seen.append(data)
         assert request.url.host=='deepseek.example' and data['thinking']=={'type':'disabled'}

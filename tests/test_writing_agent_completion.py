@@ -468,17 +468,26 @@ def test_scoped_identifier_aliases_preserve_prose_and_roundtrip_only_identity_fi
     assert encoded['evidence'][0]['payload']['text']==source
     assert decode({'node_ids':['P1'],'evidence_ids':['E1'],'sentence_id':'S1','statement':'E1出现在说明中'},aliases)=={'node_ids':[node],'evidence_ids':[source],'sentence_id':sentence,'statement':'E1出现在说明中'}
 
-def test_complete_invalid_json_gets_one_recorded_repair_without_hidden_loops(env,monkeypatch):
-    fake_model(monkeypatch);original=provider.generate;bad=[]
+@pytest.mark.parametrize('layout',['legacy','cache_v2'])
+def test_complete_invalid_json_gets_one_recorded_repair_without_hidden_loops(env,monkeypatch,layout):
+    db.set_setting('ai_cache_policy',{'new_task_prompt_layout':layout})
+    fake_model(monkeypatch);original=provider.generate;bad=[];systems=[];parameters=[]
     def generate(system,user,images=None):
-        if '独立阅读冻结候选' in system and '上一次完整响应不是合法JSON' not in system:
-            bad.append(1);return envelope({'placeholder':'known response'}) | {'text':db.dumps({'agent_transport':True,'text':'{"sentences":[invalid JSON','tool_calls':[],'message':None,'items':[],'finish':'stop'})}
+        frame=db.loads(user,{})
+        content=db.loads(frame.get('messages',[{'content':'{}'}])[-1].get('content','{}'),{})
+        repair=content.get('request_parameters',{})
+        if '独立阅读冻结候选' in system:
+            systems.append(system);parameters.append(repair)
+            if '上一次完整响应不是合法JSON' not in system and not repair.get('prior_json_error'):
+                bad.append(1);return envelope({'placeholder':'known response'}) | {'text':db.dumps({'agent_transport':True,'text':'{"sentences":[invalid JSON','tool_calls':[],'message':None,'items':[],'finish':'stop'})}
         return original(system,user,images)
     monkeypatch.setattr(provider,'generate',generate);session=finish(env,start(env))
     assert session['status']=='needs_review' and len(bad)==1
     rows=db.rows("SELECT manifest FROM generation_runs WHERE json_extract(manifest,'$.stage')='annotation'")
     assert len(rows)==2
     assert any(db.loads(r['manifest']).get('structured_json_attempt')==1 for r in rows)
+    if layout=='cache_v2':
+        assert len(set(systems))==1 and parameters[1]['structured_json_attempt']==2 and parameters[1]['prior_json_error']
 
 def test_cancel_after_complete_invalid_json_prevents_paid_repair(env,monkeypatch):
     fake_model(monkeypatch);original=provider.generate;bad=[]

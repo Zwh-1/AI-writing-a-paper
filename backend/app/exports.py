@@ -12,7 +12,7 @@ def format_config(pid):
     from .paper_format import resolve
     return resolve(pid)['config']
 def bibliography_text(meta):
-    if meta.get('citation_raw'):return str(meta['citation_raw']).strip()
+    if meta.get('citation_raw'):return re.sub(r'\s+',' ',str(meta['citation_raw'])).strip()
     authors=meta.get('authors','')
     if isinstance(authors,list): authors='，'.join(authors)
     return f"{authors or '【作者待补】'}. {meta.get('title') or '【题名待补】'}{(' ['+meta['type']+']') if meta.get('type') else ''}. {meta.get('journal') or meta.get('publisher') or ''}, {meta.get('year') or '【年份待补】'}{(', '+str(meta['volume'])) if meta.get('volume') else ''}{(':'+str(meta['pages'])) if meta.get('pages') else ''}.{(' DOI:'+meta['doi']) if meta.get('doi') else ''}"
@@ -42,7 +42,10 @@ def export_project(pid,options,tid=None,prepared=None):
     fmt=format_resolution['config']
     if options.get('mode')=='strict' and format_resolution['conflicts']:raise ValueError('已发布排版规则存在冲突，请先处理后正式导出')
     section_formats={s['id']:resolve_format(pid,package=frozen['package'],settings=frozen['settings'].get('format:'+pid) or {},section=s,project=p)['config'] for s in sections}
-    component_styles=format_resolution.get('components',{})
+    component_styles={name:dict(values) for name,values in format_resolution.get('components',{}).items()}
+    for name,values in (fmt.get('component_styles') or {}).items():
+        component_styles[name]={**component_styles.get(name,{}),**values}
+    bibliography_hyphenation=component_styles.get('references_body',{}).get('auto_hyphenation') is True
     snapshots=[];refs={};artifacts=frozen['artifacts'];numbering={};md=['# '+p['title'],''];package=frozen['package']
     for s in sections:
         rev=frozen['revisions'].get(s['id'])
@@ -96,6 +99,16 @@ def export_project(pid,options,tid=None,prepared=None):
     section=doc.sections[0];section.page_height=Mm(297);section.page_width=Mm(210)
     for side in ('top','bottom','left','right'): setattr(section,side+'_margin',Mm(float(fmt['margin_'+side])))
     normal=doc.styles['Normal'];set_font(normal,fmt['font'],fmt['latin_font'],float(fmt['font_size']));normal.paragraph_format.line_spacing=float(fmt['line_spacing']);normal.paragraph_format.space_after=Pt(0)
+    if bibliography_hyphenation:
+        # Enable Word's own language-aware line breaking only for bibliography
+        # prose. Suppression on Normal keeps the opt-in from changing the body.
+        for tag,value in (('autoHyphenation','true'),('hyphenationZone','0')):
+            setting=doc.settings.element.find(qn('w:'+tag))
+            if setting is None:setting=OxmlElement('w:'+tag);doc.settings.element.append(setting)
+            setting.set(qn('w:val'),value)
+        suppress=normal.element.get_or_add_pPr().find(qn('w:suppressAutoHyphens'))
+        if suppress is None:suppress=OxmlElement('w:suppressAutoHyphens');normal.element.get_or_add_pPr().append(suppress)
+        suppress.set(qn('w:val'),'1')
     if fmt.get('line_spacing_points'):normal.paragraph_format.line_spacing=Pt(fmt['line_spacing_points'])
     ind=normal.element.get_or_add_pPr().find(qn('w:ind'))
     if ind is None: ind=OxmlElement('w:ind');normal.element.get_or_add_pPr().append(ind)
@@ -130,6 +143,16 @@ def export_project(pid,options,tid=None,prepared=None):
             ind=props.find(qn('w:ind'))
             if ind is None:ind=OxmlElement('w:ind');props.append(ind)
             ind.set(qn('w:firstLineChars'),str(int(values['first_line_chars']*100)))
+        if 'hanging_chars' in values:
+            props=paragraph._element.get_or_add_pPr() if not style else paragraph.element.get_or_add_pPr()
+            ind=props.find(qn('w:ind'))
+            if ind is None:ind=OxmlElement('w:ind');props.append(ind)
+            if values['hanging_chars']:
+                for name in ('firstLine','firstLineChars'):ind.attrib.pop(qn('w:'+name),None)
+                ind.set(qn('w:hangingChars'),str(round(values['hanging_chars']*100)))
+                ind.set(qn('w:hanging'),str(round(size*values['hanging_chars']*20)))
+            else:
+                for name in ('hanging','hangingChars'):ind.attrib.pop(qn('w:'+name),None)
         line=values.get('line_spacing_points',size*float(fmt['line_spacing']))
         for key in ('space_before','space_after'):
             if key+'_lines' in values:setattr(paragraph_format,key,Pt(line*values[key+'_lines']))
@@ -144,10 +167,13 @@ def export_project(pid,options,tid=None,prepared=None):
             for element in elements:element.get_or_add_rPr().get_or_add_rFonts().set(qn('w:eastAsia'),values['font'])
     for level in (1,2,3):apply_component(doc.styles[f'Heading {level}'],'heading_'+str(level),style=True)
     for level in (1,2,3):
-        if f'TOC {level}' not in doc.styles:
-            from docx.enum.style import WD_STYLE_TYPE
-            doc.styles.add_style(f'TOC {level}',WD_STYLE_TYPE.PARAGRAPH)
-        apply_component(doc.styles[f'TOC {level}'],'toc_'+str(level),style=True)
+        # Word's TOC field binds the built-in internal style name "toc 1".
+        # A separate custom "TOC 1" style does not govern generated rows.
+        from .format_sections import canonical_toc_style
+        toc_style=canonical_toc_style(doc,level)
+        apply_component(toc_style,'toc_'+str(level),style=True)
+    from .format_sections import toc_styles
+    toc_styles(doc,210-float(fmt['margin_left'])-float(fmt['margin_right']),fmt,component_styles)
     apply_component(doc.styles['TOC Heading'],'toc_title',style=True)
     if not template:apply_component(doc.styles['Title'],'title',style=True)
     if not preserve:
@@ -156,10 +182,19 @@ def export_project(pid,options,tid=None,prepared=None):
         brief=db.loads(p['brief'],{})
         for label,key in [('作者','author'),('学校','school'),('专业','major'),('指导教师','supervisor')]:
             if brief.get(key):apply_component(doc.add_paragraph(label+'：'+str(brief[key])),'cover_fields')
-        doc.add_paragraph('稿件用途：'+options.get('mode','draft')+'；未决事项请查看随附报告。')
-    document_policy=component_styles.get('document',{})
+        cover_note=options.get('cover_note')
+        if cover_note is not None and (not isinstance(cover_note,str) or len(cover_note)>200 or re.search(r'[\x00-\x1f\x7f]',cover_note)):raise ValueError('封面说明须为不超过200字的单行纯文本')
+        doc.add_paragraph(cover_note if cover_note is not None else '稿件用途：'+options.get('mode','draft')+'；未决事项请查看随附报告。')
+    # An explicit revision profile can refine published rules without rewriting
+    # their historical snapshots or claiming a temporary choice is a school rule.
+    document_policy={**component_styles.get('document',{}),**(fmt.get('document_policy') or {})}
+    native_numbering=document_policy.get('heading_numbering')=='native_multilevel'
+    heading_number_id=None
+    if native_numbering:
+        from .format_sections import native_heading_numbering
+        heading_number_id=native_heading_numbering(doc)
     chapter_style='Heading 1'
-    if document_policy.get('chapter_headers') and not preserve:
+    if document_policy.get('chapter_headers') and not preserve and not native_numbering:
         chapter_style='Paper Chapter Heading'
         if chapter_style not in doc.styles:
             from docx.enum.style import WD_STYLE_TYPE
@@ -175,6 +210,9 @@ def export_project(pid,options,tid=None,prepared=None):
         else:doc.add_page_break()
     def display_title(section):
         title=section['title']
+        if native_numbering and section['kind'] not in ('abstract','abstract_en'):
+            from .format_sections import heading_text
+            return heading_text(title)
         if document_policy.get('heading_numbering')=='arabic_space' and section['kind'] not in ('abstract','abstract_en'):
             from .figure_standards import _chinese_number
             match=re.match(r'^\s*第([一二两三四五六七八九十零\d]+)章\s*[、.．]?\s*(.*)$',title)
@@ -207,8 +245,11 @@ def export_project(pid,options,tid=None,prepared=None):
         paragraph=add_caption(doc,'');name='Figure' if node['type']=='figure' else 'Table'
         bookmark_count+=1;start=OxmlElement('w:bookmarkStart');start.set(qn('w:id'),str(bookmark_count));start.set(qn('w:name'),row['bookmark']);paragraph._p.append(start)
         prefix=('图' if node['type']=='figure' else '表')+(' ' if figure_policy['caption_space'] else '')
-        if figure_policy['numbering']=='chapter' and row['chapter']:prefix+=str(row['chapter'])+'-'
+        if figure_policy['numbering']=='chapter' and row['chapter'] and not native_numbering:prefix+=str(row['chapter'])+'-'
         paragraph.add_run(prefix)
+        if figure_policy['numbering']=='chapter' and row['chapter'] and native_numbering:
+            field(paragraph,' STYLEREF 1 \\n ',row['chapter'])
+            paragraph.add_run('-')
         key=(name,row['chapter'] if figure_policy['numbering']=='chapter' else None)
         reset=' \\r 1' if key not in sequences and figure_policy['numbering']=='chapter' else ''
         field(paragraph,' SEQ '+name+reset+' \\* ARABIC ',row['index']);sequences.add(key)
@@ -240,7 +281,7 @@ def export_project(pid,options,tid=None,prepared=None):
             for ch in n.get('content',[]): inline(par,ch)
     def format_paragraph(paragraph,heading=False,cell=False):
         current=section_formats.get(active_sid,fmt)
-        paragraph.paragraph_format.line_spacing=Pt(current['line_spacing_points']) if current.get('line_spacing_points') else float(current['line_spacing'])
+        if not heading:paragraph.paragraph_format.line_spacing=Pt(current['line_spacing_points']) if current.get('line_spacing_points') else float(current['line_spacing'])
         if not heading and current.get('alignment'):paragraph.paragraph_format.alignment={'left':0,'center':1,'right':2,'justify':3}[current['alignment']]
         if not heading:
             ind=paragraph._p.get_or_add_pPr().find(qn('w:ind'))
@@ -275,8 +316,14 @@ def export_project(pid,options,tid=None,prepared=None):
                     para=doc.add_paragraph(style='Quote');inline(para,child);format_paragraph(para)
                 else:block(child,list_style,keep_next)
         elif typ in ('paragraph','heading'):
-            para=doc.add_paragraph(style=f"Heading {min(max(int(attrs.get('level',2)),1),3)}" if typ=='heading' else list_style)
-            inline(para,node)
+            heading_level=min(max(int(attrs.get('level',2)),1),3)
+            para=doc.add_paragraph(style=f"Heading {heading_level}" if typ=='heading' else list_style)
+            if typ=='heading' and native_numbering:
+                from .format_sections import heading_text,number_heading
+                para.add_run(heading_text(documents.plain(node),heading_level))
+                number_heading(para,heading_number_id,heading_level)
+                apply_component(para,'heading_'+str(heading_level))
+            else:inline(para,node)
             format_paragraph(para,typ=='heading')
             if list_style:para.paragraph_format.keep_with_next=keep_next
         elif typ=='table':
@@ -287,7 +334,12 @@ def export_project(pid,options,tid=None,prepared=None):
             from docx.enum.table import WD_TABLE_ALIGNMENT,WD_CELL_VERTICAL_ALIGNMENT
             table.alignment=WD_TABLE_ALIGNMENT.CENTER;table.autofit=False
             width=Mm(210-float(fmt['margin_left'])-float(fmt['margin_right']))
-            for col in table.columns:col.width=int(width/max(cols,1))
+            weights=attrs.get('columnWidths') or [1]*cols
+            if len(weights)!=cols or any(not isinstance(x,(int,float)) or x<=0 for x in weights):raise ValueError('表格列宽比例无效')
+            widths=[int(width*x/sum(weights)) for x in weights]
+            for col,col_width in zip(table.columns,widths):col.width=col_width
+            for table_row in table.rows:
+                for cell,col_width in zip(table_row.cells,widths):cell.width=col_width
             occupied=set()
             for i,row in enumerate(rows):
                 j=0
@@ -309,6 +361,12 @@ def export_project(pid,options,tid=None,prepared=None):
                 if any(c['type']=='tableHeader' for c in row.get('content',[])):
                     header=OxmlElement('w:tblHeader');header.set(qn('w:val'),'true');table.rows[i]._tr.get_or_add_trPr().append(header)
             if attrs.get('tableStyle')=='three-line':style_three_line(table)
+            for row_index,table_row in enumerate(table.rows):
+                for table_cell in table_row.cells:
+                    for paragraph in table_cell.paragraphs:
+                        if attrs.get('fontSize'):
+                            for run in paragraph.runs:run.font.size=Pt(float(attrs['fontSize']))
+                        if attrs.get('bodyAlignment') and row_index>0:paragraph.alignment={'left':0,'center':1,'right':2,'justify':3}[attrs['bodyAlignment']]
             if attrs.get('note'):
                 from .paper_tables import keep_note_with_table
                 keep_note_with_table(table)
@@ -320,7 +378,12 @@ def export_project(pid,options,tid=None,prepared=None):
                 from PIL import Image
                 with Image.open(safe_object(artifact['sha256'])) as image:iw,ih=image.size
                 width=min(145,210-float(fmt['margin_left'])-float(fmt['margin_right']),180*iw/ih)
-                doc.add_picture(str(safe_object(artifact['sha256'])),width=Mm(width))
+                shape=doc.add_picture(str(safe_object(artifact['sha256'])),width=Mm(width))
+                metadata=db.loads(artifact.get('metadata'),{}) if isinstance(artifact.get('metadata'),str) else artifact.get('metadata',{}) or {}
+                svg_hash=attrs.get('svgSha256') or metadata.get('svg_sha256')
+                if svg_hash:
+                    from .docx_vector import attach_svg
+                    attach_svg(doc,shape,safe_object(svg_hash).read_bytes())
                 from .paper_tables import unindent
                 picture=doc.paragraphs[-1];picture.alignment=1;unindent(picture);picture.paragraph_format.keep_with_next=True
                 picture.paragraph_format.line_spacing=1
@@ -352,6 +415,9 @@ def export_project(pid,options,tid=None,prepared=None):
             heading=doc.add_paragraph(display_title(s),style='Abstract Heading')
         else:heading=doc.add_heading(display_title(s),min(level,3))
         if s['kind'] not in ('abstract','abstract_en') and level==1:heading.style=doc.styles[chapter_style]
+        if native_numbering and s['kind'] not in ('abstract','abstract_en'):
+            from .format_sections import number_heading
+            number_heading(heading,heading_number_id,min(level,3))
         apply_component(heading,heading_name)
         if body_items and s['id']==body_items[0]['section']['id'] and (not preserve or separate_frontmatter or has_directory):heading.paragraph_format.page_break_before=False
         md.extend(['#'*min(level+1,6)+' '+display_title(s),'',markdown_document(item['document'],figure_rows,s['id']),''])
@@ -364,14 +430,37 @@ def export_project(pid,options,tid=None,prepared=None):
     if separate_frontmatter:
         body_section=new_numbered_section(doc);set_numbering(body_section,document_policy.get('body_numbering','decimal'))
         from .format_sections import body_headers
-        body_headers(doc,body_section,document_policy,p['title'],field,display_title(body_items[0]['section']) if body_items else '')
+        body_headers(doc,body_section,{**document_policy,'chapter_style':chapter_style},p['title'],field,display_title(body_items[0]['section']) if body_items else '')
     elif has_directory:doc.add_page_break()
     for item in body_items:render_section(item)
     bibliography_heading=doc.add_heading('参考文献',1);bibliography_heading.style=doc.styles[chapter_style];md.extend(['## 参考文献',''])
+    apply_component(bibliography_heading,'reference_heading')
+    if native_numbering:
+        props=OxmlElement('w:numPr');disabled=OxmlElement('w:numId');disabled.set(qn('w:val'),'0');props.append(disabled);bibliography_heading._p.get_or_add_pPr().append(props)
     for rid,bib in sorted(refs.items(),key=lambda item:year_labels[item[0]]) if citation_style=='author_year' else refs.items():
         line=('' if citation_style=='author_year' else f'[{numbering[rid]}] ')+bibliography_text(db.loads(bib['metadata'],{}));paragraph=doc.add_paragraph(line)
         from .paper_tables import unindent
-        unindent(paragraph);apply_component(paragraph,'references_body');md.append(line)
+        unindent(paragraph);apply_component(paragraph,'references_body')
+        # Bibliographic prose must wrap naturally; distributed justification of
+        # a short final line creates the conspicuous gaps seen in older exports.
+        reference_style=component_styles.get('references_body',{})
+        if 'alignment' not in reference_style:paragraph.alignment=0
+        if not any(key in reference_style for key in ('first_line_chars','hanging_chars')):
+            paragraph.paragraph_format.left_indent=Pt(float(fmt['font_size'])*2)
+            paragraph.paragraph_format.first_line_indent=Pt(-float(fmt['font_size'])*2)
+        wrapping=OxmlElement('w:wordWrap');wrapping.set(qn('w:val'),'true');paragraph._p.get_or_add_pPr().append(wrapping)
+        if bibliography_hyphenation:
+            suppress=OxmlElement('w:suppressAutoHyphens');suppress.set(qn('w:val'),'0');paragraph._p.get_or_add_pPr().append(suppress)
+        for run in paragraph.runs:
+            props=run._r.get_or_add_rPr();fonts=props.get_or_add_rFonts();fonts.set(qn('w:eastAsia'),fmt['font']);fonts.set(qn('w:ascii'),fmt['latin_font']);fonts.set(qn('w:hAnsi'),fmt['latin_font'])
+            spacing=props.find(qn('w:spacing'))
+            if spacing is None:spacing=OxmlElement('w:spacing');props.append(spacing)
+            spacing.set(qn('w:val'),'0')
+            if bibliography_hyphenation:
+                language=props.find(qn('w:lang'))
+                if language is None:language=OxmlElement('w:lang');props.append(language)
+                language.set(qn('w:val'),'en-US')
+        md.append(line)
     for index,sec in enumerate(doc.sections):
         if separate_frontmatter and index==0:continue
         footers=[sec.footer]
@@ -393,7 +482,14 @@ def export_project(pid,options,tid=None,prepared=None):
     (folder/'论文.md').write_text(markdown,encoding='utf-8')
     report={'project_title':p['title'],'created_at':db.now(),'findings':findings,'visual_check':'not_run','template_preservation':preservation,'citation_style':citation_style,'footnotes':len(footnotes),'field_update':'请在目标Word软件更新目录、图表目录、交叉引用和页码','format_profile':fmt,'figure_checks':figure_report,'figure_numbering':figure_policy['numbering']}
     report['format_resolution']=format_resolution
+    report['effective_component_styles']=component_styles;report['effective_document_policy']=document_policy
     pdf=False;tool=renderer()
+    needs_field_update=has_directory or bool(figure_rows) or preserve or citation_style=='author_year' or footnotes or document_policy.get('frontmatter_numbering') or document_policy.get('chapter_headers') or any(n.get('attrs',{}).get('omml') for item in snapshots for n in documents.nodes(item['document']))
+    if options.get('pdf') and needs_field_update and tool!='office-com':
+        from .office_renderer import capabilities
+        available=capabilities()
+        if available.get('powershell') and {'Word.Application','KWPS.Application'}.intersection(available.get('registered_com',[])):
+            tool='office-com'
     if options.get('pdf') and (preserve or citation_style=='author_year' or footnotes or document_policy.get('frontmatter_numbering') or document_policy.get('chapter_headers') or any(n.get('attrs',{}).get('omml') for item in snapshots for n in documents.nodes(item['document']))) and not tool:
         report['pdf_status']='requires_office_renderer_for_advanced_content'
     elif options.get('pdf') and tool:

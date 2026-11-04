@@ -56,6 +56,15 @@ export const ResearchAttributes = Extension.create({
           ]),
         ]),
       },
+      {
+        types: ["table"],
+        attributes: Object.fromEntries(
+          ["columnWidths", "fontSize", "bodyAlignment"].map((name) => [
+            name,
+            { default: null, renderHTML: () => ({}) },
+          ]),
+        ),
+      },
     ];
   },
 });
@@ -79,6 +88,9 @@ export function researchAtoms(pid?: string) {
           ["claimMapping", { default: null, renderHTML: () => ({}) }],
           ...arrayFields.map((name) => [name, { default: [] }]),
           ...textFields.map((name) => [name, { default: null }]),
+          ...(kind === "figure"
+            ? [["svgSha256", { default: null, renderHTML: () => ({}) }]]
+            : []),
           ...[
             "citationId",
             "noteText",

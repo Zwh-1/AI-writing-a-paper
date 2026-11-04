@@ -6,9 +6,9 @@ from test_workbench import client,project,file
 from app import db,provider,security,tasks,model_routing,material_summary
 
 
-def configured(client):
+def configured(client,max_attempts=1):
     pid=project(client)
-    assert client.put('/api/v1/settings',json={'api_key':'fake-ds-key','provider':{'base_url':'https://ds.example/v1','model':'deepseek-test','max_attempts':1,'json_mode':True}}).status_code==200
+    assert client.put('/api/v1/settings',json={'api_key':'fake-ds-key','provider':{'base_url':'https://ds.example/v1','model':'deepseek-test','max_attempts':max_attempts,'json_mode':True}}).status_code==200
     response=client.put('/api/v1/gpt-fallback/settings',json={'api_key':'fake-gpt-key','provider':{'base_url':'https://www.ecoapi.cc/v1','model':'gpt-6.1-sol'}})
     assert response.status_code==200,response.text
     return pid
@@ -41,9 +41,10 @@ def test_primary_is_deepseek_and_keeps_gpt_credential_isolated(client,monkeypatc
     assert db.loads(run['manifest'])['provider_route']=='deepseek'
 
 
-@pytest.mark.parametrize('status,body',[(401,{'error':'bad key'}),(402,{'error':'quota'}),(403,{'error':'permission'}),(404,{'error':'model unavailable'}),(400,{'error':'image input unsupported'}),(429,{'error':'rate limit'})])
+@pytest.mark.parametrize('status,body',[(401,{'error':'bad key'}),(402,{'error':'quota'}),(403,{'error':'permission'}),(404,{'error':'model unavailable'}),(400,{'error':'image input unsupported'})])
 def test_explicit_rejection_switches_once_and_records_actual_gpt(client,monkeypatch,status,body):
-    pid=configured(client);requests=[]
+    # An explicit rejection can switch immediately to GPT's own allowance.
+    pid=configured(client,max_attempts=2);requests=[]
     def handle(r):
         requests.append(r)
         if r.url.host=='ds.example':return httpx.Response(status,json=body,headers={'retry-after':'0'})
@@ -59,6 +60,57 @@ def test_explicit_rejection_switches_once_and_records_actual_gpt(client,monkeypa
     assert [r['status'] for r in runs]==['rejected','completed']
     assert db.loads(runs[1]['manifest'])['fallback_reason']
     assert db.one("SELECT SUM(budget_charge) AS n FROM generation_budget_usage WHERE status<>'rejected'")['n']==2
+
+
+@pytest.mark.parametrize('succeed_on_fifth',[False,True])
+def test_five_primary_failures_switch_to_backup_but_fifth_success_does_not(client,monkeypatch,succeed_on_fifth):
+    pid=configured(client,max_attempts=5);requests=[]
+    def handle(r):
+        requests.append(r)
+        if r.url.host!='ds.example':
+            assert r.url.host=='www.ecoapi.cc'
+            return ok()
+        if succeed_on_fifth and len(requests)==5:return ok()
+        return httpx.Response(429,json={'error':'rate limit'},headers={'retry-after':'0'})
+    mock(monkeypatch,handle)
+    if succeed_on_fifth:
+        assert call(pid)['provider_snapshot']['model']=='deepseek-test'
+    else:
+        assert call(pid)['provider_snapshot']['model']=='gpt-6.1-sol'
+    assert len(requests)==(5 if succeed_on_fifth else 6)
+    runs=db.rows('SELECT status FROM generation_runs ORDER BY created_at')
+    assert [row['status'] for row in runs]==['rejected']*(4 if succeed_on_fifth else 5)+['completed']
+
+
+@pytest.mark.parametrize('succeed_on_fifth',[False,True])
+def test_backup_has_its_own_five_bounded_opportunities(client,monkeypatch,succeed_on_fifth):
+    pid=configured(client,max_attempts=5);requests=[]
+    def handle(r):
+        requests.append(r)
+        if r.url.host=='ds.example':return httpx.Response(401,json={'error':'bad key'})
+        assert r.url.host=='www.ecoapi.cc'
+        if succeed_on_fifth and len(requests)==6:return ok()
+        return httpx.Response(429,json={'error':'rate limit'},headers={'retry-after':'0'})
+    mock(monkeypatch,handle)
+    if succeed_on_fifth:
+        result=call(pid)
+        assert result['provider_snapshot']['model']=='gpt-6.1-sol'
+    else:
+        with pytest.raises(provider.ProviderError,match='5/5'):call(pid)
+    assert [r.url.host for r in requests]==['ds.example']+['www.ecoapi.cc']*5
+    assert len(db.rows('SELECT * FROM generation_runs'))==6
+
+
+def test_one_primary_opportunity_still_allows_the_independent_backup(client,monkeypatch):
+    pid=configured(client,max_attempts=1);requests=[]
+    def handle(r):
+        requests.append(r)
+        if r.url.host=='ds.example':return httpx.Response(401,json={'error':'bad key'})
+        assert r.url.host=='www.ecoapi.cc'
+        return ok()
+    mock(monkeypatch,handle)
+    assert call(pid)['provider_snapshot']['model']=='gpt-6.1-sol'
+    assert [r.url.host for r in requests]==['ds.example','www.ecoapi.cc']
 
 
 @pytest.mark.parametrize('failure',['timeout','503','invalid_json','truncated','bad_request'])

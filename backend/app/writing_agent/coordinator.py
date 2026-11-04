@@ -270,12 +270,18 @@ def cancel(pid,identity):
     db.execute("UPDATE tasks SET cancel_requested=1 WHERE id IN (SELECT task_id FROM writing_steps WHERE session_id=?)",(identity,));return get(pid,identity)
 
 def recover_task(task):
+    from ..task_transitions import transition
     st=db.one('SELECT * FROM writing_steps WHERE task_id=?',(task['id'],))
     if not st:return
-    if st['state']=='completed':db.execute("UPDATE tasks SET status='succeeded',result=?,lease_until=NULL WHERE id=?",(db.dumps(unblob(st['output_blob'])),task['id']));return
+    if st['state']=='completed':
+        transition(task['id'],task['attempt'],'running',status='succeeded',result=db.dumps(unblob(st['output_blob'])),lease_until=None)
+        return
     unknown=db.one("SELECT id FROM generation_runs WHERE task_id=? AND status IN ('pending','sent','outcome_unknown') LIMIT 1",(task['id'],))
     status='outcome_unknown' if unknown else 'queued'
-    db.execute('UPDATE tasks SET status=?,lease_until=NULL WHERE id=?',(status,task['id']));db.execute('UPDATE writing_steps SET state=? WHERE id=?',(status,st['id']));db.execute('UPDATE writing_sessions SET status=? WHERE id=?',(status,st['session_id']))
+    with db.transaction():
+        if transition(task['id'],task['attempt'],'running',status=status,lease_until=None):
+            db.execute('UPDATE writing_steps SET state=? WHERE id=?',(status,st['id']))
+            db.execute('UPDATE writing_sessions SET status=? WHERE id=?',(status,st['session_id']))
 
 @db.atomic
 def reparse_saved_draft(pid,identity):

@@ -21,8 +21,19 @@ try{
   $taskBefore=$taskApp.Documents.Count
   if($taskBefore -eq 0){$taskApp.Visible=$false};$taskAlerts=$taskApp.DisplayAlerts;$taskApp.DisplayAlerts=0
   $taskDocument=$taskApp.Documents.Open([System.IO.Path]::GetFullPath($Source),$false,$true,$false)
-  try{$taskDocument.Fields.Update()|Out-Null}catch{}
-  try{$taskDocument.Repaginate();foreach($taskToc in $taskDocument.TablesOfContents){$taskToc.Update()};foreach($taskFigures in $taskDocument.TablesOfFigures){$taskFigures.Update()};$taskDocument.Fields.Update()|Out-Null}catch{}
+  # Updating Document.Fields alone omits header/footer stories.  Repeat after
+  # pagination and directory expansion so all page-dependent caches agree.
+  foreach($taskPass in 1..3){
+   $taskDocument.Fields.Update()|Out-Null
+   foreach($taskSection in $taskDocument.Sections){
+    foreach($taskHeader in $taskSection.Headers){if($taskHeader.Exists){$taskHeader.Range.Fields.Update()|Out-Null}}
+    foreach($taskFooter in $taskSection.Footers){if($taskFooter.Exists){$taskFooter.Range.Fields.Update()|Out-Null}}
+   }
+   $taskDocument.Repaginate()
+   foreach($taskToc in $taskDocument.TablesOfContents){$taskToc.Update()}
+   foreach($taskFigures in $taskDocument.TablesOfFigures){$taskFigures.Update()}
+  }
+  $taskDocument.Repaginate()
   if($UpdatedDocx){
    try{$taskDocument.SaveAs2([System.IO.Path]::GetFullPath($UpdatedDocx),16)}catch{$taskDocument.SaveAs([System.IO.Path]::GetFullPath($UpdatedDocx),16)}
    if(-not(Test-Path -LiteralPath $UpdatedDocx)){throw 'Updated DOCX was not saved'}

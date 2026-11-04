@@ -1,7 +1,7 @@
 """Actual upstream SSE deltas. Partial output is durable but never auto-accepted."""
 import hashlib,json,re
 import httpx
-from . import provider,db
+from . import provider,db,adapter
 
 def frames(lines):
     data=[];event=''
@@ -15,9 +15,12 @@ def frames(lines):
     if data:yield event,'\n'.join(data)
 
 @provider.frozen_request
+@provider.single_model_attempt
 def generate(system,user,images=None,on_delta=lambda text:None):
     if images:raise provider.ProviderError('当前流式适配仅支持文本；图像请求请关闭流式开关后调用')
     c=provider.config();protocol=c['protocol'];limit=int(c['max_output_tokens']);model=c['model']
+    from .official_api_policy import assert_allowed
+    assert_allowed(c)
     if protocol not in ('openai','responses') or 'gemini' in model.lower():raise provider.ProviderError('模型配置已停用，请选择 DeepSeek 或 GPT')
     if protocol=='responses':path='/v1/responses';body={'model':model,'instructions':system,'input':user,'max_output_tokens':limit,'stream':True,'store':False}
     else:
@@ -52,7 +55,7 @@ def generate(system,user,images=None,on_delta=lambda text:None):
                         for choice in data.get('choices',[]):
                             delta+=choice.get('delta',{}).get('content') or ''
                             if choice.get('finish_reason'):finish=choice['finish_reason'];finished=finish=='stop'
-                        if data.get('usage'):u=data['usage'];usage={'input_tokens':u.get('prompt_tokens'),'output_tokens':u.get('completion_tokens'),'raw':u}
+                        if data.get('usage') is not None:usage=data['usage']
                     if delta:
                         if sum(map(len,fragments))+len(delta)>2_000_000:raise provider.ProviderError('流式输出超过应用大小限制，片段已保留',unknown=True)
                         fragments.append(delta);on_delta(delta)
@@ -62,14 +65,20 @@ def generate(system,user,images=None,on_delta=lambda text:None):
             error.failure_phase='connect_before_http';error.transport_error_type=type(e).__name__
             raise error from e
         except httpx.RequestError as e:raise provider.ProviderError('流连接中断，远端执行情况未知；片段已保存，未自动重发',unknown=True) from e
+    usage=adapter.normalize_usage(usage,protocol)
     cost=provider.usage_cost(c,usage)
     result={'streamed':True,'text':''.join(fragments),'usage':usage,'cost':cost,'remote_id':remote_id,'response_evidence':{'provider_request_id':response.headers.get('x-request-id'),'response_id':remote_id,'http_status':response.status_code,'received_at':db.now(),'usage_sha256':hashlib.sha256(db.dumps(usage).encode()).hexdigest()},'request_hash':hashlib.sha256(db.dumps({'path':path,'body':body}).encode()).hexdigest()}
+    result['provider_snapshot']={name:c[name] for name in ('base_url','protocol','model')}
+    result['actual_provider_config']=dict(c)
+    scoped=provider._REQUEST.get() or {}
+    if scoped.get('key'):result['actual_provider_credential_hash']=adapter.credential_hash(scoped['key'])
     if finish in ('length','MAX_TOKENS','incomplete'):raise provider.ProviderError('模型输出被截断，已保存响应和用量',response_result=result)
     if not finished:raise provider.ProviderError('未收到完整完成事件，保留流式片段供恢复检查',unknown=True)
     if not fragments:raise provider.ProviderError('模型返回内容为空',response_result=result)
     return result
 
 
+@provider.with_attempt_budget
 def pool_generate(system,user,on_delta=lambda text:None):
     """Streaming generation through the DeepSeek multi-endpoint pool.
 
@@ -79,7 +88,7 @@ def pool_generate(system,user,on_delta=lambda text:None):
     from . import deepseek_pool
     cfg=deepseek_pool.config()
     snapshot=provider._REQUEST.get() or {}
-    endpoints=[] if cfg['strategy'].get('mode')=='manual' or snapshot.get('route') not in (None,'deepseek') else deepseek_pool.endpoints()
+    endpoints=[] if cfg['strategy'].get('mode')=='manual' or snapshot.get('config',{}).get('provider_endpoint_id') or snapshot.get('route') not in (None,'deepseek') else deepseek_pool.endpoints()
     if not endpoints:
         result=generate(system,user,on_delta=on_delta)
         result['provider_snapshot']={k:provider.config()[k] for k in ('base_url','protocol','model')}
@@ -92,7 +101,8 @@ def pool_generate(system,user,on_delta=lambda text:None):
     for ep in tried:
         for attempt in range(same_retry+1):
             try:
-                result,endpoint,key=_stream_generate_once(system,user,on_delta,ep)
+                with provider._model_attempt(ep.get('id')):
+                    result,endpoint,key=_stream_generate_once(system,user,on_delta,ep)
                 deepseek_pool.mark_success(ep.get('id'))
                 if strategy.get('mode')=='round_robin':
                     deepseek_pool.rotate()
@@ -107,6 +117,7 @@ def pool_generate(system,user,on_delta=lambda text:None):
                 if e.unknown or e.response_result is not None:
                     # May have been charged or partial output exists: never replay.
                     raise
+                if not provider.attempts_remaining():raise
                 failover_allowed=kind in strategy.get('failover_on',[])
                 if not failover_allowed:
                     raise
@@ -119,6 +130,7 @@ def pool_generate(system,user,on_delta=lambda text:None):
     raise provider.ProviderError('DeepSeek 多端点池没有可用的端点配置')
 
 
+@provider.single_model_attempt
 def _stream_generate_once(system,user,on_delta,ep):
     """Send one streaming generation through a specific pool endpoint.
 
@@ -129,7 +141,9 @@ def _stream_generate_once(system,user,on_delta,ep):
     if ep is None:
         result=generate(system,user,on_delta=on_delta)
         return result, {'id': None, 'name': 'legacy'}, provider.get_key()
-    c=deepseek_pool._endpoint_to_provider(ep)
+    c=provider.apply_request_options(deepseek_pool._endpoint_to_provider(ep))
+    from .official_api_policy import assert_allowed
+    assert_allowed(c)
     key=deepseek_pool.endpoint_key(ep)
     if not key:
         raise provider.ProviderError('端点密钥未配置，无法请求：'+ep.get('name',''))
@@ -171,7 +185,7 @@ def _stream_generate_once(system,user,on_delta,ep):
                             for choice in data.get('choices',[]):
                                 delta+=choice.get('delta',{}).get('content') or ''
                                 if choice.get('finish_reason'):finish=choice['finish_reason'];finished=finish=='stop'
-                            if data.get('usage'):u=data['usage'];usage={'input_tokens':u.get('prompt_tokens'),'output_tokens':u.get('completion_tokens'),'raw':u}
+                            if data.get('usage') is not None:usage=data['usage']
                         if delta:
                             if sum(map(len,fragments))+len(delta)>2_000_000:raise provider.ProviderError('流式输出超过应用大小限制，片段已保留',unknown=True)
                             fragments.append(delta);on_delta(delta)
@@ -181,9 +195,12 @@ def _stream_generate_once(system,user,on_delta,ep):
                 error.failure_phase='connect_before_http';error.transport_error_type=type(e).__name__
                 raise error from e
             except httpx.RequestError as e:raise provider.ProviderError('流连接中断，远端执行情况未知；片段已保存，未自动重发',unknown=True) from e
-    cost=provider.usage_cost(c,usage)
+    usage=adapter.normalize_usage(usage,protocol)
+    with provider.request_scope(c,key):cost=provider.usage_cost(c,usage)
     result={'streamed':True,'text':''.join(fragments),'usage':usage,'cost':cost,'remote_id':remote_id,'response_evidence':{'provider_request_id':response.headers.get('x-request-id'),'response_id':remote_id,'http_status':response.status_code,'received_at':db.now(),'usage_sha256':hashlib.sha256(db.dumps(usage).encode()).hexdigest()},'request_hash':hashlib.sha256(db.dumps({'path':path,'body':body}).encode()).hexdigest()}
     result['provider_snapshot']={k:c[k] for k in ('base_url','protocol','model')}
+    result['actual_provider_config']=dict(c)
+    result['actual_provider_credential_hash']=adapter.credential_hash(key)
     if finish in ('length','MAX_TOKENS','incomplete'):raise provider.ProviderError('模型输出被截断，已保存响应和用量',response_result=result)
     if not finished:raise provider.ProviderError('未收到完整完成事件，保留流式片段供恢复检查',unknown=True)
     if not fragments:raise provider.ProviderError('模型返回内容为空',response_result=result)

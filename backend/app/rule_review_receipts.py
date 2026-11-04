@@ -1,6 +1,6 @@
 """Local-only review usage receipts. Never label a shared account total as a job fee."""
 from collections import Counter
-from . import db
+from . import db,adapter,provider_identity
 
 
 def billing_baseline(pid):
@@ -10,18 +10,18 @@ def billing_baseline(pid):
 def receipt(task):
     runs=db.rows('SELECT * FROM generation_runs WHERE task_id=? ORDER BY created_at',(task['id'],))
     payload=db.loads(task['payload'],{}) if isinstance(task['payload'],str) else task['payload']
-    models=Counter(r['model'] for r in runs);inp=out=cached=reasoning=0;usage_complete=True;reasoning_complete=True
+    models=Counter(provider_identity.effective(r)['effective']['model'] or 'unknown' for r in runs);inp=out=cached=reasoning=0;usage_complete=True;reasoning_complete=True;cache_complete=True;cache_known_calls=0
     for run in runs:
-        usage=db.loads(run['usage'],{});usage=usage if isinstance(usage,dict) else {};raw=usage.get('raw',{}) or {};raw=raw if isinstance(raw,dict) else {}
+        usage=adapter.normalize_usage(db.loads(run['usage'],{}),provider_identity.effective(run)['effective']['protocol']);raw=usage['raw'] if isinstance(usage['raw'],dict) else {}
         for name in ('input_tokens','output_tokens'):
             if type(usage.get(name)) is not int:usage_complete=False
         inp+=usage.get('input_tokens') if type(usage.get('input_tokens')) is int else 0;out+=usage.get('output_tokens') if type(usage.get('output_tokens')) is int else 0
-        details=raw.get('prompt_tokens_details') or {};details=details if isinstance(details,dict) else {}
-        hit=raw.get('prompt_cache_hit_tokens',0) or details.get('cached_tokens',0)
-        cached+=hit if type(hit) is int and hit>=0 else 0
-        completion=raw.get('completion_tokens_details') or {};completion=completion if isinstance(completion,dict) else {}
+        hit=usage['cache_hit_tokens']
+        if hit is None:cache_complete=False
+        else:cached+=hit;cache_known_calls+=1
+        completion=raw.get('completion_tokens_details') or raw.get('output_tokens_details') or {};completion=completion if isinstance(completion,dict) else {}
         value=completion.get('reasoning_tokens')
-        if type(value) is int:reasoning+=value
+        if type(value) is int and value>=0:reasoning+=value
         else:reasoning_complete=False
     job_id=payload.get('rule_job_id')
     job=db.one('SELECT * FROM rule_jobs WHERE id=? AND project_id=?',(job_id,task['project_id'])) if job_id else None
@@ -48,7 +48,7 @@ def receipt(task):
     if runs and evidence.get('verified') and evidence.get('project_id')==task['project_id'] and set(evidence.get('run_ids',[]))==executable:
         confirmed=evidence['amount'];currency=evidence['currency'];fee_state='reconciled';scope='task'
     audit=db.setting('rule_review_integrity:'+task['project_id'],{})
-    return {'calls':len(runs),'models':[{'model':m,'calls':n} for m,n in sorted(models.items())],'completed_calls':sum(r['status'] in ('completed','completed_invalid') for r in runs),'rejected_calls':sum(r['status'] in ('rejected','failed_before_send') for r in runs),'input_tokens':inp,'output_tokens':out,'cached_input_tokens':cached,'usage_complete':usage_complete,'reasoning_tokens':reasoning if reasoning_complete else None,'fee_state':fee_state,'confirmed_amount':confirmed,'currency':currency,'fee_scope':scope,'integrity_findings':sum(f.get('task_id')==task['id'] for f in audit.get('findings',[])),'note':'历史复用模型不计入本次调用；账户归并总额不直接当成本次费用'}
+    return {'calls':len(runs),'models':[{'model':m,'calls':n} for m,n in sorted(models.items())],'completed_calls':sum(r['status'] in ('completed','completed_invalid') for r in runs),'rejected_calls':sum(r['status'] in ('rejected','failed_before_send') for r in runs),'input_tokens':inp,'output_tokens':out,'cached_input_tokens':cached if cache_complete else None,'known_cached_input_tokens':cached if cache_known_calls else None,'cache_usage_complete':cache_complete,'cache_known_calls':cache_known_calls,'usage_complete':usage_complete,'reasoning_tokens':reasoning if reasoning_complete else None,'fee_state':fee_state,'confirmed_amount':confirmed,'currency':currency,'fee_scope':scope,'integrity_findings':sum(f.get('task_id')==task['id'] for f in audit.get('findings',[])),'note':'历史复用模型不计入本次调用；账户归并总额不直接当成本次费用'}
 
 
 def freeze_receipt(task):

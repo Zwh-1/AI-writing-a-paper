@@ -24,7 +24,10 @@ def generate(env,monkeypatch,visual=False):
     no_literature(monkeypatch)
     captured={}
     def call(system,user,images=None):
-        c=db.loads(user);captured.update(c)
+        c=db.loads(user)
+        # Independent semantic-review frames have a different contract and
+        # omit duplicate text; retain the writer input for these assertions.
+        if 'thesis_core' in c:captured.update(c)
         ids=[e['id'] for e in c['project_evidence']]
         data={'paragraphs':[{'text':'只有发行方且开关启用时才允许执行操作，源码观察不代表测试已经通过。','evidence_ids':ids}]}
         if visual:

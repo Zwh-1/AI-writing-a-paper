@@ -12,11 +12,25 @@ _VISITING=ContextVar('resource_ref_visiting',default=frozenset())
 
 def version_scope(function):
     @wraps(function)
-    def guarded(pid,kind,identity,*args,**kwargs):
+    def guarded(pid,kind,identity,remote=False,seen=None):
         active=_VISITING.get();key=(pid,kind,identity)
-        if key in active:raise HTTPException(409,'资源来源出现循环')
+        # Cycle checks precede memo lookup, including explicitly supplied paths.
+        if key in active or (kind,identity) in (seen or ()):
+            raise HTTPException(409,'资源来源出现循环')
+        # The lineage owner creates and releases this cache only for a pure
+        # validation boundary. Direct calls never retain permission decisions.
+        from .knowledge_lineage import _CACHE
+        # Only the original-source leaf is path-independent. Composite nodes
+        # still traverse their graph so an explicit ancestor set, including a
+        # cached leaf's parent, cannot hide a dependency cycle.
+        cache=_CACHE.get() if kind=='source' else None
+        cache_key=('resource_version',pid,kind,identity,remote)
+        if cache is not None and cache_key in cache:return cache[cache_key]
         token=_VISITING.set(active|{key})
-        try:return function(pid,kind,identity,*args,**kwargs)
+        try:
+            value=function(pid,kind,identity,remote,seen)
+            if cache is not None:cache[cache_key]=value
+            return value
         finally:_VISITING.reset(token)
     return guarded
 

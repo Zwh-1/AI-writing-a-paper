@@ -131,8 +131,8 @@ _BALANCE_FIELDS = {
 }
 
 _USAGE_FIELDS = {
-    'input_tokens': ('input_tokens', 'prompt_tokens', 'inputTokenCount', 'prompt_tokens_details'),
-    'output_tokens': ('output_tokens', 'completion_tokens', 'outputTokenCount', 'completion_tokens_details'),
+    'input_tokens': ('input_tokens', 'prompt_tokens', 'inputTokenCount'),
+    'output_tokens': ('output_tokens', 'completion_tokens', 'outputTokenCount'),
     'total_tokens': ('total_tokens', 'totalTokenCount'),
 }
 
@@ -305,43 +305,61 @@ def normalize_pricing(payload):
     }
 
 
-def normalize_usage(usage):
-    """Normalize any vendor usage object to {'input_tokens', 'output_tokens'}.
+def _usage_counter(values):
+    values=[value for value in values if value is not None]
+    if not values:return None,'missing'
+    if any(type(value) is not int or value<0 for value in values):return None,'invalid'
+    if len(set(values))!=1:return None,'conflict'
+    return values[0],'reported'
 
-    Handles OpenAI chat completions (prompt_tokens/completion_tokens), Responses
-    API (input_tokens/output_tokens), and nested details objects. Returns a dict
-    with integer token counts (or None when missing); it never fabricates zeros.
+
+def normalize_usage(usage, protocol=None):
+    """Normalize totals and cache subsets without guessing missing totals.
+
+    Repeated normalization preserves the vendor raw object. Conflicting aliases,
+    bools and malformed cache details stay unknown rather than becoming zero.
+    Only Chat/Responses cache-subset semantics permit deriving a missing subset.
     """
-    if not isinstance(usage, dict):
-        return {'input_tokens': None, 'output_tokens': None, 'raw': usage}
-    input_tokens = None
-    output_tokens = None
-    for field in _USAGE_FIELDS['input_tokens']:
-        v = usage.get(field)
-        if isinstance(v, int) and v >= 0:
-            input_tokens = v
-            break
-        if isinstance(v, dict):
-            # DeepSeek official details: {"input_tokens_details": {"cached_tokens": n}}
-            for inner in v.values():
-                if isinstance(inner, int) and inner >= 0:
-                    input_tokens = inner
-                    break
-            if input_tokens is not None:
-                break
-    for field in _USAGE_FIELDS['output_tokens']:
-        v = usage.get(field)
-        if isinstance(v, int) and v >= 0:
-            output_tokens = v
-            break
-        if isinstance(v, dict):
-            for inner in v.values():
-                if isinstance(inner, int) and inner >= 0:
-                    output_tokens = inner
-                    break
-            if output_tokens is not None:
-                break
-    return {'input_tokens': input_tokens, 'output_tokens': output_tokens, 'raw': usage}
+    raw=usage.get('raw',usage) if isinstance(usage,dict) else usage
+    sources=[];pending=[usage];seen=set()
+    while pending:
+        source=pending.pop(0)
+        if not isinstance(source,dict) or id(source) in seen:continue
+        seen.add(id(source));sources.append(source)
+        pending.extend(source.get(name) for name in ('raw','usage'))
+    def counts(fields):
+        return _usage_counter([source[field] for source in sources for field in fields if field in source])
+    inp,input_state=counts(_USAGE_FIELDS['input_tokens'])
+    out,_=counts(_USAGE_FIELDS['output_tokens'])
+    hit_values=[source[field] for source in sources for field in ('cache_hit_tokens','prompt_cache_hit_tokens') if field in source]
+    malformed_details=False
+    for source in sources:
+        for name in ('prompt_tokens_details','input_tokens_details'):
+            details=source.get(name)
+            if isinstance(details,dict):
+                if 'cached_tokens' in details:hit_values.append(details['cached_tokens'])
+            elif details is not None:malformed_details=True
+    hit,hit_state=_usage_counter(hit_values)
+    miss,miss_state=counts(('cache_miss_tokens','prompt_cache_miss_tokens'))
+    reporting='reported'
+    if input_state!='reported':reporting=input_state+'_input'
+    elif protocol not in (None,'openai','responses'):reporting='unsupported_protocol'
+    elif malformed_details or 'invalid' in (hit_state,miss_state):reporting='invalid'
+    elif 'conflict' in (hit_state,miss_state):reporting='conflict'
+    elif hit is None and miss is None:reporting='missing'
+    else:
+        if hit is None:hit=inp-miss;reporting='derived_hit'
+        if miss is None:miss=inp-hit;reporting='derived_miss'
+        if hit<0 or miss<0 or hit+miss!=inp:reporting='conflict'
+    if reporting not in ('reported','derived_hit','derived_miss'):
+        hit=miss=None
+    elif isinstance(usage,dict) and usage.get('cache_reporting') in ('derived_hit','derived_miss'):
+        reporting=usage['cache_reporting']
+    if isinstance(usage,dict) and hit is None and miss is None and usage.get('cache_reporting') in (
+            'invalid','conflict','unsupported_protocol','invalid_input','conflict_input'):
+        reporting=usage['cache_reporting']
+    return {'input_tokens':inp,'output_tokens':out,'cache_hit_tokens':hit,
+            'cache_miss_tokens':miss,'cache_reporting':reporting,'raw':raw}
 
 
 def default_pricing(family, model=None):

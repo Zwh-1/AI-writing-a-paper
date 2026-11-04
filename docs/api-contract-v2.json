@@ -1,6 +1,24 @@
 {
   "workbench": [
     {
+      "method": "GET",
+      "path": "/api/v2/model-providers/deepseek/official-api-policy",
+      "legacy_path": "/api/v1/deepseek/official-api-policy",
+      "canonical": true,
+      "domain": "model-providers",
+      "owner": "app.deepseek_profiles",
+      "transport": "json"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v2/model-providers/deepseek/official-api-policy",
+      "legacy_path": "/api/v1/deepseek/official-api-policy",
+      "canonical": true,
+      "domain": "model-providers",
+      "owner": "app.deepseek_profiles",
+      "transport": "json"
+    },
+    {
       "method": "POST",
       "path": "/api/v2/model-profiles/gpt-fallback/probes/text",
       "legacy_path": "/api/v1/gpt-fallback/probe",
@@ -169,6 +187,42 @@
       "canonical": true,
       "domain": "model-profiles",
       "owner": "app.main",
+      "transport": "json"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/deepseek/official-api-policy",
+      "legacy_path": "/api/v1/deepseek/official-api-policy",
+      "canonical": false,
+      "domain": "deepseek",
+      "owner": "app.deepseek_profiles",
+      "transport": "json"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v2/deepseek/official-api-policy",
+      "legacy_path": "/api/v1/deepseek/official-api-policy",
+      "canonical": false,
+      "domain": "deepseek",
+      "owner": "app.deepseek_profiles",
+      "transport": "json"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/model-providers/cache-policy",
+      "legacy_path": "/api/v1/ai-cache-policy",
+      "canonical": true,
+      "domain": "model-providers",
+      "owner": "app.ai_cache_policy",
+      "transport": "json"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v2/model-providers/cache-policy",
+      "legacy_path": "/api/v1/ai-cache-policy",
+      "canonical": true,
+      "domain": "model-providers",
+      "owner": "app.ai_cache_policy",
       "transport": "json"
     },
     {
@@ -478,6 +532,24 @@
       "transport": "json"
     },
     {
+      "method": "GET",
+      "path": "/api/v2/ai-cache-policy",
+      "legacy_path": "/api/v1/ai-cache-policy",
+      "canonical": false,
+      "domain": "ai-cache-policy",
+      "owner": "app.ai_cache_policy",
+      "transport": "json"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v2/ai-cache-policy",
+      "legacy_path": "/api/v1/ai-cache-policy",
+      "canonical": false,
+      "domain": "ai-cache-policy",
+      "owner": "app.ai_cache_policy",
+      "transport": "json"
+    },
+    {
       "method": "POST",
       "path": "/api/v2/backups/restore",
       "legacy_path": "/api/v1/backups/restore",
@@ -505,12 +577,30 @@
       "transport": "json"
     },
     {
+      "method": "GET",
+      "path": "/api/v2/runtime/status",
+      "legacy_path": "/api/v1/runtime/status",
+      "canonical": true,
+      "domain": "runtime",
+      "owner": "app.runtime_api",
+      "transport": "json"
+    },
+    {
       "method": "POST",
       "path": "/api/v2/system/session",
       "legacy_path": "/api/v1/session",
       "canonical": true,
       "domain": "system",
       "owner": "app.main",
+      "transport": "json"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v2/runtime/drain",
+      "legacy_path": "/api/v1/runtime/drain",
+      "canonical": true,
+      "domain": "runtime",
+      "owner": "app.runtime_api",
       "transport": "json"
     },
     {
@@ -1190,6 +1280,24 @@
     },
     {
       "method": "GET",
+      "path": "/api/v2/projects/{project_id}/execution-budget-policy",
+      "legacy_path": "/api/v1/projects/{pid}/execution-budget-policy",
+      "canonical": true,
+      "domain": "execution-budget-policy",
+      "owner": "app.execution_policy",
+      "transport": "json"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v2/projects/{project_id}/execution-budget-policy",
+      "legacy_path": "/api/v1/projects/{pid}/execution-budget-policy",
+      "canonical": true,
+      "domain": "execution-budget-policy",
+      "owner": "app.execution_policy",
+      "transport": "json"
+    },
+    {
+      "method": "GET",
       "path": "/api/v2/projects/{project_id}/research-sync/conflicts",
       "legacy_path": "/api/v1/projects/{pid}/research-sync/conflicts",
       "canonical": true,
@@ -1294,6 +1402,15 @@
       "canonical": true,
       "domain": "rules",
       "owner": "app.main",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/projects/{project_id}/execution-cost-preview",
+      "legacy_path": "/api/v1/projects/{pid}/execution-cost-preview",
+      "canonical": true,
+      "domain": "execution-cost-preview",
+      "owner": "app.execution_policy",
       "transport": "json"
     },
     {
@@ -2521,6 +2638,15 @@
       "transport": "json"
     },
     {
+      "method": "GET",
+      "path": "/api/v2/projects/{project_id}/runtime-metrics",
+      "legacy_path": "/api/v1/projects/{pid}/runtime-metrics",
+      "canonical": true,
+      "domain": "runtime-metrics",
+      "owner": "app.runtime_api",
+      "transport": "json"
+    },
+    {
       "method": "POST",
       "path": "/api/v2/projects/{project_id}/workspace/query",
       "legacy_path": "/api/v1/projects/{pid}/workspace/query",
@@ -3458,6 +3584,15 @@
     },
     {
       "method": "GET",
+      "path": "/api/v2/request-runs/{run_id}/execution",
+      "legacy_path": "/api/v1/request-runs/{run_id}/execution",
+      "canonical": true,
+      "domain": "request-runs",
+      "owner": "app.request_receipts",
+      "transport": "json"
+    },
+    {
+      "method": "GET",
       "path": "/api/v2/projects/{project_id}/execution",
       "legacy_path": "/api/v1/projects/{pid}/studio/execution",
       "canonical": true,
@@ -3967,6 +4102,15 @@
       "canonical": true,
       "domain": "citations",
       "owner": "app.extras",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/request-runs/{run_id}/lookup",
+      "legacy_path": "/api/v1/request-runs/{run_id}/lookup",
+      "canonical": true,
+      "domain": "request-runs",
+      "owner": "app.request_receipts",
       "transport": "json"
     },
     {

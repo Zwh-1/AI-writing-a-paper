@@ -1,12 +1,47 @@
 """DeepSeek primary and separately authenticated GPT backup, with audited calls."""
-import math,re
+import hashlib,math,re
 from contextlib import contextmanager
 from urllib.parse import urlsplit
 from fastapi import HTTPException
 from . import db,provider,security
 
 PROFILE='gpt-fallback'
-DEFAULT={**provider.DEFAULT,'base_url':'https://www.ecoapi.cc/v1','protocol':'openai','model':'','enabled':True,'supports_images':True,'streaming':False,'max_attempts':1,'json_mode':True,'input_price':None,'output_price':None}
+DEFAULT={**provider.DEFAULT,'base_url':'https://www.ecoapi.cc/v1','protocol':'openai','model':'','enabled':True,'supports_images':True,'streaming':False,'max_attempts':5,'json_mode':True,'input_price':None,'output_price':None}
+
+
+def _route_identity(task,payload):
+    return hashlib.sha256(db.dumps([task['project_id'],payload.get('provider_endpoint_id'),
+                                   payload.get('provider_profile')]).encode()).hexdigest()
+
+
+def _automatic_route(task,payload):
+    saved=db.setting('model_routing_task:'+task['id'],{})
+    return saved if isinstance(saved,dict) and saved.get('identity')==_route_identity(task,payload) else {}
+
+
+def _save_automatic_route(task,payload,failures,reason):
+    db.set_setting('model_routing_task:'+task['id'],{
+        'identity':_route_identity(task,payload),'route':'gpt',
+        'consecutive_failures':failures,'reason':provider.redact(reason),'updated_at':db.now()})
+
+
+def _check_cancelled(task):
+    live=db.one('SELECT cancel_requested,status FROM tasks WHERE id=? AND project_id=?',
+                (task['id'],task['project_id']))
+    if live and (live['cancel_requested'] or live['status']=='cancelled'):
+        raise InterruptedError('用户已请求取消')
+
+
+@contextmanager
+def _task_snapshot(task,preserve_primary_scope=False):
+    """A task's automatic GPT route must never become another task's primary."""
+    existing=provider._REQUEST.get()
+    foreign=existing and existing.get('task_id') not in (None,task['id'])
+    isolate=foreign and (not preserve_primary_scope or existing.get('route')=='gpt')
+    token=provider._REQUEST.set(None) if isolate else None
+    try:yield provider._REQUEST.get()
+    finally:
+        if token is not None:provider._REQUEST.reset(token)
 
 
 def config():return {**DEFAULT,**db.setting('gpt_fallback_provider',{})}
@@ -35,9 +70,10 @@ def save_settings(body):
     if not isinstance(c['model'],str) or c['model'] and not re.fullmatch(r'(?:[\w.-]+/)?gpt[\w.:-]*',c['model'],re.I):raise HTTPException(422,'备选模型须使用服务商返回的 GPT 模型 ID')
     for key in ('enabled','supports_images','json_mode','streaming'):
         if not isinstance(c[key],bool):raise HTTPException(422,'GPT 开关格式无效')
-    for key,low,high in [('max_output_tokens',128,1000000),('timeout_seconds',15,3600),('context_limit',512,2000000),('max_request_cost',0.000001,1000000),('max_attempts',1,3)]:
+    for key,low,high in [('max_output_tokens',128,1000000),('timeout_seconds',15,3600),('context_limit',512,2000000),('max_request_cost',0.000001,1000000),('max_attempts',1,5)]:
         v=c[key]
         if isinstance(v,bool) or not isinstance(v,(int,float)) or not math.isfinite(v) or not low<=v<=high:raise HTTPException(422,'GPT 配置数值无效：'+key)
+        if key=='max_attempts' and type(v) is not int:raise HTTPException(422,'最多尝试次数（含首次）应为1至5的整数')
     for key in ('input_price','output_price'):
         v=c[key]
         if v is not None and (isinstance(v,bool) or not isinstance(v,(int,float)) or not math.isfinite(v) or v<0):raise HTTPException(422,'GPT Token 单价须为非负有限数值')
@@ -76,57 +112,106 @@ def models():
 def task_scope(task):
     """Assemble writing with the same route, key and limits used for sending."""
     from .summary_billing import priced_config
-    forced=db.loads(task.get('payload'),{}).get('provider_profile')=='gpt'
-    with provider.settings_lock():
-        existing=provider._REQUEST.get()
+    payload=db.loads(task.get('payload'),{})
+    strict_primary=payload.get('provider_profile')=='primary' and task['kind']=='provider_image_probe'
+    forced=payload.get('provider_profile')=='gpt' or (not strict_primary and _automatic_route(task,payload).get('route')=='gpt')
+    with provider.settings_lock(),_task_snapshot(task,preserve_primary_scope=True) as existing:
         if forced:
             cfg,key=(dict(existing['config']),existing['key']) if existing and existing.get('route')=='gpt' else (config(),security.get_key(PROFILE))
         else:
-            cfg,key=(dict(existing['config']),existing['key']) if existing else (provider.config(),provider.get_key())
+            cfg,key=_primary_snapshot(payload,existing)
     if forced and not (cfg.get('enabled') and cfg.get('model') and key):
         raise provider.ProviderError('请在“GPT 备选”保存有权限的密钥并选择 GPT 模型')
-    with provider.request_scope(priced_config(cfg,key),key,route='gpt' if forced else 'deepseek'):
+    options={**(existing or {}).get('request_options',{}),**payload.get('request_options',{})}
+    cfg=provider.apply_request_options(priced_config(cfg,key),options)
+    with provider.request_scope(cfg,key,route='gpt' if forced else 'deepseek',request_options=options):
+        provider._REQUEST.get()['task_id']=task['id']
         yield
+
+
+def _primary_snapshot(payload,existing=None):
+    """Resolve a saved endpoint for this task without activating it globally."""
+    if existing and existing['config'].get('provider_endpoint_id'):
+        return dict(existing['config']),existing['key']
+    endpoint_id=payload.get('provider_endpoint_id')
+    if endpoint_id is None:
+        return (dict(existing['config']),existing['key']) if existing else (provider.config(),provider.get_key())
+    if not isinstance(endpoint_id,str) or not endpoint_id.strip():
+        raise provider.ProviderError('任务 DeepSeek 接口标识无效')
+    from . import deepseek_pool,deepseek_profiles
+    endpoint=next((ep for ep in deepseek_pool.config()['endpoints'] if ep.get('id')==endpoint_id),None)
+    if endpoint is None:raise provider.ProviderError('任务指定的 DeepSeek 接口不存在')
+    if not endpoint.get('enabled',True):raise provider.ProviderError('任务指定的 DeepSeek 接口已关闭')
+    if not isinstance(endpoint.get('model'),str) or not endpoint['model'].strip():
+        raise provider.ProviderError('任务指定的 DeepSeek 接口尚未选择模型')
+    key=deepseek_pool.endpoint_key(endpoint)
+    if not key:raise provider.ProviderError('任务指定的 DeepSeek 接口尚未配置密钥')
+    endpoint=deepseek_profiles._autobind_pricing(endpoint)
+    # The marker remains in copied request configurations, including billing scopes.
+    return {**deepseek_pool._endpoint_to_provider(endpoint),'provider_endpoint_id':endpoint_id},key
 
 
 def call(executor,task,system,user,manifest,images=None):
     from .tasks import event
-    profile=db.loads(task.get('payload'),{}).get('provider_profile')
-    forced=profile=='gpt'
-    with provider.settings_lock():
-        existing=provider._REQUEST.get()
-        primary=dict(existing['config']) if existing else provider.config()
-        key=existing['key'] if existing else '' if forced else provider.get_key()
+    payload=db.loads(task.get('payload'),{});profile=payload.get('provider_profile')
+    _check_cancelled(task)
+    strict_primary=profile=='primary' and task['kind']=='provider_image_probe'
+    automatic={} if strict_primary else _automatic_route(task,payload)
+    forced=profile=='gpt' or automatic.get('route')=='gpt'
+    with provider.settings_lock(),_task_snapshot(task) as existing:
+        primary,key=(provider.config(),'') if forced else _primary_snapshot(payload,existing)
         backup=config();backup_key=security.get_key(PROFILE) if backup['enabled'] and backup['model'] else ''
         if forced and existing and existing.get('route')=='gpt':backup,backup_key=dict(existing['config']),existing['key']
     available=bool(backup['enabled'] and backup['model'] and backup_key)
     def execute(c,k,route,reason=None):
         from .summary_billing import priced_config
-        selected=priced_config(c,k)
-        options=manifest.get('request_options',{})
-        if options.get('max_output_tokens'):selected['max_output_tokens']=min(int(selected['max_output_tokens']),int(options['max_output_tokens']))
-        if options.get('reasoning_effort') in ('low','high','max'):selected['reasoning_effort']=options['reasoning_effort']
-        if manifest.get('streaming_text') and not images:selected['streaming']=True
+        options={**(existing or {}).get('request_options',{}),**manifest.get('request_options',{})}
+        if manifest.get('streaming_text') and not images:options['streaming']=True
+        selected=provider.apply_request_options(priced_config(c,k),options)
+        if manifest.get('agent_transport') or (existing or {}).get('config',{}).get('agent_transport'):
+            agent_cfg=(existing or {}).get('config',{})
+            selected.update(agent_transport=True,streaming=False,json_mode=agent_cfg.get('json_mode',True))
+            if agent_cfg.get('max_output_tokens'):
+                selected['max_output_tokens']=min(int(selected['max_output_tokens']),int(agent_cfg['max_output_tokens']))
         if images:selected.update(streaming=False,json_mode=False)
         if route=='gpt':selected.pop('thinking_enabled',None)
         elif selected.get('thinking_enabled') is False:selected.pop('reasoning_effort',None)
-        meta={**manifest,'provider_route':route}
+        meta={**manifest,'provider_route':route,'request_options':options}
+        if route=='gpt':meta.pop('provider_endpoint_id',None)
+        if selected.get('provider_endpoint_id'):meta['provider_endpoint_id']=selected['provider_endpoint_id']
         if reason:meta.update(fallback_reason=provider.redact(reason),automatic_retry_index=0)
-        with provider.request_scope(selected,k,route='gpt' if route=='gpt' else (existing or {}).get('route') or 'deepseek'):return executor(task,system,user,meta,images)
+        with provider.route_attempt_budget(route,selected.get('max_attempts',5)):
+            with provider.request_scope(selected,k,route='gpt' if route=='gpt' else (existing or {}).get('route') or 'deepseek',request_options=options):
+                provider._REQUEST.get()['task_id']=task['id']
+                result=executor(task,system,user,meta,images)
+        if route=='gpt' and (automatic or reason):
+            _save_automatic_route(task,payload,0,reason or automatic.get('reason',''))
+            # A whole-paper scope can span many stages. Its later packing must
+            # see GPT's actual limits too, without changing global settings.
+            if existing and existing.get('task_id')==task['id']:
+                existing.update(config=dict(selected),key=k,route='gpt')
+        return result
     if forced:
         if not available:raise provider.ProviderError('GPT 备选尚未配置完成，请在接口与设置中检测并选择 GPT 模型')
-        return execute(backup,backup_key,'gpt')
-    if images and not primary.get('supports_images',False) and profile!='primary':
+        return execute(backup,backup_key,'gpt',automatic.get('reason'))
+    if images and not primary.get('supports_images',False) and not strict_primary:
         if not available or not backup.get('supports_images'):raise provider.ProviderError('当前 DeepSeek 未启用图片能力，GPT 备选也未就绪；可先使用本地 OCR，或完成 GPT 图片模型配置')
         event(task['id'],'使用 GPT 识别图片',40)
         return execute(backup,backup_key,'gpt','当前 DeepSeek 接口未启用图片输入')
     try:return execute(primary,key,'deepseek')
     except provider.ProviderError as e:
-        if profile=='primary' or e.unknown or e.response_result is not None or not e.fallback_allowed or not available:raise
+        if strict_primary or not provider.safe_fallback_failure(e) or not available:raise
+        # Retryable failures first exhaust DeepSeek's own bounded allowance;
+        # explicit credential/model rejections can still switch immediately.
+        if not e.fallback_allowed and not getattr(e,'attempt_budget_exhausted',False):raise
         if images and not backup.get('supports_images'):raise
-        # Stream fragments indicate execution even if an unusual error claimed rejection.
-        if db.one('SELECT 1 FROM stream_chunks s JOIN generation_runs g ON g.id=s.run_id WHERE g.task_id=? LIMIT 1',(task['id'],)):raise
-        event(task['id'],'DeepSeek 明确拒绝本次请求，切换 GPT 备选',manifest.get('progress_percent',45))
+        run_id=getattr(e,'run_id',None)
+        if getattr(e,'has_stream_output',False) or run_id and db.one('SELECT 1 FROM stream_chunks WHERE run_id=? LIMIT 1',(run_id,)):raise
+        _check_cancelled(task)
+        failures=getattr(e,'consecutive_failures',0)
+        event(task['id'],f'DeepSeek 连续{failures}次安全失败，自动切换 GPT 备选' if failures else 'DeepSeek 明确拒绝本次请求，自动切换 GPT 备选',
+              manifest.get('progress_percent',45),{'provider_route':'gpt','deepseek_consecutive_failures':failures})
+        _save_automatic_route(task,payload,failures,str(e))
         return execute(backup,backup_key,'gpt',str(e))
 
 
@@ -145,7 +230,7 @@ def migrate_from_summary(gpt_model=''):
     previous_gpt=security.get_key(PROFILE)
     reusable=old['base_url'].rstrip('/').removesuffix('/v1')=='https://www.ecoapi.cc'
     if not previous_gpt and old_key and not reusable:raise ValueError('原主接口不是 EcoAPI，请单独配置 GPT 密钥后迁移')
-    primary={**provider.DEFAULT,**old,**{k:ds[k] for k in ('base_url','model','protocol','context_limit','timeout_seconds','input_price','output_price','currency','max_request_cost')},'streaming':False,'json_mode':True,'supports_images':False,'max_attempts':1,'thinking_enabled':ds['thinking_enabled']}
+    primary={**provider.DEFAULT,**old,**{k:ds[k] for k in ('base_url','model','protocol','context_limit','timeout_seconds','input_price','output_price','currency','max_request_cost','max_attempts')},'streaming':False,'json_mode':True,'supports_images':False,'thinking_enabled':ds['thinking_enabled']}
     fallback={**DEFAULT,**db.setting('gpt_fallback_provider',{}),'base_url':'https://www.ecoapi.cc/v1','protocol':'openai','model':gpt_model or config()['model'],'enabled':True}
     if 'gemini' in primary['model'].lower():raise ValueError('DeepSeek 模型配置无效')
     if fallback['model'] and not re.fullmatch(r'(?:[\w.-]+/)?gpt[\w.:-]*',fallback['model'],re.I):raise ValueError('GPT 模型配置无效')

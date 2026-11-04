@@ -7,6 +7,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import time
 import zipfile
 
@@ -39,6 +40,7 @@ GUIDES=(*GUIDES,'docs/PaperSpark全部功能复查与补齐_2026-11-02.md')
 GUIDES=(*GUIDES,'docs/架构整合实施记录_2026-11-02.md','docs/新增功能架构集成评估与改进方案_2026-11-02.md')
 GUIDES=(*GUIDES,'docs/功能完整性复查与补齐记录_2026-11-02.md','docs/功能完整性复核_2026-11-02/README.md')
 GUIDES=(*GUIDES,'docs/核心写作与素材闭环实施记录_2026-11-03.md','docs/0.10.0完整整合便携版使用说明.md')
+GUIDES=(*GUIDES,'docs/1.0.0完整整合便携版使用说明.md')
 
 
 def _walk(folder, allow_modules=False):
@@ -233,6 +235,14 @@ def build(profile='full', root=None, output=None, audit=False, max_bytes=None):
     version = _validate_version(root)
     paths = plan(profile, root)
     release_source = source_revision(root)
+    build_identity = None
+    if profile not in ('browser', 'models', 'graphrag'):
+        # The identity describes this exact checkout and built frontend, even
+        # when packaging a deliberately dirty development build. It never
+        # reads user data or trusts a stale previous build-info.json.
+        sys.path.insert(0, str(ROOT / 'backend'))
+        from app.runtime_identity import build_manifest
+        build_identity = build_manifest(root, include_frontend=True)
     groups = defaultdict(int)
     for path in paths:
         relative = archive_name(path, root)
@@ -246,6 +256,9 @@ def build(profile='full', root=None, output=None, audit=False, max_bytes=None):
     report = {'version': version, 'profile': profile, 'files': len(paths), 'size_limit_bytes': limit,
               'source_commit': release_source['commit'], 'source_dirty': release_source['dirty'],
               'uncompressed_bytes': sum(groups.values()), 'groups_raw_bytes': dict(groups)}
+    if build_identity:
+        report.update({key: build_identity.get(key) for key in
+                       ('build_id', 'source_fingerprint', 'api_contract_hash', 'frontend_fingerprint')})
     if audit:
         return report
     output = Path(output or root.parent / f'砚台论文工作台_{version}_{PROFILES[profile]}.zip').resolve()
@@ -268,6 +281,10 @@ def build(profile='full', root=None, output=None, audit=False, max_bytes=None):
             if time.monotonic() - last_notice > 20:
                 print(json.dumps({'phase': 'compressing', 'profile': profile, 'done': i, 'total': len(paths)}), flush=True)
                 last_notice = time.monotonic()
+        if build_identity:
+            identity_raw=json.dumps(build_identity,ensure_ascii=False,sort_keys=True,indent=2).encode('utf-8')
+            archive.writestr('build-info.json',identity_raw)
+            hashes['build-info.json']=hashlib.sha256(identity_raw).hexdigest()
         manifest = {'version': version, 'profile': profile, 'package_kind': 'component' if profile in ('browser', 'models','graphrag') else 'application',
                     'source_commit': release_source['commit'], 'source_dirty': release_source['dirty'],
                     'files': hashes, 'user_data_included': False, 'api_key_included': False,
@@ -279,6 +296,9 @@ def build(profile='full', root=None, output=None, audit=False, max_bytes=None):
                     'bundled_graphrag': profile == 'integrated',
                     'deduplication': 'advanced-deps precedence retained; one shared Node runtime',
                     'browser': 'headless shell only' if profile in ('offline', 'browser', 'integrated') else 'automatic download' if profile == 'full' else 'optional offline component'}
+        if build_identity:
+            manifest['build_identity']={key:build_identity.get(key) for key in
+                ('schema','build_id','source_fingerprint','api_contract_hash','frontend_fingerprint','capabilities')}
         archive.writestr('便携包清单.json', json.dumps(manifest, ensure_ascii=False, indent=2))
     if limit is not None and partial.stat().st_size >= limit:
         size = partial.stat().st_size

@@ -200,7 +200,17 @@ def prepare_readings(pid,question,sid,plan,max_chars=30000):
         except HTTPException as error:gaps.append({'file_id':item['file_id'],'reason':str(error.detail)})
     return {'reading_ids':list(sessions.values()),'passages':completed,'gaps':gaps,'semantic_support':'not_checked'}
 
+@db.read_session()
 def prepare_writing(pid,question,sid,limit=8,budget_bytes=None):
+    # Reading updates change reading receipts, not the underlying source input.
+    # Hash each file once for this preparation while unit and permission checks
+    # still resolve current records individually.
+    from .knowledge_units import cache_inputs
+    with cache_inputs():
+        return _prepare_writing(pid,question,sid,limit,budget_bytes)
+
+
+def _prepare_writing(pid,question,sid,limit=8,budget_bytes=None):
     from .document_preparation import prepare
     if not db.setting('graph_wiki_enabled:'+pid,False):return prepare(pid,question,sid,limit,max_bytes=budget_bytes)
     knowledge=query(pid,{'query':question,'namespace':'literature','include_originals':True},remote=True)

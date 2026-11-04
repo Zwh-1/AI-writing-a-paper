@@ -16,6 +16,20 @@ foreach ($taskPid in @($taskSaved.worker_pid,$taskSaved.server_pid)) {
             $taskVerified=[Math]::Abs(($taskFallback.StartTime-$taskExpectedTime).TotalSeconds) -lt 30
         }
     }
-    if ($taskVerified) { Stop-Process -Id $taskPid -ErrorAction SilentlyContinue }
+    if ($taskVerified) {
+        # Stop the supervisor first so it cannot replace a child being stopped.
+        # Only direct runner children of this verified process are in scope.
+        $taskChildren=@(Get-CimInstance -ClassName Win32_Process -Filter "ParentProcessId = $taskPid" -ErrorAction SilentlyContinue | Where-Object {
+            $_.CommandLine -and $_.CommandLine.Contains($taskSaved.runner) -and $_.CommandLine -match '\bworker-child\b'
+        })
+        Stop-Process -Id $taskPid -ErrorAction SilentlyContinue
+        foreach ($taskChild in $taskChildren) {
+            Wait-Process -Id $taskChild.ProcessId -Timeout 3 -ErrorAction SilentlyContinue
+            $taskChildLive=Get-CimInstance -ClassName Win32_Process -Filter ("ProcessId = "+$taskChild.ProcessId) -ErrorAction SilentlyContinue
+            if ($taskChildLive -and $taskChildLive.ParentProcessId -eq $taskPid -and $taskChildLive.CreationDate -eq $taskChild.CreationDate -and $taskChildLive.CommandLine -eq $taskChild.CommandLine) {
+                Stop-Process -Id $taskChild.ProcessId -ErrorAction SilentlyContinue
+            }
+        }
+    }
 }
 Write-Output 'Registered workbench processes stopped; saved projects remain available.'

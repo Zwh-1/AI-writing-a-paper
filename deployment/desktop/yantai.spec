@@ -6,6 +6,7 @@ hidden=collect_submodules('app')
 for module in ('winrt','fastembed','latex2mathml','pypdfium2','reportlab','jieba'):
     hidden+=collect_submodules(module)
 data=[(str(root/'backend'),'backend'),(str(root/'backend/app'),'app'),(str(root/'backend/migrations'),'migrations'),(str(root/'prompts'),'prompts'),(str(root/'frontend/dist'),'frontend/dist'),(str(root/'runner.py'),'.'),(str(root/'services'),'services'),(str(root/'scripts'),'scripts'),(str(root/'deployment/execution.Dockerfile'),'deployment')]
+if (root/'build-info.json').is_file():data.append((str(root/'build-info.json'),'.'))
 binaries=[]
 for module in ('pypdfium2_raw','onnxruntime'):
     binaries+=collect_dynamic_libs(module)

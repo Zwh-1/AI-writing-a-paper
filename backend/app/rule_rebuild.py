@@ -291,7 +291,7 @@ def process(task,payload):
     pid=task['project_id'];job=payload.get('resume_task_id') or task['id']
     if db.setting(key(job,'summary'),{}).get('adopted_at'):return {'complete':True,**db.setting(key(job,'summary'))}
     receipt_id=rule_pipeline.ensure_job(task,{**payload,'automatic':True,'rule_job_id':job,'allow_gpt':False})
-    cfg=ai_autopilot.priced_config(provider.config(),provider.get_key());cfg.update(max_output_tokens=min(6144,int(cfg['max_output_tokens'])),thinking_enabled=False,max_attempts=2)
+    cfg=ai_autopilot.priced_config(provider.config(),provider.get_key());cfg.update(max_output_tokens=min(6144,int(cfg['max_output_tokens'])),thinking_enabled=False)
     plans,documents=plan(pid,cfg);results=[];failures=[]
     def snapshot():
         done_by_file={fid:sum(r['file_id']==fid for r in results) for fid in documents}

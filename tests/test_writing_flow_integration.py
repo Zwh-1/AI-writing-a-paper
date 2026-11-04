@@ -6,6 +6,10 @@ from app import db, provider, security, tasks, documents, writing_flow
 
 @pytest.fixture
 def writing_project(client, monkeypatch):
+    # This fixture verifies the historical whole-candidate protocol. The v2
+    # scoped/patch suite selects its task-frozen versions explicitly.
+    db.set_setting('ai_cache_policy',{'new_task_verification_scope':'legacy_full',
+                                    'new_task_revision_protocol':'full_candidate'})
     pid = project(client)
     sid = section(client, pid)
     manual_package(client, pid)

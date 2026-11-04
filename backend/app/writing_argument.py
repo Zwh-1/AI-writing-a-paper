@@ -187,3 +187,9 @@ def scoped_context(context, mode):
                                   'navigation_only_sections': omitted,
                                   'policy': '缺少关键前提时请求读取原文，导航句不得充当已核实依据'}
     return scoped, scoped['context_coverage']
+
+
+def dependency_projection(claims, changed_claim_ids=(), changed_source_ids=()):
+    """Expose impact analysis for observation; current live guards remain authoritative."""
+    from .writing_quality_protocols import dependency_shadow
+    return dependency_shadow(claims,changed_claim_ids,changed_source_ids)

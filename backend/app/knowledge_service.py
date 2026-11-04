@@ -6,9 +6,26 @@ from . import db, security, knowledge_units as units
 
 def source_is_excluded(pid,source_id):
     if source_id in db.setting('document_observation_supersessions',{}):return True
-    source=db.one('SELECT s.file_id,p.page_number FROM sources s JOIN files f ON f.id=s.file_id LEFT JOIN pages p ON p.id=s.page_id WHERE s.id=? AND f.project_id=?',(source_id,pid))
+    source=db.one('SELECT s.file_id,s.method,p.page_number,p.review_state FROM sources s JOIN files f ON f.id=s.file_id LEFT JOIN pages p ON p.id=s.page_id WHERE s.id=? AND f.project_id=?',(source_id,pid))
     if not source:return False
-    return bool(db.one("SELECT u.id FROM knowledge_units u JOIN knowledge_parses p ON p.id=u.parse_id JOIN knowledge_heads h ON h.parse_id=p.id WHERE p.project_id=? AND p.file_id=? AND u.review_state='excluded' AND (json_extract(u.locator,'$.page')=? OR EXISTS(SELECT 1 FROM json_each(u.locator,'$.segments') segment WHERE json_extract(segment.value,'$.locator.page')=?)) LIMIT 1",(pid,source['file_id'],source['page_number'],source['page_number'])))
+    if source['review_state']=='not_applicable':return True
+    saved=old=None
+    if source['method']=='document_rule_context':
+        saved=db.one('SELECT text,locator FROM sources WHERE id=?',(source_id,))
+        locator=db.loads(saved['locator'],{})
+        old=db.one('SELECT u.* FROM knowledge_units u JOIN knowledge_parses p ON p.id=u.parse_id WHERE u.id=? AND p.project_id=? AND p.file_id=?',
+                   (locator.get('unit_id'),pid,source['file_id']))
+        if old and old['review_state']=='excluded':return True
+    excluded=bool(db.one("SELECT u.id FROM knowledge_units u JOIN knowledge_parses p ON p.id=u.parse_id JOIN knowledge_heads h ON h.parse_id=p.id WHERE p.project_id=? AND p.file_id=? AND u.review_state='excluded' AND (json_extract(u.locator,'$.page')=? OR EXISTS(SELECT 1 FROM json_each(u.locator,'$.segments') segment WHERE json_extract(segment.value,'$.locator.page')=?)) LIMIT 1",(pid,source['file_id'],source['page_number'],source['page_number'])))
+    if not excluded or source['method']!='document_rule_context':return excluded
+    # A rejected OCR observation must not invalidate a separately captured
+    # native slide used by an immutable published rule. Resolve only an exact
+    # whole-unit match in the current parse; legacy fragments keep the guard.
+    if not old or old['review_state']=='excluded' or old['origin']!='pptx_slide' or old['content_hash']!=locator.get('unit_hash') or old['text']!=saved['text']:
+        return True
+    current=db.one("SELECT p.* FROM knowledge_units u JOIN knowledge_parses p ON p.id=u.parse_id JOIN knowledge_heads h ON h.parse_id=p.id WHERE p.project_id=? AND p.file_id=? AND u.review_state!='excluded' AND u.origin=? AND u.content_hash=? AND u.text=? AND json_extract(u.locator,'$.page')=? LIMIT 1",
+                   (pid,source['file_id'],old['origin'],old['content_hash'],saved['text'],source['page_number']))
+    return not (current and units.parse_current(current))
 
 
 def eligible(pid, remote=False, collection='all'):
@@ -73,23 +90,22 @@ def search(pid, query, limit=10, remote=False, collection='all', include_units=T
         ranked = [r for r in db.rows('SELECT ft.unit_id,bm25(knowledge_unit_fts) AS rank FROM knowledge_unit_fts ft JOIN knowledge_units u ON u.id=ft.unit_id JOIN knowledge_parses p ON p.id=u.parse_id JOIN knowledge_heads h ON h.parse_id=p.id WHERE knowledge_unit_fts MATCH ? AND p.project_id=? ORDER BY rank LIMIT 500', (match, pid)) if r['unit_id'] in by_id][:100]
     scores = {r['unit_id']: 1 / (61 + i) for i, r in enumerate(ranked)}
     cfg = retrieval.config(pid)
+    dense_pipeline={'status':'skipped','matrix_cache_hit':False}
     if by_id and db.setting('reference_knowledge:'+pid,{}).get('semantic_enabled',True) and model_install.status(cfg['model'])['ready']:
         namespace = retrieval.model_key(cfg['model'])
-        vector_rows = [r for r in db.rows('SELECT v.*,ch.text_hash AS current_hash FROM knowledge_unit_vectors v JOIN knowledge_unit_chunks ch ON ch.id=v.chunk_id JOIN knowledge_units u ON u.id=v.unit_id JOIN knowledge_parses p ON p.id=u.parse_id WHERE p.project_id=? AND v.model=?', (pid, namespace)) if r['unit_id'] in by_id and r['text_hash'] == r['current_hash']]
+        vector_rows = [r for r in db.rows('SELECT v.*,ch.text_hash AS current_hash,p.id AS parse_id,p.file_id,p.file_hash,p.input_hash FROM knowledge_unit_vectors v JOIN knowledge_unit_chunks ch ON ch.id=v.chunk_id JOIN knowledge_units u ON u.id=v.unit_id JOIN knowledge_parses p ON p.id=u.parse_id WHERE p.project_id=? AND v.model=?', (pid, namespace)) if r['unit_id'] in by_id and r['text_hash'] == r['current_hash']]
         if vector_rows:
             try:
-                import numpy as np
-                q = retrieval.query_embedding(query, cfg['model']); dense = []
-                for row in vector_rows:
-                    v = np.frombuffer(row['vector'], dtype=np.float32)
-                    if len(v) == len(q) and np.isfinite(v).all() and float(np.linalg.norm(v)):
-                        dense.append((row['unit_id'], float(v @ q / (np.linalg.norm(v) * np.linalg.norm(q)))))
-                seen_dense = set(); unique_dense = []
-                for uid, score in sorted(dense, key=lambda r: -r[1]):
-                    if uid not in seen_dense:unique_dense.append((uid,score));seen_dense.add(uid)
-                for position, (uid, _) in enumerate(unique_dense[:100]):
+                from . import ai_cache_policy
+                enabled=ai_cache_policy.settings()['unit_matrix_cache_enabled']
+                q = retrieval.query_embedding(query, cfg['model'])
+                dense,cache_hit=retrieval.unit_dense_scores(pid,namespace,vector_rows,q,cache_enabled=enabled)
+                dense_pipeline={'status':'completed','matrix_cache_hit':cache_hit,'cache_enabled':enabled,
+                                'scored_units':len(dense),'cache_scope':'project_model_chunk_versions_numeric_only'}
+                for position, (uid, _) in enumerate(dense):
                     scores[uid] = scores.get(uid, 0) + 1 / (61 + position)
             except (ValueError, RuntimeError) as error:
+                dense_pipeline={'status':'failed','matrix_cache_hit':False}
                 original.setdefault('warnings', []).append('结构单元向量检索未完成：' + str(error))
     references = {}
     for ref in db.rows('SELECT * FROM bibliography WHERE project_id=? ORDER BY created_at,id', (pid,)):
@@ -108,7 +124,7 @@ def search(pid, query, limit=10, remote=False, collection='all', include_units=T
         key=hit.get('knowledge_unit_id') or hit['id'];merged.setdefault(key,hit);fusion[key]=fusion.get(key,0)+1/(60+position)
     pool=min(100,max(limit,int(cfg['candidate_k'])))
     result=[{**merged[key],'fusion_rank':position} for position,key in enumerate(sorted(merged,key=lambda key:(-fusion[key],key))[:pool],1)]
-    pipeline={'fusion_candidates':len(result),'rerank':{'status':'skipped','type':'cross_encoder','scored':0}}
+    pipeline={'fusion_candidates':len(result),'dense':dense_pipeline,'rerank':{'status':'skipped','type':'cross_encoder','scored':0}}
     if result and db.setting('reference_knowledge:'+pid,{}).get('rerank_enabled',True):
         if model_install.status(cfg['cross_encoder'])['ready']:
             rank_inputs=[];by_identifier={r['id']:r for r in result};words=[w.casefold() for w in terms if len(w)>1]
