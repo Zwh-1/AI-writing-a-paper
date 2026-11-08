@@ -101,7 +101,7 @@ jobs:
       - name: Build runtime and content identity
         run: |
           if ($PSVersionTable.PSVersion -le [version]'7.6.0' -or $PSVersionTable.PSEdition -ne 'Core') { throw 'Requires PowerShell > 7.6.0 Core' }
-          python -m pip install -r deployment/requirements.workbench.txt pyinstaller
+          python -m pip install -r deployment/requirements.workbench.txt -r requirements-ai.lock.txt pyinstaller
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           npm ci --prefix frontend --ignore-scripts --no-audit --no-fund
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

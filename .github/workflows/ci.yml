@@ -29,7 +29,7 @@ jobs:
         run: |
           if ($PSVersionTable.PSVersion -le [version]'7.6.0' -or $PSVersionTable.PSEdition -ne 'Core') { throw 'Requires PowerShell > 7.6.0 Core' }
           if (git status --porcelain --untracked-files=all) { throw 'Verification requires a clean checkout' }
-          python -m pip install -r deployment/requirements.workbench.txt pytest
+          python -m pip install -r deployment/requirements.workbench.txt -r requirements-ai.lock.txt pytest
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           npm ci --prefix frontend --ignore-scripts --no-audit --no-fund
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
