@@ -72,6 +72,20 @@ def test_evidence_used_by_a_claim_is_pinned_in_full():
     with pytest.raises(HTTPException):context.save_context('no-step',payload,manifest,'核验',{'context_limit':8000,'max_output_tokens':1000})
 
 
+def test_continuity_policy_is_supplied_once_without_changing_the_local_context():
+    from app.writing_agent.packing import frame
+    policy='所有已保存正文完整提供；旧稿不是成果证据。'
+    payload={'continuity':{'version':'v1','policy':policy,'coverage':'完整原文'},'related_sections':[{'document':'原文和限定。'}]}
+    original=deepcopy(payload)
+    system,wire=frame(payload,{},'写作。'+policy,{'context_limit':16000})
+    content=db.loads(wire['messages'][0]['content'],{})
+    assert system.count(policy)==1 and 'policy' not in content['continuity']
+    assert content['continuity']['policy_in_system'] is True
+    assert content['related_sections']==original['related_sections'] and payload==original
+    _,other=frame(payload,{},'未包含该指引',{})
+    assert db.loads(other['messages'][0]['content'],{})['continuity']['policy']==policy
+
+
 def test_large_ocr_and_many_advisories_complete_all_stages_in_a_small_context(env,monkeypatch):
     calls=fake_model(monkeypatch)
     db.set_setting('provider',{**provider.config(),'context_limit':16000,'max_output_tokens':2048})
@@ -87,7 +101,7 @@ def test_large_ocr_and_many_advisories_complete_all_stages_in_a_small_context(en
     contracts.save_contract(env['pid'],env['sid'],{'goal':'解释发行方与启用的合取条件','evidence_ids':[env['eid'],*source_ids]},state(env['pid'])['revision'])
     result=coordinator.start(env['pid'],{'section_id':env['sid'],'expected_project_state_revision':state(env['pid'])['revision']})
     completed=finish(env,result)
-    assert completed['status']=='needs_review',completed
+    assert completed['status']=='needs_review',[(row['stage'],row.get('error')) for row in completed['steps'] if row['state']!='completed']
     assert all(step['state']=='completed' for step in completed['steps'])
     assert calls and all('本机保留的原页识别数据' not in db.dumps(payload) for _,payload in calls)
     for system,payload in calls:

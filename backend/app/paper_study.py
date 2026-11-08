@@ -52,6 +52,9 @@ def inventory(pid, snapshot_id=None):
     figures = db.one("SELECT COUNT(*) n FROM artifacts WHERE project_id=? AND kind IN ('figure','table')", (pid,))['n']
     terms = db.one('SELECT COUNT(*) n FROM terms WHERE project_id=?', (pid,))['n']
     units = db.one('SELECT COUNT(*) n FROM code_units WHERE snapshot_id=?', (snapshot_id,))['n'] if snapshot_id else 0
+    binding=db.one('SELECT b.root_path_local FROM repository_snapshots s JOIN repository_bindings b ON b.id=s.binding_id WHERE s.id=? AND s.project_id=?',
+                   (snapshot_id,pid)) if snapshot_id else None
+    root_hint=(binding['root_path_local'] if binding else '').replace('\\','/').lower()
     return {'facts': len(facts),
             'measured_facts': len([f for f in facts if f['status'] == 'measured']),
             'checked_facts': len([f for f in facts if f['verification'] != 'unverified']),
@@ -59,7 +62,8 @@ def inventory(pid, snapshot_id=None):
             'references': reference['n'], 'checked_references': reference['checked'],
             'materials': materials, 'rule_materials': rule_files,
             'figures': figures, 'terms': terms, 'code_units': units,
-            'code_snapshot': bool(snapshot_id)}
+            'code_snapshot': bool(snapshot_id),
+            'diagnostic_source_binding':'/.runtime/' in root_hint and 'frozen' in root_hint}
 
 
 def brief_of(pid):
@@ -129,6 +133,9 @@ def risks_for(project, brief, core, rows, inv):
     elif PLACEHOLDER_QUESTION.search(question):
         add('medium', 'generic_question', '研究问题更像任务描述，不是具体问题',
             advice='写明对象、场景和要解决的问题，例如面向什么角色、解决什么流程的什么问题。')
+    if inv.get('diagnostic_source_binding'):
+        add('high','diagnostic_source_binding','当前项目代码绑定的是工作台的诊断冻结副本，真实源码目录的后续修改不会自动同步。',
+            advice='核对绑定路径；若要按当前毕业项目写作，请在项目依据中绑定真实源码目录并重新采集快照。')
 
     generic = [r for r in rows if r['goal_is_generic']]
     if generic:
@@ -230,9 +237,9 @@ def requirement_draft(project, brief, core, rows, inv, risks):
     if scope:
         details.append(f'范围限定为{scope}')
     if details:
-        opening += '，'.join(details) + '；没有在项目资料、研究事实或实测记录中出现的结果、指标与部署效果一律不写。'
+        opening += '，'.join(details) + '；没有在项目文档、研究事实或实测记录中出现的结果、指标与部署效果一律不写。'
     else:
-        opening += '凡是项目资料、研究事实或实测记录中没有出现的结果、指标与部署效果一律不写。'
+        opening += '凡是项目文档、研究事实或实测记录中没有出现的结果、指标与部署效果一律不写。'
 
     division = []
     for r in rows:
@@ -245,8 +252,8 @@ def requirement_draft(project, brief, core, rows, inv, risks):
     body = '；'.join(division) + '。各章只承担本节任务，定义和背景在同一处讲清，其余章节引用而不复述。'
 
     basis = (f'可用依据是已登记研究事实 {inv["facts"]} 条、参考文献 {inv["references"]} 篇、'
-             f'项目资料 {inv["materials"]} 份')
-    basis += f'、项目代码快照中的 {inv["code_units"]:,} 个代码单元' if inv['code_snapshot'] else ''
+             f'项目文档 {inv["materials"]} 份')
+    basis += f'、已索引的 {inv["code_units"]:,} 个代码单元（索引只作定位，具体论断使用本次实际读取的代码范围）' if inv['code_snapshot'] else ''
     basis += '。'
     codes = {r['code'] for r in risks}
     limits = []
@@ -257,10 +264,10 @@ def requirement_draft(project, brief, core, rows, inv, risks):
     if 'generic_goal' in codes:
         limits.append('章节分工以标题和上面的角色说明为准，遇到两章都可能写的内容归到更专门的一章')
     basis += '；'.join(limits) + '。' if limits else ''
-    basis += '暂缺依据的地方写成【待补证据】并说明缺什么，不推测流程细节，不编造数值、截图的运行结果。'
+    basis += '暂缺依据的地方写明缺什么并保留说明，不推测流程细节，不编造数值、截图的运行结果。'
 
     terms = f'术语沿用项目术语表当前的 {inv["terms"]} 条登记' if inv['terms'] else '术语表尚未登记，中文首次出现时附英文原词并保持全篇一致'
-    style = terms + '，句式以连贯长句为主，不用编号罗列代替论证；图表、编号与引用格式由程序按已发布规则包统一处理。'
+    style = terms + '，按信息关系自然分句与分段，解释真实业务机制，不用技术名词或编号罗列代替论证；图表、编号与引用格式由程序按已发布规则包统一处理。'
     return '\n'.join([opening, body, basis, style])
 
 
@@ -299,12 +306,14 @@ def estimate(pid, rows, cfg):
     total = sum(p['cost'] for p in per_section) if all(p['cost'] is not None for p in per_section) else None
     return {'method': 'measured_previous_runs' if measured else 'arithmetic',
             'priced': total is not None, 'currency': currency,
+            'estimate_scope':'one_base_call_per_section','additional_stage_costs_included':False,
             'total': round(total, 6) if total is not None else None,
             'input_tokens': sum(p['input_tokens'] for p in per_section),
             'output_tokens': sum(p['output_tokens'] for p in per_section),
             'per_section': per_section,
             'note': ('按本项目此前整篇请求的实际用量推算，实际按请求计费。' if measured
                      else '按各章目标字数与此前章节全文推算上下文，实际按请求计费。')
+                    + '此数值仅按每章一次基础调用推算，不是整篇总费用；项目理解、规则分批复核、补读、来源核验、修订和格式修复会另外产生调用。'
                     + ('' if prices_known else '当前接口未登记单价，只能给出 token 预算。')}
 
 

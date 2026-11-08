@@ -40,16 +40,17 @@ def test_native_heading_profile_numbers_three_levels_without_typing_numbers(clie
         assert '%1.%2.%3' in numbering and 'multilevel' in numbering
         body=archive.read('word/document.xml').decode()
         assert 'TOC \\o "1-3"' in body
-    assert any(' STYLEREF 1 ' in (n.text or '') for n in doc.sections[-1].header._element.iter(qn('w:instrText')))
+    assert doc.sections[-1].header.paragraphs[0].text=='测试论文'
+    assert not any('STYLEREF' in (n.text or '') for n in doc.sections[-1].header._element.iter(qn('w:instrText')))
     assert any(' STYLEREF 1 ' in (n.text or '') for n in doc.sections[-1].even_page_header._element.iter(qn('w:instrText')))
 
 
 def test_headers_use_primary_odd_and_even_stories_without_number_switch():
     doc=Document()
     body_headers(doc,doc.sections[0],{'chapter_headers':True},'论文总题名',exports.field,'系统设计')
-    odd=' '.join(n.text or '' for n in doc.sections[0].header._element.iter(qn('w:instrText')))
-    assert odd==' STYLEREF 1 ' and '\\n' not in odd
-    assert doc.sections[0].header.paragraphs[0].text=='系统设计'
+    even=' '.join(n.text or '' for n in doc.sections[0].even_page_header._element.iter(qn('w:instrText')))
+    assert even==' STYLEREF 1 ' and '\\n' not in even
+    assert doc.sections[0].header.paragraphs[0].text=='论文总题名'
     assert doc.sections[0].even_page_header.paragraphs[0].text=='系统设计'
     assert doc.settings.element.find(qn('w:evenAndOddHeaders')) is not None
 
@@ -191,7 +192,7 @@ def test_export_cover_note_is_validated_and_does_not_print_internal_mode(client)
 def test_custom_chapter_style_uses_its_name_while_built_in_styles_use_numeric_selector():
     doc=Document()
     body_headers(doc,doc.sections[0],{'chapter_headers':True,'chapter_style':'Paper Chapter Heading'},'题名',exports.field,'系统设计')
-    codes=' '.join(n.text or '' for n in doc.sections[0].header._element.iter(qn('w:instrText')))
+    codes=' '.join(n.text or '' for n in doc.sections[0].even_page_header._element.iter(qn('w:instrText')))
     assert codes==' STYLEREF "Paper Chapter Heading" '
 
 

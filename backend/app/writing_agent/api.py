@@ -218,6 +218,20 @@ def diagnostic(pid,rid):return evaluations.get(pid,rid)
 def diagnostic_review(pid,rid,body:dict):return evaluations.review(pid,rid,body)
 @router.post('/diagnostics/{rid}/qualify')
 def diagnostic_qualify(pid,rid,body:dict):return evaluations.qualify(pid,rid,body.get('note',''),body.get('policy_id'))
+@router.post('/diagnostics/{rid}/register-real-candidate')
+def register_real_candidate(pid,rid,body:dict):
+    """Register a real whole-paper candidate into a diagnostic run for scoring."""
+    from .diagnostic_scoring import DIMENSIONS
+    answer=str(body.get('answer',''))
+    if not answer.strip():fail('INVALID_DIAGNOSTIC','真实整篇候选文本不能为空')
+    if not isinstance(body.get('case_id'),str) or not isinstance(body.get('variant_id'),str):fail('INVALID_DIAGNOSTIC','需指定诊断用例与变体')
+    profile=profiles.get(pid,body['profile_id'])
+    return evaluations.register_real_whole_paper(pid,rid,body['case_id'],body['variant_id'],
+                                                 body.get('repetition',0),answer,profile['id'],source=body.get('source'))
+@router.post('/diagnostics/{rid}/score-real-candidate')
+def score_real_candidate(pid,rid,body:dict):
+    """Score a registered real candidate with the model-assisted evaluation side."""
+    return evaluations.score_real_whole_paper(pid,rid,body['item_id'],body['profile_id'])
 @router.get('/diagnostic-rubric')
 def rubric(pid):
     security.require_project(pid)

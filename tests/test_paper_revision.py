@@ -105,9 +105,10 @@ def test_revision_resumes_without_repeating_retained_or_completed_chapters(manus
     original = tasks.model_call
     count = []
     def pause(*args, **kwargs):
-        count.append(True)
-        if len(count) == 2:
-            raise BudgetExceeded('模拟修订预算暂停')
+        if args[3].get('writing_stage')!='discourse_review':
+            count.append(True)
+            if len(count) == 2:
+                raise BudgetExceeded('模拟修订预算暂停')
         return original(*args, **kwargs)
     monkeypatch.setattr(tasks, 'model_call', pause)
     assert tasks.run_one()

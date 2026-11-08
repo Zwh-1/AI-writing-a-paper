@@ -53,6 +53,7 @@ def regression(task,profile,data,manifest,step_id,policy,assert_active=lambda:No
     frozen=unblob(policy['revision_baseline_blob']);checks=[];issues=[];findings=[];complete=True
     _,cfg,_=profiles.for_session(task['project_id'],profile['id'])
     system=prompts.BOUNDARY+'这是独立修订回归检查，不是润色。对照original_document、candidate_document和原始证据，逐项返回claim_checks[{local_id,status:preserved|corrected_with_evidence|lost|strengthened|unknown,evidence_ids:[],reason}]、issue_checks[{issue_id,status:fixed|still_present|not_applicable|unknown,reason}]、findings、coverage_complete、summary。不能因为写作者说已修复就判通过。原命题错误可凭证据纠正，不能为通顺删条件或放大承诺；确认原审稿意见错误时可标not_applicable并说明证据。只检查本批给定项目，缺项不算通过。'
+    system,manifest=provider_adapter.prepare_system(task,system,data,manifest)
     batches=max(1,(len(frozen['claims'])+3)//4,(len(frozen['issues'])+3)//4)
     for index in range(batches):
         assert_active();claims=frozen['claims'][index*4:index*4+4];scope_issues=frozen['issues'][index*4:index*4+4]

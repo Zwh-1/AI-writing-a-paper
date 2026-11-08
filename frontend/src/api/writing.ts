@@ -61,7 +61,7 @@ export type WritingFlowSettings = {
   max_research_rounds: number;
   unit_target_words: number;
   unit_threshold_words: number;
-  context_mode: "full_manuscript" | "argument_scoped";
+  context_mode: "full_manuscript" | "argument_scoped" | "hierarchical_v1";
   max_material_chars: number;
 };
 export type WritingArgumentCard = {

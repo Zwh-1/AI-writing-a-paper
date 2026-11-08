@@ -98,20 +98,30 @@ def _case_nodes(spec):
 def _er_nodes(spec):
     entities=spec['entities'];columns=min(2,len(entities));details={}
     for n in entities:
-        head=max(54,text_size(n['label'],21,300)[1]+22)
+        widest=max([_font(21).getlength(n['label']),*[_font(20).getlength(' '.join(filter(None,(f.get('key'),f['name'])))) for f in n['fields']]])
+        node_width=min(420,max(330,widest+42))
+        head=max(54,text_size(n['label'],21,node_width-40)[1]+22)
         fields=[];top=head
         for field in n['fields']:
-            label=' '.join(x for x in (field.get('key',''),field['name'],field.get('data_type','')) if x)
-            height=max(48,text_size(label,22,304)[1]+18)
+            label=' '.join(x for x in (field.get('key',''),field['name']) if x)
+            if field.get('data_type'):label+='\n'+field['data_type']
+            height=max(48,text_size(label,20,node_width-36)[1]+18)
             fields.append({'text':label,'top':top,'height':height});top+=height
-        details[n['id']]={'height':top,'header':head,'field_layout':fields}
+        details[n['id']]={'height':top,'width':node_width,'header':head,'field_layout':fields}
     row_heights=[max(details[n['id']]['height'] for n in entities[i:i+columns]) for i in range(0,len(entities),columns)]
     gap=max([150]+[_label_size(e.get('label',''))[1]+65 for e in spec['edges'] if e.get('label')])
-    width=max(720,170+columns*500);height=max(540,170+sum(row_heights)+gap*(len(row_heights)-1)+70)
+    # Centre unequal entities on the same row, leaving one continuous relation
+    # segment for its label instead of doubling the empty corridor.
+    horizontal_gap=max([200]+[_label_size(edge.get('label',''))[0]+120
+                              for edge in spec['edges'] if edge.get('label')])
+    column_widths=[max(details[n['id']]['width'] for n in entities[col::columns]) for col in range(columns)]
+    width=max(720,160+sum(column_widths)+(columns-1)*horizontal_gap);height=max(540,170+sum(row_heights)+gap*(len(row_heights)-1)+70)
     placed=[]
     for i,n in enumerate(entities):
-        col,row=i%columns,i//columns;x=80+col*500;y=145+sum(row_heights[:row])+row*gap
-        placed.append({**n,**details[n['id']],'shape':'entity','box':(x,y,x+330,y+details[n['id']]['height']),'rank':row})
+        col,row=i%columns,i//columns
+        x=80+sum(column_widths[:col])+col*horizontal_gap
+        y=145+sum(row_heights[:row])+row*gap+(row_heights[row]-details[n['id']]['height'])/2
+        placed.append({**n,**details[n['id']],'shape':'entity','box':(x,y,x+details[n['id']]['width'],y+details[n['id']]['height']),'rank':row})
     return width,height,placed
 
 
@@ -218,7 +228,7 @@ def draw_diagram(scene):
             canvas.shape(box);canvas.line([(x0,y0+node['header']),(x1,y0+node['header'])])
             canvas.text((x0+8,y0+5,x1-8,y0+node['header']-4),node['label'],21)
             for field in node['field_layout']:
-                canvas.text((x0+5,y0+field['top']+3,x1-5,y0+field['top']+field['height']-3),field['text'],22,align='left')
+                canvas.text((x0+5,y0+field['top']+3,x1-5,y0+field['top']+field['height']-3),field['text'],20,align='left')
         else:
             canvas.shape(box,node['shape'])
             if node['shape']=='decision':text_box=(x0+40,y0+(y1-y0)*.25,x1-40,y1-(y1-y0)*.25)

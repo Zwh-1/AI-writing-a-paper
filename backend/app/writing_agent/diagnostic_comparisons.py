@@ -54,6 +54,8 @@ def report(pid,identity):
 def score_model(task,body):
     pid=task['project_id'];run=owned('diagnostic',body['run_id'],pid);item=db.one('SELECT * FROM diagnostic_items WHERE id=? AND run_id=?',(body['item_id'],run['id']))
     if not item or item['status']!='completed':fail('NOT_FOUND','需已完成的真实样本',404)
+    if unblob(item['result_blob']).get('real_whole_paper'):
+        return evaluations.process_real_score(task,body)
     case=next(c for c in evaluations.run_dataset(run)['cases'] if c['id']==item['case_id']);variant=next(v for v in case['variants'] if v['name']==item['variant_id']);profile=profiles.get(pid,body['profile_id'])
     payload={'instruction':case['prompt'],'context':variant['context'],'answer':unblob(item['result_blob']).get('answer',''),'evaluation_standard':case.get('gold'),'failure_signals':case.get('failure_signals',[]),'dimensions':diagnostic_scoring.DIMENSIONS}
     system='你是独立评估侧核验者。对照给定材料与标准逐项核对，不以流畅度代替事实。返回JSON {"decision":"pass|fail|unknown","note":"具体总判断","dimensions":{"每个给定维度":{"score":0或1或2或null,"applicable":true或false,"rationale":"具体依据"}}}。0为错误，1为部分满足，2为在给定范围内满足；不适用才给null并解释。未知不能判通过。本记录只属于模型辅助，不冒充人工。'

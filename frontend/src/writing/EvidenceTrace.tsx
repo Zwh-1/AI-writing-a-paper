@@ -80,6 +80,9 @@ export default function EvidenceTrace({ pid, sectionId, bundle, quality, argumen
   const findings = array(quality?.findings);
   const repairs = array(quality?.repair_rounds);
   const cards = array(argumentPlan?.paragraph_cards);
+  const obligations = array(quality?.obligations?.obligations);
+  const supportRecords = array(quality?.claim_support_view?.items);
+  const supportLabels: Record<string, string> = { supports: '支持', qualifies: '部分支持或有限定', contradicts: '存在矛盾', unresolved: '尚未确认' };
   const contextCoverage = coverage ?? quality?.context_coverage;
   const sourceGroups = bundle ? Object.keys(groupNames).filter((key) => array(bundle[key]).length) : [];
   return <details className={`writing-evidence-trace${compact ? " compact" : ""}`} aria-label="写作素材与核验轨迹">
@@ -105,6 +108,22 @@ export default function EvidenceTrace({ pid, sectionId, bundle, quality, argumen
         {contextCoverage && <p><BookOpen size={14} />{contextCoverage.mode === "full_manuscript" ? "完整正文上下文" : "按论证依赖读取上下文"} · {contextCoverage.complete ? "本次范围已完整提供" : `${contextCoverage.navigation_only_sections?.length ?? 0} 个章节仅提供导航信息`}</p>}
         {!!findings.length && <ul>{findings.map((finding, index) => <li key={`${finding.kind}-${index}`}>{Number.isInteger(finding.paragraph_index) ? `第 ${finding.paragraph_index + 1} 段：` : ""}{finding.message}</li>)}</ul>}
       </section>}
+      {!!obligations.length && <details className="writing-trace-plan" aria-label="章节内容责任核验">
+        <summary><ShieldCheck size={15} />内容责任核验：{quality?.obligations?.verified_count ?? 0} / {quality?.obligations?.required_count ?? 0} 项必需内容已核对</summary>
+        <p className="writing-trace-note">核验覆盖来自本次候选和原文检查，仍需人工审阅；未完成项继续保留。</p>
+        <ol>{obligations.map((row, index) => <li key={row.obligation_id ?? index}><span className="writing-card-order">{index + 1}</span><div>
+          <strong>{row.question || cards.find(card => (card.point_ids ?? []).includes(row.obligation_id))?.question || `内容要求 ${index + 1}`}</strong>
+          <p>{row.required ? '必需内容' : '可选内容'} · {row.status === 'verified' ? '已完成辅助核对' : '仍需核对'}{row.review?.reason ? ` · ${row.review.reason}` : ''}</p>
+        </div></li>)}</ol>
+      </details>}
+      {!!supportRecords.length && <details className="writing-trace-plan" aria-label="主张与原文支持记录">
+        <summary><BookOpen size={15} />主张与原文支持记录（{supportRecords.length} 项）</summary>
+        <p className="writing-trace-note">以下为模型辅助核验与原文定位记录，不能代替人工确认。</p>
+        <ol>{supportRecords.map((row, index) => <li key={row.claim_id ?? index}><span className="writing-card-order">{index + 1}</span><div>
+          <strong>{row.claim_text}</strong><p>第 {Number(row.paragraph_index ?? 0) + 1} 段 · {supportLabels[row.relation] || '尚未确认'}</p>
+          {!!array(row.source_quotes).length && <details className="writing-source-text"><summary>查看对应原文摘录</summary>{array(row.source_quotes).map((quote, quoteIndex) => <blockquote key={quoteIndex}>{quote.quote}</blockquote>)}</details>}
+        </div></li>)}</ol>
+      </details>}
       {!!cards.length && <details className="writing-trace-plan"><summary><GitBranch size={15} />论证段落计划（{cards.length} 项）</summary>
         <ol>{cards.map((card, index) => <li key={card.id ?? index}><span className="writing-card-order">{index + 1}</span><div><strong>{card.question}</strong><p>{roles[card.role] ?? "回答本段问题"}{card.relation_to_previous ? ` · ${relations[card.relation_to_previous.relation] ?? "承接前段"}` : ""}</p>{card.analysis_goal && <p>{card.analysis_goal}</p>}{!!card.gaps?.length && <p className="writing-card-gap">{card.gaps.join("；")}</p>}</div></li>)}</ol>
       </details>}

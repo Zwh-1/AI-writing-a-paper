@@ -83,9 +83,16 @@ def publish(pid):
     db.audit(pid,'publish_rules',{'id':rid,'version':version});return {'id':rid,'version':version,'rule_count':len(rr)}
 def applicable(package,section,operation):
     from .rule_engine import condition_matches,section_kind
+    from .writing_rule_use import section_parts
     project=db.one('SELECT * FROM projects WHERE id=?',(package['project_id'],))
     context={'paper_type':project['paper_type'],'section_kind':section_kind(section['kind']),'operation':operation,'language':'en' if section['kind']=='abstract_en' else 'zh'}
-    result=[r for r in db.loads(package['rules'],[]) if (r['scope']=='global' or r['scope']==section['id'] or section_kind(r['scope'])==section_kind(section['kind'])) and operation in db.loads(r['operations'],[]) and r['modality'] in ('mandatory','recommended') and condition_matches(r.get('conditions',{}),context)]
+    result=[]
+    for rule in db.loads(package['rules'],[]):
+        if operation not in db.loads(rule['operations'],[]) or rule['modality'] not in ('mandatory','recommended'):continue
+        matched=[part for part in section_parts(section)
+                 if (rule['scope']=='global' or rule['scope']==section['id'] or section_kind(rule['scope'])==part['kind'])
+                 and condition_matches(rule.get('conditions',{}),{**context,'section_kind':part['kind']})]
+        if matched:result.append({**rule,'applies_to':matched})
     from .rule_text_repair import affected_snapshot
     affected=affected_snapshot(package['project_id'],result)
     if affected:raise HTTPException(422,{'code':'RULE_TEXT_INCOMPLETE','message':'当前规则包含已撤回的残缺条款，请先更新规则包，再继续写作','rule_ids':affected})

@@ -99,7 +99,7 @@ def test_preview_hash_matches_download_and_old_asset_remains_immutable(client):
     preview=client.post(f'/api/v1/projects/{pid}/paper-visuals/preview',json={'spec':TEMPLATES['er']}).json()
     asset=client.post(f'/api/v1/projects/{pid}/paper-visuals',json={'spec':TEMPLATES['er']}).json()
     assert preview['render_hash']==asset['sha256']
-    assert preview['renderer_version']==asset['metadata']['renderer_version']==3
+    assert preview['renderer_version']==asset['metadata']['renderer_version']==4
     next_asset=client.post(f'/api/v1/projects/{pid}/paper-visuals',json={'spec':TEMPLATES['er'],'parent_artifact_id':asset['id']}).json()
     assert next_asset['id']!=asset['id']
     assert client.get(f'/api/v1/projects/{pid}/paper-visuals/{asset["id"]}/download').json()==validate_spec(TEMPLATES['er'])

@@ -32,6 +32,10 @@ def normalize(doc,depth=0):
         for key in ('nodeId','citationId','artifactId','assetVersionId','svgSha256','caption','expression','targetId','targetSectionId','omml','noteText','latex','tableStyle','note','diagramType','figurePurpose','explanationNodeId','describesFigureId','columnWidths','fontSize','bodyAlignment'):
             if attrs.get(key,'') is None:attrs.pop(key,None)
         if doc['type']=='table':
+            if doc.get('attrs',{}).get('pageBreakRows') is not None:
+                from .table_continuation import validate_breaks
+                attrs['pageBreakRows']=doc['attrs']['pageBreakRows']
+                validate_breaks(doc.get('content',[]),attrs['pageBreakRows'])
             if attrs.get('tableStyle') not in (None,'grid','three-line'):raise HTTPException(422,'表格样式无效')
             for key in ('caption','note'):
                 if key in attrs and (not isinstance(attrs[key],str) or len(attrs[key])>1500):raise HTTPException(422,'表题或表注过长')
@@ -211,3 +215,82 @@ def fact_changed(pid,fid):
     changed(pid,kind,fid,'研究事实或有关资料已变化，请复查')
 def counts(text):
     zh=len(re.findall(r'[\u4e00-\u9fff]',text));en=len(re.findall(r'\b[A-Za-z]+(?:[-\'][A-Za-z]+)*\b',text));return {'chinese':zh,'english':en,'characters':len(text),'total':zh+en}
+
+# AI 写作工作流术语 → 学术论文规范表述的映射。
+# 这些术语只会出现在内部写作提示词或生成过程里，不应进入最终论文正文。
+# 在导出为 Word/Markdown 时统一清洗，保证任何来源（AI 生成、提示词透传、数据透传）
+# 的残留都不会出现在交付物中。映射按"更长/更具体优先"排序，避免被短词误伤。
+WORKFLOW_TERM_MAP = [
+    # 先处理需整体删除的占位符（避免被后续"【待补"→"【"拆开）
+    ('【待补证据：', ''),
+    ('【待补', ''),
+    ('待补证据', ''),
+    # 显式工作流术语（先匹配更具体/更长的）
+    ('项目代码快照', '系统源代码'),
+    ('项目源码', '系统源代码'),
+    ('项目文献集合', '现有研究集合'),
+    ('项目文献', '现有研究'),
+    ('代码快照', '源代码快照'),
+    ('冻结代码', '系统源代码'),
+    ('冻结源码', '系统源代码'),
+    ('冻结快照', '源代码快照'),
+    ('已读文献', '现有文献'),
+    ('已读代码', '相关代码'),
+    ('已读测试文件', '相关测试文件'),
+    ('已读测试', '相关测试'),
+    ('已读', '现有'),
+    ('项目资料', '项目文档'),
+    ('项目说明', '项目文档'),
+    ('本轮未运行', '未运行'),
+    ('本轮未取得', '未取得'),
+    ('本轮实际', '实际'),
+    ('本轮', '本次研究'),
+    ('工作台自身', '交付流程自身'),
+    ('用户明确的', ''),
+    ('用户明确', ''),
+    ('选定源码', '相关源代码'),
+    ('选定申请', '相关申请'),
+    ('选定范围', '所读范围'),
+    ('选定', '相关'),
+    ('已选源码', '所读源码'),
+    ('已选', '所读'),
+    ('README', '项目文档'),
+    # 英文工作流术语（英文摘要等）
+    ('project materials, original literature that has been read, and a frozen code snapshot',
+     'project documentation, existing literature, and the system source code'),
+    ('project materials', 'project documentation'),
+    ('original literature that has been read', 'existing literature'),
+    ('literature that has been read', 'existing literature'),
+    ('frozen code snapshot', 'system source code'),
+    ('frozen code', 'system source code'),
+    ('frozen snapshot', 'source code snapshot'),
+    ('code snapshot', 'source code snapshot'),
+    ('this round', 'this study'),
+    ('the workbench itself', 'the delivery process itself'),
+    ('workbench', 'delivery process'),
+]
+
+
+def normalize_workflow_terms(text):
+    """把 AI 写作工作流术语清洗为学术论文规范表述。
+
+    用于导出 Word/Markdown 正文时的兜底清洗：无论 AI 生成正文时是否照搬了
+    内部提示词里的工作流术语，交付物都不会再出现这些词。
+    保留学术连接词（本文据此/据此等）与技术术语、引用编号不变。
+    """
+    if not text:
+        return text
+    # 先整体删除待补证据占位符（含内容与括号），避免被后续映射拆开
+    text = re.sub(r'【\s*待补(?:证据)?\s*[：:][^】]*】', '', text)
+    text = re.sub(r'【\s*待补[^】]*】', '', text)
+    for old, new in WORKFLOW_TERM_MAP:
+        text = text.replace(old, new)
+    # "本轮"后紧跟英文专名/数字时直接删除（如"本轮Edu SBT""本轮31篇"），
+    # 避免产生"本次研究Edu"这类生硬衔接。
+    text = re.sub(r'本轮(?=[A-Za-z0-9])', '', text)
+    # 清除删除占位后可能留下的重复"的的"或悬空标点
+    text = re.sub(r'的{2,}', '的', text)
+    text = re.sub(r'的\s+的', '的', text)
+    text = re.sub(r'[，、；]\s*[，、；]', '，', text)
+    text = re.sub(r'。\s*[，、；]', '。', text)
+    return text

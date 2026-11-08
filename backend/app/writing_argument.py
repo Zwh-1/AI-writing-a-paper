@@ -41,12 +41,29 @@ def build(pid, section, context, brief):
                            'SELECT evidence_id FROM claim_evidence_links WHERE claim_version_id=?', (identity,))]})
     edges = deepcopy(contract.get('argument_edges', core.get('argument_edges', [])))
     points = deepcopy(brief.get('points', []))
+    checkpoints = {item['point_id']: item for item in (brief.get('argument_checkpoints') or [])}
     available = []
-    for key, label in (('sources', 'source'), ('project_evidence', 'evidence'), ('facts', 'fact')):
+    from .ai_contracts.evidence import kinds
+    for key, label in (('sources', 'source'), ('knowledge_units', 'knowledge_unit'),
+                       ('document_readings', 'document_reading'), ('project_evidence', 'evidence'), ('facts', 'fact')):
         for row in context.get(key, []):
             payload = row.get('payload') or {}
-            available.append({'id': row.get('id'), 'type': label,
-                              'text': row.get('text') or row.get('statement') or payload.get('text', '')})
+            candidate = {**row, 'id': row.get('unit_id') or row.get('id'), 'type': label,
+                              'file_id': row.get('file_id') or payload.get('file_id'),
+                              'kind': row.get('kind'), 'origin_type': row.get('origin_type'),
+                              'text': row.get('text') or row.get('statement') or payload.get('text', '')}
+            if label in ('evidence', 'fact'):
+                from .writing_evidence_quality import _result_item
+                # Artifact execution metadata is authoritative in the registry.
+                record = row if label == 'evidence' else {'kind': 'data_result', 'origin_type': 'fact', 'payload': row}
+                candidate['payload'] = _result_item(pid, record).get('payload', payload)
+            candidate['reference_ids'] = list(dict.fromkeys([
+                *row.get('reference_ids', []), *[ref['id'] for ref in context.get('references', [])
+                    if (candidate['id'] in ref.get('source_ids', [])
+                        or candidate['id'] in ref.get('knowledge_unit_ids', [])
+                        or candidate['id'] in ref.get('document_reading_ids', [])
+                        or candidate['file_id'] and candidate['file_id'] == ref.get('file_id'))]]))
+            available.append(candidate)
     cards = []
     previous = None
     for index, point in enumerate(points):
@@ -56,15 +73,45 @@ def build(pid, section, context, brief):
         candidates = [e for e in ranked if _score(point['text'], e['text']) > 0][:4]
         role = {'result': 'evidence_and_interpretation', 'limit': 'limitations', 'scope': 'definition',
                 'method': 'method_and_rationale'}.get(point.get('kind'), 'claim_and_analysis')
+        checkpoint = checkpoints.get(point['id']) or {}
+        # A checkpoint declares which evidence fields a covering paragraph must
+        # bind.  Without them the point is unresolved, not merely under-read.
+        # Rank candidates that carry the required evidence type first.
+        def ranked_score(candidate):
+            base = _score(point['text'], candidate['text'])
+            type_boost = 0
+            if checkpoint.get('needs'):
+                if set(checkpoint['needs']) & kinds(candidate):
+                    type_boost = 0.25
+            return base + type_boost
+        ranked = sorted(available, key=lambda e: -ranked_score(e))
+        candidates = [e for e in ranked if _score(point['text'], e['text']) > 0][:4]
+        # New tasks opt into evidence-type coverage and source diversity. The
+        # resulting selection remains a proposal, never a support judgment.
+        if context.get('_ai_quality_version') == 'evidence.obligations.v1':
+            from .ai_contracts.evidence import select
+            candidates = select(point['text'], available, checkpoint.get('needs', []))
         card = {'id': 'a' + str(index + 1), 'point_ids': [point['id']], 'question': point['text'],
                 'role': role, 'claim_ids': chosen_claims,
                 'candidate_sources': [{'id': e['id'], 'type': e['type'], 'support': 'not_checked'} for e in candidates],
-                'relation_to_previous': {'from': previous, 'relation': 'explains'} if previous else None,
+                'relation_to_previous': {'from': previous, 'relation': 'explains',
+                                         'status': 'suggested_not_verified'} if previous else None,
                 'analysis_goal': '回答本任务点，说明依据如何支持主张、适用条件和不能推出的结论',
                 'expected_information_gain': point['text'],
+                'argument_checkpoint': checkpoint,
+                'evidence_requirement': checkpoint.get('needs', []),
+                'strength_cap': checkpoint.get('strength', 'described'),
+                'needs_evidence': bool(checkpoint.get('evidence_fields')),
                 'gaps': [] if candidates or chosen_claims else ['本任务点尚未绑定具体依据，需要取材或保留缺口']}
+        # A point that demands evidence but has no candidate of the required
+        # type is an unresolved gap that must be reported, not padded over.
+        if checkpoint.get('evidence_fields') and not any(
+                set(checkpoint.get('needs', [])) & kinds(e) for e in candidates):
+            card['gaps'] = ['本任务点要求绑定' + '、'.join(checkpoint.get('needs', [])) +
+                            '依据，当前候选只含相关材料，尚不能支持结论']
         cards.append(card)
         previous = card['id']
+    plans=context.get('chapter_materials',{}).get('visual_plans',[])
     value = {'schema': VERSION, 'project_id': pid, 'section_id': section['id'],
              'base_revision_id': section.get('current_revision_id'), 'research_question': core.get('research_question', ''),
              'section_goal': contract.get('goal') or section.get('goal', ''), 'claims': claims,
@@ -79,6 +126,9 @@ def build(pid, section, context, brief):
     saved = db.setting('writing_argument_plan:' + pid + ':' + section['id'])
     if saved and saved.get('basis_hash') == value['basis_hash']:
         value = {**value, 'paragraph_cards': saved['paragraph_cards'], 'author_note': saved.get('author_note', '')}
+    if plans:
+        from .chapter_visual_plans import attach_cards
+        value['paragraph_cards']=attach_cards(value['paragraph_cards'],plans)
     value['hash'] = digest({k: v for k, v in value.items() if k != 'hash'})
     return value
 
@@ -154,14 +204,21 @@ def for_model(plan):
     """Compact task-specific cards; evidence text and forbidden rules live once."""
     return {'schema':plan['schema'],'hash':plan['hash'],'research_question':plan['research_question'],
             'section_goal':plan['section_goal'],'claims':plan['claims'],'argument_edges':plan['argument_edges'],
-            'paragraph_cards':[{key:card[key] for key in ('id','point_ids','question','role','claim_ids','relation_to_previous') if card.get(key)} for card in plan['paragraph_cards']],
-            'scope':'候选论证分工；登记主张和相关性不等于来源支持'}
+            'paragraph_cards':[{key:card[key] for key in ('id','point_ids','question','role','claim_ids','candidate_sources','relation_to_previous','analysis_goal','expected_information_gain','argument_checkpoint','evidence_requirement','strength_cap','needs_evidence','gaps','project_material_ids','visual_plan_ids','visual_argument_tasks') if card.get(key)} for card in plan['paragraph_cards']],
+            'scope':'候选论证分工；登记主张和相关性不等于来源支持；每个任务点声明的依据类型与结论强度是核对项，缺少时必须保留缺口'}
 
 
 def scoped_context(context, mode):
     """Explicit opt-in scope. Current chapter, rules and evidence stay complete."""
     if mode == 'full_manuscript':
         return context, {'mode': mode, 'scope': 'full_manuscript', 'complete': True}
+    if context.get('paper_context',{}).get('version')=='paper_continuity.v3.hierarchical':
+        catalogue=[r['section_id'] for r in context.get('section_catalogue',[])]
+        coverage={'mode':mode,'complete':not catalogue,
+            'provided_sections':[r['section_id'] for r in context.get('related_sections',[])],
+            'navigation_only_sections':catalogue,'policy':'目录未读；只提供当前章及完整依赖，其他章由独立阅读阶段按版本加载'}
+        context['context_coverage']=coverage
+        return context,coverage
     scoped = deepcopy(context)
     section = context.get('section', {})
     dependencies = set(section.get('dependencies', []) if isinstance(section.get('dependencies'), list)

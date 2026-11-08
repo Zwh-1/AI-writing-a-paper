@@ -69,8 +69,9 @@ def test_logical_page_numbers_are_not_physical_pdf_indices(verifier,footer,expec
 
 
 def test_pdf_odd_header_check_uses_logical_page_number_after_frontmatter(verifier,monkeypatch,tmp_path):
+    thesis_title='合成论文题目'
     data=[{'header':'','footer':'','middle':'封面'}, {'header':'','footer':'I','middle':'摘要'}]
-    for i in range(1,8):data.append({'header':f'章节{i}','footer':str(i),'middle':f'{i} 章节{i}\n'+''.join(f'[{n}]' for n in range(1,32))})
+    for i in range(1,8):data.append({'header':thesis_title if i%2 else f'章节{i}','footer':str(i),'middle':f'{i} 章节{i}\n'+''.join(f'[{n}]' for n in range(1,32))})
     data.append({'header':'参考文献','footer':'8','middle':'参考文献\n[1] 文献条目'})
     class TextPage:
         def __init__(self,row):self.row=row
@@ -89,6 +90,7 @@ def test_pdf_odd_header_check_uses_logical_page_number_after_frontmatter(verifie
         def close(self):pass
     monkeypatch.setattr(verifier.pdfium,'PdfDocument',PDF)
     prepared=synthetic_prepared();errors=[];frozen,metrics=verifier.snapshot_metrics(prepared,errors)
+    frozen['project']={'title':thesis_title}
     result=verifier.inspect_pdf(tmp_path/'论文.pdf',frozen,metrics,errors,[])
     assert not errors and result['page_checks'][2]['logical_page']==1
     # The PDF content stream places each next page's header/footer between the

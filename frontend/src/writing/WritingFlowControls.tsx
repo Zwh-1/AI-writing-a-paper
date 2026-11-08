@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { GitBranch, LoaderCircle, RefreshCw, Save, Settings2 } from "lucide-react";
 import { writingApi, type WritingArgumentCard, type WritingArgumentPlan, type WritingFlowSettings } from "../api/writing";
 import "./evidenceTrace.css";
+import ProjectMemory from "./ProjectMemory";
 
 const numericSettings: { key: keyof WritingFlowSettings; label: string; min: number; max: number; step?: number }[] = [
   { key: "unit_target_words", label: "每个论证单元的目标字数", min: 400, max: 1800, step: 100 },
@@ -65,7 +66,7 @@ export default function WritingFlowControls({ pid, sections, disabled = false, o
     setSettingsSaving(true); setSettingsError(""); setSettingsNotice("");
     try {
       setSettings(await service.saveSettings(settings));
-      setSettingsNotice("写作流程设置已保存，将用于后续写作请求。"); onChanged?.();
+      setSettingsNotice("已保存。新任务将固定使用这组设置，暂停后续跑也沿用。"); onChanged?.();
     } catch (error) { setSettingsError((error as Error).message); }
     finally { setSettingsSaving(false); }
   };
@@ -98,8 +99,8 @@ export default function WritingFlowControls({ pid, sections, disabled = false, o
             <label className="writing-flow-toggle"><input type="checkbox" checked={settings.enabled} onChange={(event) => { setSettings({ ...settings, enabled: event.target.checked }); setSettingsNotice(""); }} /><span><strong>启用素材驱动写作</strong><small>按论证任务检索素材、起草并保留来源与待补范围。</small></span></label>
             <label className="writing-flow-toggle"><input type="checkbox" checked={settings.semantic_review} onChange={(event) => { setSettings({ ...settings, semantic_review: event.target.checked }); setSettingsNotice(""); }} /><span><strong>独立核对来源与论证</strong><small>生成后增加模型核验请求，检查具体主张与原文、条件和推理关系。</small></span></label>
             <label className="writing-flow-toggle"><input type="checkbox" checked={settings.originality_check} onChange={(event) => { setSettings({ ...settings, originality_check: event.target.checked }); setSettingsNotice(""); }} /><span><strong>检查重复与表达原创性</strong><small>标出无新增信息的重复和过近表述，保留必要术语与规范引用。</small></span></label>
-            <label className="field"><span>论文上下文范围</span><select aria-label="论文上下文范围" value={settings.context_mode} onChange={(event) => { setSettings({ ...settings, context_mode: event.target.value as WritingFlowSettings["context_mode"] }); setSettingsNotice(""); }}><option value="full_manuscript">通读全部已保存正文</option><option value="argument_scoped">按本章论证依赖读取</option></select></label>
-            <p className="writing-trace-note">{settings.context_mode === "argument_scoped" ? "将完整读取本章依赖的正文，其他章节只保留导航信息；核验记录会明确实际读取范围。" : "全文模式保留全部已保存正文；超过接口上下文预算时会提示调整范围。"}</p>
+            <label className="field"><span>论文上下文范围</span><select aria-label="论文上下文范围" value={settings.context_mode} onChange={(event) => { setSettings({ ...settings, context_mode: event.target.value as WritingFlowSettings["context_mode"] }); setSettingsNotice(""); }}><option value="full_manuscript">通读全部已保存正文</option><option value="argument_scoped">按本章论证依赖读取</option><option value="hierarchical_v1">分层上下文与项目记忆</option></select></label>
+            <p className="writing-trace-note">{settings.context_mode !== "full_manuscript" ? "将完整读取本章依赖的正文，其他章节只保留导航信息；核验记录会明确实际读取范围。" : "全文模式保留全部已保存正文；超过接口上下文预算时会提示调整范围。"}</p>
             <details className="writing-flow-limits"><summary>篇幅、补证与修订上限</summary><div className="writing-flow-number-grid">{numericSettings.map((field) => <label className="field" key={field.key}><span>{field.label}</span><input type="number" required aria-label={field.label} min={field.min} max={field.max} step={field.step ?? 1} value={Number(settings[field.key])} onChange={(event) => { setSettings({ ...settings, [field.key]: Number(event.target.value) }); setSettingsNotice(""); }} /></label>)}</div></details>
             <p className="writing-trace-note">独立核验、补证和修订可能增加模型费用，仍受本次写作总预算限制。</p>
             <button className="btn primary" type="submit"><Save size={14} />{settingsSaving ? "正在保存…" : "保存写作流程设置"}</button>
@@ -123,5 +124,6 @@ export default function WritingFlowControls({ pid, sections, disabled = false, o
         </form>}
       </div>}
     </div>
+    <ProjectMemory key={pid} pid={pid} disabled={disabled} sectionId={sectionId} sections={sections} />
   </details>;
 }

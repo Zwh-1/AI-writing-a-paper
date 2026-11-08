@@ -176,6 +176,13 @@ export const API_ROUTES: readonly (readonly [string, string, readonly string[]])
     ]
   ],
   [
+    "/projects/{pid}/context-maintenance/archive",
+    "/projects/{project_id}/context-maintenance/actions/archive",
+    [
+      "POST"
+    ]
+  ],
+  [
     "/projects/{pid}/knowledge/transfers/restore",
     "/projects/{project_id}/knowledge/transfers/actions/restore",
     [
@@ -910,6 +917,13 @@ export const API_ROUTES: readonly (readonly [string, string, readonly string[]])
     ]
   ],
   [
+    "/projects/{pid}/diagnostics/{rid}/register-real-candidate",
+    "/projects/{project_id}/writing/diagnostics/{record_id}/register-real-candidate",
+    [
+      "POST"
+    ]
+  ],
+  [
     "/projects/{pid}/writing-sessions/{sid}/approve-judgment",
     "/projects/{project_id}/writing/sessions/{section_id}/actions/approve-judgment",
     [
@@ -919,6 +933,13 @@ export const API_ROUTES: readonly (readonly [string, string, readonly string[]])
   [
     "/projects/{pid}/evidence-knowledge/citations/{cid}/human-review",
     "/projects/{project_id}/knowledge/sources/citations/{citation_id}/human-review",
+    [
+      "POST"
+    ]
+  ],
+  [
+    "/projects/{pid}/diagnostics/{rid}/score-real-candidate",
+    "/projects/{project_id}/writing/diagnostics/{record_id}/score-real-candidate",
     [
       "POST"
     ]
@@ -1425,6 +1446,13 @@ export const API_ROUTES: readonly (readonly [string, string, readonly string[]])
   [
     "/projects/{pid}/studio/reader/{fid}/guide",
     "/projects/{project_id}/reading/parallel/{file_id}/guide",
+    [
+      "POST"
+    ]
+  ],
+  [
+    "/projects/{pid}/paper-writing/{tid}/recheck",
+    "/projects/{project_id}/writing/papers/{task_id}/recheck",
     [
       "POST"
     ]

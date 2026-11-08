@@ -137,6 +137,9 @@ def test_completion_rejects_stale_versions(client,monkeypatch):
     pid=project(client);sid=section(client,pid);save(client,sid,'上文。')
     revision=documents.current(security.require_section(sid));mock_model(monkeypatch,{'text':'短续文'})
     task=tasks.enqueue(pid,'studio',{'action':'complete','section_id':sid,'revision_id':revision['id'],'prefix':'上文。','suffix':''})
+    # Dispatch through the same execution epoch that the worker establishes.
+    db.execute("UPDATE tasks SET status='running',attempt=1 WHERE id=?",(task['id'],))
+    task=db.one('SELECT * FROM tasks WHERE id=?',(task['id'],))
     assert tasks.dispatch(task)['text']=='短续文'
     save(client,sid,'修改后的正文。',revision['id'])
     with pytest.raises(ValueError,match='版本'):tasks.dispatch(task)

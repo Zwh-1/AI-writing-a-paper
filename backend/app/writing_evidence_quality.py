@@ -184,6 +184,141 @@ def assess_result_evidence(item):
             'actual_execution':actual, 'imported':imported, 'traceable_raw_record':raw}
 
 
+def evidence_kind_label(item):
+    """Return a stable category label for an evidence record.
+
+    Used by the evidence-gap audit so a paragraph can say whether it bound a
+    literature source, a code observation, a test definition, a real run result
+    or only an author declaration.  This is the P1 distinction the prompt needs
+    to stop conflating "test designed" with "test executed".
+    """
+    item = item if isinstance(item,dict) else {}
+    kind = str(item.get('kind', ''))
+    origin = str(item.get('origin_type', ''))
+    if kind == 'code_observation':
+        return 'code_observation'
+    if kind == 'test_definition':
+        return 'test_definition'
+    if kind in ('test_run', 'data_result', 'run_result'):
+        from .ai_contracts.evidence import kinds
+        categories = kinds({**item, 'type': 'evidence'})
+        if 'run_result' in categories:
+            return 'run_result'
+        if 'test_definition' in categories:
+            return 'test_definition'
+        return 'fact_record' if origin == 'fact' else 'unverified_result'
+    if kind == 'deployment':
+        return 'deployment'
+    if kind == 'literature':
+        return 'source'
+    if kind == 'author_statement':
+        return 'author_statement'
+    return kind or 'unknown'
+
+
+# What evidence categories each chapter type actually needs before it can make
+# the claims its role requires.  `present` is satisfied when the paragraph
+# binds at least one record in the listed categories; `required` marks a
+# category whose absence is a real gap rather than a preference.
+CHAPTER_EVIDENCE_GAPS = {
+    'literature': {'required': ['source'], 'preferred': ['reference']},
+    'implementation': {'required': ['code_observation'], 'preferred': ['test_definition']},
+    'results': {'required': ['test_definition', 'run_result'], 'preferred': []},
+    'system_design': {'required': [], 'preferred': ['source', 'code_observation']},
+    'requirements': {'required': ['source'], 'preferred': []},
+}
+
+
+def bound_links(paragraph):
+    """Use the same bindings whether supplied at paragraph or atomic-claim level."""
+    rows = [paragraph, *(paragraph.get('claim_spans') or []), *(paragraph.get('citation_intents') or [])]
+    return {key: list(dict.fromkeys(identity for row in rows if isinstance(row, dict)
+                                   for identity in row.get(key, []) if isinstance(identity, str)))
+            for key in (*LINK_KEYS, 'reference_ids')}
+
+
+def bound_categories(pid, paragraph, context=None, manifest=None):
+    """Resolve registered categories; a nonempty ID never attests execution."""
+    context, manifest = context or {}, manifest or {}
+    links = bound_links(paragraph)
+    categories = set()
+    if pid:
+        from .writing_agent import evidence as service
+        for eid in links['evidence_ids']:
+            try:
+                row = service.get(pid, eid, remote=True)
+            except HTTPException as error:
+                if error.status_code in (403, 409):
+                    raise
+                continue
+            record = _result_item(pid, row)
+            from .ai_contracts.evidence import kinds
+            categories.update(kinds({**record, 'type': 'evidence'}))
+        for fid in links['fact_ids']:
+            fact = db.one('SELECT * FROM facts WHERE id=? AND project_id=?', (fid, pid))
+            if fact:
+                categories.update(('fact', 'project'))
+                from .ai_contracts.evidence import kinds
+                record = _result_item(pid, {'kind': 'data_result', 'origin_type': 'fact', 'payload': fact})
+                categories.update(kinds({**record, 'type': 'evidence'}))
+        for sid in links['source_ids']:
+            source = db.one('SELECT s.file_id FROM sources s JOIN files f ON f.id=s.file_id WHERE s.id=? AND f.project_id=?', (sid, pid))
+            if source and security.file_allows_remote(source['file_id'], pid): categories.add('source')
+        # Exact reading validation is shared with citation compilation.  These
+        # registries must never be looked up as evidence-item IDs.
+        reading_links = {key: links[key] for key in ('knowledge_unit_ids', 'document_reading_ids')}
+        if any(reading_links.values()):
+            try:
+                if _source_records(pid, reading_links, context, manifest): categories.add('source')
+            except ValueError:
+                pass  # the mapping validator retains the actionable finding
+        known_refs = {r['id'] for r in context.get('references', [])}
+        if any(rid in known_refs or db.one('SELECT id FROM bibliography WHERE id=? AND project_id=?', (rid, pid))
+               for rid in links['reference_ids']): categories.add('reference')
+    else:
+        # Offline brief checks can inventory explicit source labels, but cannot
+        # classify arbitrary evidence IDs as code or measured results.
+        if any(links[key] for key in ('source_ids', 'knowledge_unit_ids', 'document_reading_ids')): categories.add('source')
+        if links['reference_ids']: categories.add('reference')
+        if links['fact_ids']: categories.add('fact')
+    return categories
+
+
+def evidence_gap_audit(pid, section_kind, context, paragraphs, manifest=None):
+    """Report which required evidence categories are missing for a chapter.
+
+    Returns a list of findings (deterministic, no model call).  The key P1
+    change: a results chapter that only binds test definitions is a gap for
+    "run_result", and the finding says so explicitly — it does not let a test
+    design paragraph stand in for an executed run.
+    """
+    spec = CHAPTER_EVIDENCE_GAPS.get(section_kind)
+    if not spec:
+        return []
+    manifest = manifest or {}
+    categories = set()
+    for paragraph in paragraphs or []:
+        categories.update(bound_categories(pid, paragraph, context, manifest))
+    findings = []
+    for need in spec['required']:
+        if need not in categories:
+            message = {
+                'source': '本章要求绑定来源文献，但当前段落未关联任何已读原文。',
+                'reference': '本章要求回填参考文献，但当前段落未关联任何书目。',
+                'code_observation': '本章描述实现，但当前段落未关联任何代码观察证据。',
+                'test_definition': '本章需要测试设计定义，但当前段落未关联任何测试定义证据。',
+                'run_result': '本章需要真实运行结果，但当前段落未关联任何实际执行记录；测试设计不能代替实测结论。',
+            }.get(need, f'本章缺少{need}证据。')
+            findings.append({
+                'kind': 'evidence_gap', 'category': need, 'severity': 'warning',
+                'message': message,
+                'method': 'evidence_gap_audit',
+                'repair_query': message,
+                'repairable': need not in ('run_result', 'test_definition'),
+                'requires_human_review': True})
+    return findings
+
+
 def _locate(text, span):
     start, end = span.get('start_cp'), span.get('end_cp')
     quoted = span['text']
@@ -469,7 +604,19 @@ def check_candidate(pid, paragraphs, context, manifest=None):
         if selected and not any(assess_result_evidence(item)['can_assert_measurement'] for item in selected):
             findings.append(_finding('result_evidence_level','实测或执行结论缺少足够等级的原始记录；请补证或恢复为计划/未核查状态',
                                      paragraph_index=index, text=text, repair_query=text,
-                                     evidence_ids=paragraph.get('evidence_ids',[]),evidence_levels=[assess_result_evidence(item) for item in selected]))
+                                     evidence_ids=paragraph.get('evidence_ids',[]),
+                                     evidence_levels=[assess_result_evidence(item) for item in selected],
+                                     evidence_kinds=[evidence_kind_label(item) for item in selected]))
+    # P1: the evidence gap audit runs once per candidate and separates the
+    # categories each chapter role actually requires.  It is deterministic and
+    # reports test-definition gaps distinctly from missing run results.
+    section = context.get('section') or {}
+    section_kind = section.get('kind', '') or section.get('chapter_type', '') or ''
+    gap_findings = evidence_gap_audit(pid, section_kind, context, paragraphs or [], manifest)
+    for gap in gap_findings:
+        if not any(f.get('category') == gap.get('category') and f.get('method') == 'evidence_gap_audit'
+                   for f in findings):
+            findings.append(gap)
     return {'version':VERSION,'paragraphs':results,'findings':findings,'coverage_complete':not findings,'mapping_complete':not findings,
             'passed':not findings,'claim_checks':claim_checks,'semantic_support':'not_checked'}
 

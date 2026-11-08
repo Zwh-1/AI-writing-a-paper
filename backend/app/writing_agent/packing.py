@@ -6,16 +6,40 @@ from .common import digest
 
 VERSION='whole_source_retrieval.v1'
 
+def for_transport(payload,system):
+    """Reference continuity guidance already supplied verbatim in the system."""
+    continuity=payload.get('continuity') or {}
+    policy=continuity.get('policy')
+    if not isinstance(policy,str) or not policy.strip() or policy not in system:return payload
+    return {**payload,'continuity':{**{k:v for k,v in continuity.items() if k!='policy'},'policy_in_system':True}}
+
+
 def frame(payload,manifest,system,cfg):
+    payload=for_transport(payload,system)
+    if payload.get('chapter_materials') and 'evidence' in payload:
+        from ..chapter_materials import available as available_structures
+        payload={**payload,'chapter_materials':available_structures(payload['chapter_materials'],[row['id'] for row in payload.get('evidence',[])])}
+    if payload.get('rule_applications'):
+        loaded={row['id'] for row in payload.get('rules',[]) if isinstance(row,dict)}
+        payload={**payload,'rule_applications':[row for row in payload['rule_applications'] if row['id'] in loaded]}
+    if payload.get('project_grounding'):
+        from ..project_grounding import available
+        payload={**payload,'project_grounding':available(payload['project_grounding'],[row['id'] for row in payload.get('evidence',[])])}
     if manifest.get('stage')=='investigate':
         from .tools import investigation_catalog,investigation_system
         catalog=investigation_catalog(native=cfg.get('tool_mode')=='native',include_knowledge=bool(manifest.get('knowledge_refs')),include_code=bool(manifest.get('target_snapshot_id')))
         native=cfg.get('tool_mode')=='native'
         return investigation_system(system,manifest.get('target_snapshot_id')),{'messages':[{'role':'user','content':db.dumps({'context':payload} if native else {'context':payload,'available_tools':catalog})}],'tools':catalog if native else []}
     from .identifiers import encode
-    from .provider_adapter import ALIAS_NOTE
+    from .provider_adapter import ALIAS_NOTE,JSON_REPAIR_NOTE
     encoded,aliases=encode(payload,manifest)
-    return system+(ALIAS_NOTE if aliases and ALIAS_NOTE not in system else ''),{'messages':[{'role':'user','content':db.dumps(encoded)}],'tools':[]}
+    prompt=system+(ALIAS_NOTE if aliases and ALIAS_NOTE not in system else '')
+    if manifest.get('prompt_layout_version')=='cache_v2':
+        from ..prompt_layout import prepare as prepare_layout
+        if JSON_REPAIR_NOTE not in prompt:prompt+=JSON_REPAIR_NOTE
+        prompt,encoded,_=prepare_layout({'payload':{'prompt_layout_version':'cache_v2'}},prompt,encoded,
+            manifest.get('stage','agent'),index=manifest.get('writing_unit_index',manifest.get('annotation_batch',0)))
+    return prompt,{'messages':[{'role':'user','content':db.dumps(encoded)}],'tools':[]}
 
 def estimate(payload,manifest,system,cfg):
     prompt,body=frame(payload,manifest,system,cfg)
@@ -104,3 +128,9 @@ def fit(payload,manifest,system,cfg):
         manifest['rule_selection']={'policy':VERSION,'all_applicable_ids':[r['id'] for r in original_rules if isinstance(r,dict)],'mandatory_ids':[r['id'] for r in required if isinstance(r,dict)],'loaded_ids':loaded,'deferred_recommended_ids':[r['id'] for r in recommended if r['id'] not in set(loaded)],'applicable_text_hash':digest(original_rules)}
         manifest['loaded_rule_ids']=loaded
         manifest['required_rule_ids']=[r['id'] for r in required if isinstance(r,dict)]
+    if payload.get('rule_applications'):
+        loaded={row['id'] for row in payload.get('rules',[]) if isinstance(row,dict)}
+        payload['rule_applications']=[row for row in payload['rule_applications'] if row['id'] in loaded]
+    if payload.get('project_grounding'):
+        from ..project_grounding import available
+        payload['project_grounding']=available(payload['project_grounding'],[row['id'] for row in payload.get('evidence',[])])

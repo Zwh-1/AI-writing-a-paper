@@ -44,7 +44,7 @@ def test_batch_replay_uses_exact_original_scope_once_and_retains_hold(client,mon
             'usage':{'prompt_tokens':100,'completion_tokens':50}})
     monkeypatch.setattr(provider,'client',lambda cfg:httpx.Client(transport=httpx.MockTransport(response)))
     result=runner['run_phase'](pid,args)
-    assert result['status']=='succeeded' and seen==[original]
+    assert result['status']=='succeeded' and seen==[original],(result.get('error'),result.get('result'))
     assert db.one('SELECT * FROM generation_runs WHERE id=?',(run['id'],))==run
     replay=db.one('SELECT manifest FROM generation_runs WHERE task_id=?',(result['task_id'],))
     assert db.loads(replay['manifest'])['knowledge_authorized_replay_of_run_id']==run['id']

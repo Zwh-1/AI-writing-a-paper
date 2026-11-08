@@ -18,6 +18,7 @@ import FigureStandardsPanel from "./FigureStandardsPanel";
 import "./paperVisuals.css";
 
 type Row = Record<string, any>;
+const defaultDelivery = { width_mm: 150, minimum_text_pt: 7, target_dpi: 300, unit: "", x_label: "", y_label: "", legend: "" };
 type Props = {
   pid: string;
   sectionId?: string;
@@ -108,6 +109,7 @@ function Studio({
   const [imageReady, setImageReady] = useState(false);
   const [imageTitle, setImageTitle] = useState("");
   const [explanation, setExplanation] = useState("");
+  const [deliverySpec, setDeliverySpec] = useState<Row>({ ...defaultDelivery });
   const [figurePurpose, setFigurePurpose] = useState("design_schematic");
   const [relatedSections, setRelatedSections] = useState<string[]>([]);
   const [positions, setPositions] = useState<Row>({ blocks: [] });
@@ -168,6 +170,7 @@ function Studio({
   const savedCurrent = Boolean(
     saved &&
     code === savedCode &&
+    (nativeImage || kind === "three_line_table" || JSON.stringify({ ...defaultDelivery, ...read(saved.metadata).delivery_spec }) === JSON.stringify(deliverySpec)) &&
     (read(saved.metadata).explanation ?? "") === explanation.trim() &&
     (read(saved.metadata).figure_purpose ?? "design_schematic") ===
       figurePurpose &&
@@ -193,6 +196,7 @@ function Studio({
     undoCode,
     imageTitle,
     explanation,
+    deliverySpec,
     figurePurpose,
     relatedSections,
     requiredLabels,
@@ -284,6 +288,7 @@ function Studio({
     setUndoCode(draft?.undoCode ?? "");
     setImageTitle(draft?.imageTitle ?? "");
     setExplanation(draft?.explanation ?? assetMeta.explanation ?? "");
+    setDeliverySpec({ ...defaultDelivery, ...(draft?.deliverySpec ?? assetMeta.delivery_spec ?? {}) });
     setFigurePurpose(
       draft?.figurePurpose ?? assetMeta.figure_purpose ?? "design_schematic",
     );
@@ -322,6 +327,7 @@ function Studio({
     undoCode,
     imageTitle,
     explanation,
+    deliverySpec,
     figurePurpose,
     relatedSections,
     requiredLabels,
@@ -672,6 +678,7 @@ function Studio({
       context,
       parent: saved?.id,
       annotations,
+      delivery_spec: deliverySpec,
     });
     if (saveRequest.current.fingerprint !== fingerprint)
       saveRequest.current = { fingerprint, id: crypto.randomUUID() };
@@ -684,6 +691,7 @@ function Studio({
           })
         : await send(prefix, {
             spec: value,
+            delivery_spec: deliverySpec,
             source_context: context,
             parent_artifact_id: saved?.id,
             request_id: saveRequest.current.id,
@@ -775,6 +783,7 @@ function Studio({
       },
     );
     setExplanation(metadata.explanation ?? "");
+    setDeliverySpec({ ...defaultDelivery, ...(metadata.delivery_spec ?? {}) });
     setFigurePurpose(metadata.figure_purpose ?? "design_schematic");
     setRelatedSections(metadata.related_section_ids ?? []);
     setRequiredLabels((metadata.image_brief?.required_labels ?? []).join("\n"));
@@ -1432,6 +1441,13 @@ function Studio({
                 </label>
               </div>
             )}
+            {!nativeImage && kind !== "three_line_table" && <details><summary>最终排版尺寸与图中文字要求</summary><div className="form-grid">
+              <label>目标宽度（mm）<input type="number" min={30} max={500} disabled={disabled} value={deliverySpec.width_mm} onChange={e => setDeliverySpec({ ...deliverySpec, width_mm: Number(e.target.value) })} /></label>
+              <label>最小文字（pt）<input type="number" min={4} max={24} step={0.5} disabled={disabled} value={deliverySpec.minimum_text_pt} onChange={e => setDeliverySpec({ ...deliverySpec, minimum_text_pt: Number(e.target.value) })} /></label>
+              <label>目标分辨率（DPI）<input type="number" min={72} max={1200} disabled={disabled} value={deliverySpec.target_dpi} onChange={e => setDeliverySpec({ ...deliverySpec, target_dpi: Number(e.target.value) })} /></label>
+            </div><p>保存后按该尺寸计算有效分辨率和文字大小；不达标时需调整图的结构、标签或放置尺寸。</p>
+              {savedCurrent && read(saved?.metadata).delivery_quality && <p>有效分辨率 {read(saved?.metadata).delivery_quality.effective_dpi ?? "未知"} DPI，最小文字 {read(saved?.metadata).delivery_quality.minimum_text_pt ?? "未知"} pt。</p>}
+            </details>}
             <div className="pv-actions">
               <button
                 type="button"
@@ -1481,6 +1497,8 @@ function Studio({
                   >
                     {nativeImage ? "下载生图记录" : "下载源代码"}
                   </a>
+                  {!nativeImage && kind !== "three_line_table" && ["svg", "pdf"].map(format => <a key={format} className="btn" href={apiUrl(`${prefix}/${saved!.id}/download?format=${format}`)} download>下载 {format.toUpperCase()}</a>)}
+                  {!nativeImage && <a className="btn" href={apiUrl(`${prefix}/${saved!.id}/download?format=record`)} download>下载交付追溯记录</a>}
                 </>
               )}
             </div>

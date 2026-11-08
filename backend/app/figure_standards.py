@@ -120,10 +120,10 @@ def insert_nodes(asset,node):
     if node['type']=='figure':
         node['attrs'].update({'diagramType':meta.get('spec',{}).get('kind','unknown'),'figurePurpose':meta.get('figure_purpose','design_schematic'),
                               'relatedSectionIds':meta.get('related_section_ids',[])})
-        if meta.get('explanation'):
-            identity=db.uid();node['attrs']['explanationNodeId']=identity
-            result.append({'type':'paragraph','attrs':{'nodeId':identity,'describesFigureId':node['attrs']['nodeId']},
-                           'content':[{'type':'text','text':meta['explanation']}]})
+    if meta.get('explanation'):
+        identity=db.uid();node['attrs']['explanationNodeId']=identity
+        result.append({'type':'paragraph','attrs':{'nodeId':identity,'describesFigureId':node['attrs']['nodeId']},
+                       'content':[{'type':'text','text':meta['explanation']}]})
     return result
 
 
@@ -258,6 +258,16 @@ def evaluate(pid,saved_snapshots=None,artifacts=None,settings=None):
         if not row['caption'].strip():add(row,'CAPTION_MISSING','图表缺少标题')
         elif re.search(r'[\r\n]',row['caption']):add(row,'CAPTION_LINEBREAK','图表标题含手工换行，请按模板核对')
         elif len(row['caption'])>40:add(row,'CAPTION_WRAP','长图题版式已人工核对' if reviewed else '图题较长，需在目标排版中检查是否换行','pass' if reviewed else 'unknown')
+        if row['kind']=='table' and settings['require_explanation']:
+            explanation=nodes.get(row['explanation_node_id'])
+            if not explanation or explanation['type']!='paragraph' or explanation.get('attrs',{}).get('describesFigureId')!=row['node_id'] or not documents.plain(explanation).strip():
+                add(row,'EXPLANATION_MISSING','表格尚未关联说明段落，需解释关键字段、条件或比较结果')
+            else:
+                position=next((i for i,n in enumerate(top) if n.get('attrs',{}).get('nodeId')==row['node_id']),-1)
+                if position<0 or position+1>=len(top) or top[position+1].get('attrs',{}).get('nodeId')!=row['explanation_node_id']:
+                    add(row,'EXPLANATION_POSITION','说明段落没有紧随表格，需核对图文位置','unknown')
+                if re.search(r'待补|TODO|TBD',documents.plain(explanation),re.I):add(row,'EXPLANATION_PLACEHOLDER','表格说明仍包含待补占位内容')
+                add(row,'EXPLANATION_SEMANTICS','图文已由用户逐项核对' if reviewed else '核对关键字段、联合约束、条件或数据与说明一致，避免逐格复读','pass' if reviewed else 'unknown','info')
         if row['kind']=='figure':
             asset=(artifacts or {}).get(row['artifact_id']) if artifacts is not None else db.one('SELECT * FROM artifacts WHERE id=?',(row['artifact_id'],))
             if asset:

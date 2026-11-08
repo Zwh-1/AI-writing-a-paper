@@ -109,21 +109,19 @@ def run(task,project,section,payload,package):
     tasks.event(task['id'],'加载全文与独立润写规范',15)
     from . import writing_brief,writing_ops
     params=writing_ops.params_for(project['id'],'polish')
-    context,continuity_manifest,origins=collect(project['id'],section['id']);file_ids.update(origins)
-    terms=db.rows('SELECT zh,en FROM terms WHERE project_id=?',(project['id'],))
     mode=params.get('manuscript_mode','full')
+    context,continuity_manifest,origins=collect(project['id'],section['id'],task=task,
+        mode='hierarchical_v1' if mode=='outline' else None);file_ids.update(origins)
+    terms=db.rows('SELECT zh,en FROM terms WHERE project_id=?',(project['id'],))
     if mode=='outline':
-        # Only used when the full manuscript does not fit: keep a first-sentence
-        # digest and say so, instead of failing outright or pretending to have read it.
-        context['related_sections']=[{**row,'text':row['text'][:240]+('…' if len(row['text'])>240 else ''),'scope':'outline_digest','partial':True}
-                                     for row in context.get('related_sections',[])]
-        context['paper_context']={**context.get('paper_context',{}),'complete':False,'mode':'outline_digest'}
-        continuity_manifest['manuscript_mode']='outline_digest'
+        continuity_manifest['manuscript_mode']='hierarchical_v1'
     brief=writing_brief.language_brief(section,terms,'selected_paragraphs' if payload.get('target_node_ids') else 'section',
                                         [row['source_node_id'] for row in editable],sum(len(row['protected_spans']) for row in editable),params)
     context.update(project={'title':project['title'],'brief':db.loads(project['brief'],{})},section=section,operation='polish',instruction=payload.get('instruction',''),scope='selected_paragraphs' if payload.get('target_node_ids') else 'section',polish_policy=policy(),polish_brief=writing_brief.for_prompt(brief),rules=[{'id':row['id'],'statement':row['statement']} for row in applicable],terminology=terms,polish_blocks=[{key:value for key,value in row.items() if key!='original' and key!='protected_spans'}|{'protected_spans':[{key:value for key,value in span.items() if key!='node'} for span in row['protected_spans']]} for row in editable])
     if payload.get('target_node_ids'):context['selection_context']=selection_context(document,payload['target_node_ids'])
     system=(ROOT/'prompts'/'polish.system.txt').read_text(encoding='utf-8').strip()
+    from .writing_expression import guidance as expression_guidance
+    system+='\n'+expression_guidance()
     system+=' polish_brief是本次语言任务书：targets是必须达到的语言目标，terminology是中英文术语对照，length_band是篇幅参考，forbidden列出不得改变的内容。'
     user=db.dumps(context)
     cfg=provider.config()

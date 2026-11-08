@@ -25,7 +25,9 @@ def freeze(pid):
             'execution_runs':[{'id':r['id'],'input':{key:value for key,value in db.loads(r['payload'],{}).items() if key in ('product_refs','file_ids','message_id')},'result':db.loads(r['result'],{})} for r in c.execute("SELECT id,payload,result FROM tasks WHERE project_id=? AND kind='studio' AND status='succeeded' AND json_extract(payload,'$.action')='execute'",(pid,))],
             'interpretation':'个人随记与模型输出保留派生身份，不等于证据已核验'}
         package=c.execute('SELECT * FROM rule_packages WHERE id=?',(project['rule_package_id'],)).fetchone() if project['rule_package_id'] else None
-        settings={x['key']:db.loads(x['value']) for x in c.execute('SELECT * FROM settings WHERE key IN (?,?,?)',('format:'+pid,'template:'+pid,'figure_policy:'+pid))}
+        settings={x['key']:db.loads(x['value']) for x in c.execute('SELECT * FROM settings WHERE key IN (?,?,?,?)',('format:'+pid,'template:'+pid,'figure_policy:'+pid,'academic_standards:'+pid))}
+        from .academic_standards import resolve as resolve_standards
+        settings['academic_standards:'+pid]=resolve_standards(settings.get('academic_standards:'+pid))
         findings=[dict(x) for x in c.execute("SELECT * FROM findings WHERE project_id=? AND status!='superseded'",(pid,))];facts=[dict(x) for x in c.execute('SELECT * FROM facts WHERE project_id=?',(pid,))];files=[dict(x) for x in c.execute('SELECT id,sha256,name,active,egress,role FROM files WHERE project_id=?',(pid,))]
         knowledge_links=[dict(x) for x in c.execute('SELECT l.* FROM citation_knowledge_links l JOIN citations ci ON ci.id=l.citation_id JOIN sections s ON s.current_revision_id=ci.revision_id WHERE s.project_id=?',(pid,))]
         knowledge_units={x['id']:dict(x) for x in c.execute('SELECT u.*,p.file_id,p.file_hash,p.engine,p.strategy FROM knowledge_units u JOIN knowledge_parses p ON p.id=u.parse_id WHERE p.project_id=?',(pid,))}
@@ -108,6 +110,8 @@ def markdown_document(doc,figure_rows=None,section_id=None):
         kind=node['type'];attrs=node.get('attrs',{})
         if kind=='text':
             text=node.get('text','');marks={x['type'] for x in node.get('marks',[])}
+            from .documents import normalize_workflow_terms
+            text=normalize_workflow_terms(text)
             if 'bold' in marks:text='**'+text+'**'
             if 'italic' in marks:text='*'+text+'*'
             return text
@@ -120,12 +124,13 @@ def markdown_document(doc,figure_rows=None,section_id=None):
         return ''.join(inline(x) for x in node.get('content',[]))
     def block(n,depth=0):
         kind=n['type'];attrs=n.get('attrs',{})
+        from .documents import normalize_workflow_terms
         if kind=='heading':return '#'*min(int(attrs.get('level',2))+1,6)+' '+inline(n)
         if kind=='paragraph':return inline(n)
         if kind=='formula':return '$$\n'+(attrs.get('latex') or attrs.get('expression',''))+'\n$$'
         if kind=='figure':
             row=next((r for r in figure_rows if r['section_id']==section_id and r['node_id']==attrs.get('nodeId')),None)
-            title=((row['label']+' ') if row else '')+attrs.get('caption','图表')
+            title=((row['label']+' ') if row else '')+normalize_workflow_terms(attrs.get('caption','图表'))
             return '!['+title+'](图-'+(attrs.get('assetVersionId') or attrs.get('artifactId',''))+'.png)'+('\n\n'+title if row else '')
         if kind=='blockquote':return '\n'.join('> '+line for line in inline(n).splitlines())
         if kind=='table':
@@ -134,8 +139,8 @@ def markdown_document(doc,figure_rows=None,section_id=None):
             cols=max(map(len,rows));rows=[row+['']*(cols-len(row)) for row in rows];out=['| '+' | '.join(rows[0])+' |','| '+' | '.join(['---']*cols)+' |'];out+=['| '+' | '.join(row)+' |' for row in rows[1:]]
             row=next((r for r in figure_rows if r['section_id']==section_id and r['node_id']==attrs.get('nodeId')),None)
             if attrs.get('caption') or row:
-                out=[((row['label']+' ') if row else '')+(attrs.get('caption') or '【表题待补】'),'']+out
-            if attrs.get('note'):out+=['','注：'+attrs['note']]
+                out=[((row['label']+' ') if row else '')+normalize_workflow_terms(attrs.get('caption') or '【表题待补】'),'']+out
+            if attrs.get('note'):out+=['','注：'+normalize_workflow_terms(attrs['note'])]
             return '\n'.join(out)
         if kind in ('bulletList','orderedList'):
             return '\n'.join(('  '*depth+(str(i+1)+'. ' if kind=='orderedList' else '- ')+block(x,depth+1).strip()) for i,x in enumerate(n.get('content',[])))

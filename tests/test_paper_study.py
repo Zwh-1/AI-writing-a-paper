@@ -17,7 +17,7 @@ def test_study_reads_outline_and_flags_missing_evidence(env):
     assert data['inventory']['code_units'] >= 1
     assert data['inventory']['facts'] == 0
     assert '如何准确描述功能的授权条件' in data['requirement_draft']
-    assert '【待补证据】' in data['requirement_draft']
+    assert '暂缺依据的地方写明缺什么' in data['requirement_draft']
     chapter = next(c for c in data['chapters'] if c['kind'] == 'results')
     assert chapter['target_words'] == 2000 and chapter['role']
 
@@ -44,6 +44,8 @@ def test_study_estimate_uses_configured_price_and_word_target(env):
     # The fixture prices both sides at zero, so a priced estimate is exactly zero.
     assert estimate['total'] == 0
     assert estimate['method'] == 'arithmetic'
+    assert estimate['additional_stage_costs_included'] is False
+    assert '不是整篇总费用' in estimate['note']
     assert estimate['output_tokens'] >= 1000
     assert [p['section_id'] for p in estimate['per_section']] == [c['section_id'] for c in data['chapters']]
 

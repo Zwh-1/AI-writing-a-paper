@@ -3,7 +3,7 @@ from .. import documents,db
 from .models import Draft
 from .common import fail
 
-def document(data,current=None,targets=None,locks=None,references=None,evidence_ids=None,*,pid=None,context=None,manifest=None):
+def document(data,current=None,targets=None,locks=None,references=None,evidence_ids=None,*,pid=None,context=None,manifest=None,task=None):
     # A known source ID can be classified without altering one character of
     # prose. Unknown IDs still fail, and independent annotation must verify it.
     normalized=Draft.model_validate(data).model_dump();permitted_evidence=set(evidence_ids or []);books={r['id'] for r in references or []};corrections=[]
@@ -15,6 +15,10 @@ def document(data,current=None,targets=None,locks=None,references=None,evidence_
             paragraph['reference_ids']=[r for r in refs if r not in misplaced];paragraph['evidence_ids']=list(dict.fromkeys([*paragraph.get('evidence_ids',[]),*misplaced]))
             corrections.append({'local_id':paragraph.get('local_id'),'kind':'known_evidence_ids_classified_separately_from_bibliography','evidence_ids':misplaced,'prose_changed':False,'semantic_support':'not_granted'})
     draft=Draft.model_validate(normalized).model_dump();draft['field_corrections']=corrections;ids=[p['local_id'] for p in draft['paragraphs']]
+    if context and context.get('chapter_materials'):
+        from ..chapter_visual_plans import candidate_problem
+        problem=candidate_problem(draft,context)
+        if problem:fail('INVALID_PROJECT_VISUAL_LINK',problem)
     if len(set(ids))!=len(ids):fail('INVALID_DRAFT','候选段落标识重复')
     permitted={r['id']:r for r in references or []};content=[];proposals=[];quality_findings=[]
     for p in draft['paragraphs']:
@@ -32,10 +36,12 @@ def document(data,current=None,targets=None,locks=None,references=None,evidence_
             unit_ids.extend(permitted[ref].get('knowledge_unit_ids',[]))
             reading_ids.extend(permitted[ref].get('document_reading_ids',[]))
         attrs={'nodeId':db.uid()}
+        if p['evidence_ids']:attrs['evidenceIds']=p['evidence_ids']
         if source_ids:attrs['sourceIds']=list(dict.fromkeys(source_ids))
         if unit_ids:attrs['knowledgeUnitIds']=list(dict.fromkeys(unit_ids))
         if reading_ids:attrs['documentReadingIds']=list(dict.fromkeys(reading_ids))
         content.append({'type':'paragraph','attrs':attrs,'content':children})
+    new_paragraph_ids=[node['attrs']['nodeId'] for node in content]
     old=(current or {}).get('content',[]);targets=set(targets or []);locks=set(locks or [])
     if targets:
         positions=[i for i,n in enumerate(old) if n.get('attrs',{}).get('nodeId') in targets]
@@ -48,4 +54,12 @@ def document(data,current=None,targets=None,locks=None,references=None,evidence_
     draft['citation_proposals']=proposals
     draft['evidence_quality_findings']=quality_findings
     draft['missing_materials']=list(dict.fromkeys([*draft['missing_materials'],*[finding['message'] for finding in quality_findings]]))
+    if any(row.get('visual_plan_ids') for row in draft['paragraphs']):
+        if not task or pid is None or context is None:fail('VISUAL_TASK_REQUIRED','项目图表计划必须在受控写作任务中编译')
+        from ..chapter_visual_plans import proposals as planned_proposals
+        from ..writing_visuals import compile_proposals
+        actual={row['id']:row for row in context.get('evidence',[]) if isinstance(row,dict) and row.get('id') in permitted_evidence}
+        observed=[actual.get(eid,{'id':eid}) for eid in permitted_evidence]
+        content,created=compile_proposals(task,context['section'],planned_proposals(draft,context,new_paragraph_ids),content,observed)
+        draft['created_visual_ids']=created
     return documents.normalize({'type':'doc','content':content}),draft

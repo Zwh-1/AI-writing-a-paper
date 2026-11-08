@@ -214,7 +214,8 @@ def test_gpt_retry_prepares_with_gpt_limits_instead_of_primary(client,monkeypatc
 def test_writing_uses_verified_prices_without_changing_budget_or_releasing_unknowns(client,monkeypatch):
     pid=project(client);manual_package(client,pid);sid=section(client,pid)
     no_readings(monkeypatch);fake_response(monkeypatch)
-    cfg={**provider.config(),'model':'fixture','context_limit':32000,'max_output_tokens':8192,
+    # This case isolates pricing/holds, not the separate context-capacity gate.
+    cfg={**provider.config(),'model':'fixture','context_limit':40000,'max_output_tokens':8192,
          'input_price':None,'output_price':None,'max_request_cost':2}
     db.set_setting('provider',cfg)
     monkeypatch.setattr(provider,'get_key',lambda:'pricing-key')

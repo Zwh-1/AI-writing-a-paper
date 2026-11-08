@@ -71,7 +71,20 @@ def enqueue(session_id,stage,iteration=0):
     from .. import tasks
     s=db.one('SELECT * FROM writing_sessions WHERE id=?',(session_id,));key=digest([session_id,stage,iteration,db.loads(s['base_versions_json'],{})]);old=db.one('SELECT * FROM writing_steps WHERE session_id=? AND stage=? AND iteration=? AND input_hash=?',(session_id,stage,iteration,key))
     if old:return old
-    identity=db.uid();task=tasks.enqueue(s['project_id'],'agent_step',{'step_id':identity},'writing-step:'+identity)
+    identity=db.uid();step_payload={'step_id':identity}
+    first=db.one('SELECT t.* FROM writing_steps st JOIN tasks t ON t.id=st.task_id WHERE st.session_id=? ORDER BY st.rowid LIMIT 1',(session_id,))
+    if first:
+        from ..ai_runtime.policy import frozen,VERSION,GRAPH
+        step_payload['ai_runtime']={'version':VERSION,'graph_version':GRAPH,**frozen(first)}
+        step_payload['ai_runtime'].setdefault('writing_flow_policy',None)
+        original=db.loads(first['payload'],{})
+        for field,legacy in (('prompt_layout_version','legacy'),('model_view_version','legacy'),
+                             ('verification_scope_version','legacy_full'),('revision_protocol_version','full_candidate'),
+                             ('evidence_range_schema','evidence.range.v1'),('dependency_projection_mode','shadow')):
+            step_payload[field]=original.get(field,legacy)
+    from ..ai_runtime.policy import inherit_protocol
+    with inherit_protocol(first):
+        task=tasks.enqueue(s['project_id'],'agent_step',step_payload,'writing-step:'+identity)
     db.execute('INSERT INTO writing_steps VALUES(?,?,?,?,?,?,?,?,?,?)',(identity,session_id,stage,iteration,key,'queued',0,task['id'],None,None))
     return db.one('SELECT * FROM writing_steps WHERE id=?',(identity,))
 
@@ -123,9 +136,17 @@ def process_step(task,payload):
         base=db.loads(session['base_versions_json'],{});extra=previous.get('investigate',{}).get('evidence_ids',[]);data,manifest=context.assemble(pid,session['section_id'],base['contract_version_id'],profile,True,extra,'revise' if session['operation']=='revise_unit' else 'generate')
         from ..writing_tool_runtime import augment_context
         augment_context(pid,data,manifest,previous.get('investigate',{}))
+        from ..prompt_layout import version as prompt_layout_version
+        manifest['prompt_layout_version']=prompt_layout_version(task)
+        from ..ai_contracts.tasks import attach as attach_task_spec
+        attach_task_spec(task,section(session['section_id'],pid),data,manifest)
         manifest.update(writing_session_id=session['id'],writing_step_id=st['id'],stage=st['stage'],lease_epoch=epoch)
         system={'investigate':prompts.INVESTIGATE,'judgment':prompts.JUDGMENT+' 另返回blocking_gaps列表。只有缺少当前任务必需命题的依据才列入blocking_gaps；任务本来不评价的性能、部署和未运行测试应作为限制保留，不要求补齐后才能写静态实现。section.title已给定，不得声称章标题尚未确定；没有逐小节清单、固定引用数量或年份范围不单独构成事实依据缺口，允许按已有章标题与研究主题组织论证。','judgment_check':judgment.CHECK_PROMPT,'draft':prompts.EDIT if session['operation']=='revise_unit' else prompts.DRAFT,'annotation':prompts.ANNOTATE,'semantic':prompts.VERIFY,'coherence':prompts.COHERENCE,'regression':prompts.VERIFY}[st['stage']]
-        if st['stage']=='draft':system+=' 需要引用文献时在该段加reference_ids列表，只能使用references中有具体原文依据的给定ID，不手写猜测编号。references为空就不生成文献引用。'
+        if st['stage']=='draft':
+            system+=' 需要引用文献时在该段加reference_ids列表，只能使用references中有具体原文依据的给定ID，不手写猜测编号。references为空就不生成文献引用。'
+            if data.get('task_spec'):
+                from ..ai_contracts.tasks import INSTRUCTION
+                system+=INSTRUCTION
         if 'judgment' in previous:data['judgment']=previous['judgment']['judgment']
         if policy.get('revision_instructions'):data['revision_instructions']=policy['revision_instructions']
         if policy.get('revision_candidate_id'):
@@ -189,6 +210,10 @@ def process_step(task,payload):
                 data.pop('candidate_document',None)
                 data['locator_scope']='完整候选正文逐段列于candidate_paragraphs；文本中的引用占位符按顺序对应reference_ids和citation_positions_cp。node_id只用给定段落编号，句子ID未提供时必须为空。全篇疑点可使用空node_id；不要填章节号、命题号或猜测编号。'
         from .packing import fit
+        # These stages use this same system at transport. The other stages
+        # construct their final prompt in their own bounded execution loops.
+        if st['stage'] not in ('investigate','coherence','regression'):
+            system,manifest=provider_adapter.prepare_system(task,system,data,manifest)
         fit(data,manifest,system,cfg)
         context_id=context.save_context(st['id'],data,manifest,system,cfg) if st['stage'] not in ('annotation','coherence','regression') else None
         if st['stage']=='investigate':out=investigate(task,st,session,profile,data,manifest)
@@ -224,7 +249,7 @@ def process_step(task,payload):
                 from .models import Verification
                 result=Verification.model_validate(parsed).model_dump();rid=verification.save_run(pid,None,'judgment_check',manifest,result);out={'verification_run_id':rid,'result':result}
             elif st['stage']=='draft':
-                s=section(session['section_id'],pid);current=documents.current(s);locks=[r['node_id'] for r in db.rows('SELECT node_id FROM locks WHERE section_id=?',(s['id'],))];doc,validated=drafting.document(parsed,db.loads(current['document'],{}) if current else None,policy.get('target_node_ids'),locks,data.get('references',[]),manifest.get('provided_evidence_ids',manifest['evidence_versions']),pid=pid,context=data,manifest=manifest);identity=db.uid()
+                s=section(session['section_id'],pid);current=documents.current(s);locks=[r['node_id'] for r in db.rows('SELECT node_id FROM locks WHERE section_id=?',(s['id'],))];doc,validated=drafting.document(parsed,db.loads(current['document'],{}) if current else None,policy.get('target_node_ids'),locks,data.get('references',[]),manifest.get('provided_evidence_ids',manifest['evidence_versions']),pid=pid,context=data,manifest=manifest,task=task);identity=db.uid()
                 db.execute('INSERT INTO writing_candidates VALUES(?,?,?,?,?,?,?,?)',(identity,session['id'],policy.get('revision_candidate_id'),blob(doc),digest(doc),blob({'judgment':data['judgment'],'manifest':manifest,'draft_field_corrections':validated['field_corrections'],'citation_proposals':validated.get('citation_proposals',[]),'evidence_quality_findings':validated.get('evidence_quality_findings',[])}),context_id,db.now()));out={'candidate_id':identity,'missing_materials':validated['missing_materials'],'field_corrections':validated['field_corrections']}
             elif st['stage']=='annotation':
                 rid,result=verification.apply_annotation(pid,analysis_id,parsed,manifest);out={'analysis_id':analysis_id,'verification_run_id':rid,'result':result,'field_corrections':annotation_field_corrections}
@@ -235,10 +260,9 @@ def process_step(task,payload):
                 result.update({k:v for k,v in parsed.items() if k not in result});rid=verification.save_run(pid,analysis_id,st['stage'],manifest,result);out={'analysis_id':analysis_id,'verification_run_id':rid,'result':result}
         with db.transaction():
             assert_lease(st['id'],epoch);db.execute("UPDATE writing_steps SET state='completed',output_blob=?,error_json=NULL WHERE id=? AND lease_epoch=?",(blob(out),st['id'],epoch))
-            if st['stage']=='judgment' and out['judgment']['blocking_gaps']:status='needs_evidence'
-            elif st['stage']=='judgment_check' and (not out['result']['coverage_complete'] or any(f['severity']=='blocker' for f in out['result']['findings'])):status='needs_review'
-            elif st['stage']=='regression' or (st['stage']=='coherence' and session['operation']!='revise_unit'):status='needs_review'
-            else:status='queued';enqueue(session['id'],STAGES[STAGES.index(st['stage'])+1],st['iteration'])
+            from ..ai_graphs.agent import route
+            routed=route(task,st['stage'],out,session['operation']);status=routed['status']
+            if routed['next_stage']:enqueue(session['id'],routed['next_stage'],st['iteration'])
             db.execute('UPDATE writing_sessions SET status=?,updated_at=? WHERE id=?',(status,db.now(),session['id']))
         return out
     except Exception as error:
@@ -306,7 +330,8 @@ def reparse_saved_draft(pid,identity):
     context_row,data=frozen;manifest=unblob(context_row['manifest_blob']);s=section(session['section_id'],pid);policy=db.loads(session['policy_json'],{})
     if s['current_revision_id']!=manifest.get('base_revision_id'):fail('INPUT_VERSION_CHANGED','当前正文已改变',409)
     current=documents.current(s);locks=[r['node_id'] for r in db.rows('SELECT node_id FROM locks WHERE section_id=?',(s['id'],))]
-    doc,validated=drafting.document(parsed,db.loads(current['document'],{}) if current else None,policy.get('target_node_ids'),locks,data.get('references',[]),manifest.get('provided_evidence_ids',manifest.get('evidence_versions',{})),pid=pid,context=data,manifest=manifest);cid=db.uid()
+    task=db.one('SELECT * FROM tasks WHERE id=?',(step['task_id'],))
+    doc,validated=drafting.document(parsed,db.loads(current['document'],{}) if current else None,policy.get('target_node_ids'),locks,data.get('references',[]),manifest.get('provided_evidence_ids',manifest.get('evidence_versions',{})),pid=pid,context=data,manifest=manifest,task=task);cid=db.uid()
     decision={'judgment':data['judgment'],'manifest':manifest,'draft_field_corrections':validated['field_corrections'],'citation_proposals':validated.get('citation_proposals',[]),'evidence_quality_findings':validated.get('evidence_quality_findings',[]),'reparsed_generation_run_id':run['id'],'reparse_method':'local_schema_reparse_no_new_model_call'}
     db.execute('INSERT INTO writing_candidates VALUES(?,?,?,?,?,?,?,?)',(cid,identity,policy.get('revision_candidate_id'),blob(doc),digest(doc),blob(decision),context_row['id'],db.now()))
     out={'candidate_id':cid,'missing_materials':validated['missing_materials'],'field_corrections':validated['field_corrections'],'reparsed_generation_run_id':run['id'],'new_model_calls':0}

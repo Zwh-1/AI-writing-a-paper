@@ -89,13 +89,16 @@ def test_semantic_window_rejects_cross_claim_quote_and_omitted_paragraph_complet
             {'claim_id':claim['claim_id'],'support':'supported','source_quotes':[{'source_id':'s2','quote':'Second exact evidence.'}]}
             for claim in request['claims']],
             'point_reviews':[{'point_id':'p','status':'complete','paragraph_indices':[11],'evidence_text':'Paragraph 11.'}],
-            'findings':[]})}
+            'findings':[{'kind':'style','paragraph_index':11,'message':'未提供段落的猜测不能成为修订依据。'},
+                        {'kind':'style','paragraph_index':2,'message':'实际给定范围内的表达问题。'}]})}
     monkeypatch.setattr(writing_flow,'_cached_call',response)
     from app import provider
     db.set_setting('provider',{**provider.DEFAULT,'context_limit':32000,'max_output_tokens':512})
     result=writing_flow._semantic(task,{'id':'section','title':'Synthetic'},paragraphs,context,{}, {'claim_checks':checks})
     assert result['claims'][0]['support']=='unknown' and result['claims'][1]['support']=='supported'
     assert result['point_reviews'][0]['status']=='unknown'
+    assert not any(row.get('paragraph_index')==11 for row in result['findings'])
+    assert any(row.get('kind')=='style' and row.get('paragraph_index')==2 for row in result['findings'])
     assert not result['global_coherence']['coverage_complete']
 
 
@@ -218,6 +221,8 @@ def test_finish_applies_frozen_patch_or_retains_original_without_full_rewrite(wr
     def transport(system,user,images=None):
         nonlocal checks
         value=db.loads(user)
+        if value.get('operation')=='review_candidate_discourse':
+            return response({'coverage_complete':True,'findings':[]})
         if 'claim_reviews' in system:
             checks+=1;source=value['actual_sources'][0]
             return response({'claim_reviews':[{'claim_id':claim['claim_id'],

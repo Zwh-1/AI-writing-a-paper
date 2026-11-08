@@ -62,7 +62,13 @@ def test_candidate_diff_has_replacement_hunk(client):
 def test_selected_paragraph_generation_preserves_unselected_content(client,monkeypatch):
  p=project(client);manual_package(client,p);sid=section(client,p);base=save(client,sid,'首段保留\n只改这一段\n尾段保留').json();doc=db.loads(base['document']);target=doc['content'][1]['attrs']['nodeId'];cfg=provider.config();cfg['model']='test';db.set_setting('provider',cfg)
  def fake(system,user,images=None):
-  ctx=db.loads(user);assert ctx['scope']=='selected_paragraphs';assert ctx['existing_text']=='只改这一段';return {'text':db.dumps({'paragraphs':[{'text':'中间段落已修改'}]}),'usage':{},'cost':0,'remote_id':'t','request_hash':'h'}
+  ctx=db.loads(user)
+  if ctx.get('operation')=='review_candidate_discourse':
+   return {'text':db.dumps({'coverage_complete':True,'findings':[],'summary':'仅核对给定候选',
+    'rule_reviews':[{'rule_id':row['id'],'status':'satisfied','paragraph_indices':[0],
+     'quote':ctx['candidate_paragraphs'][0]['text'],'reason':'合成夹具保留当前规则范围'} for row in ctx.get('rule_applications',[])]}),
+    'usage':{},'cost':0,'remote_id':'review-fixture','request_hash':'review-fixture'}
+  assert ctx['scope']=='selected_paragraphs';assert ctx['existing_text']=='只改这一段';return {'text':db.dumps({'paragraphs':[{'text':'中间段落已修改'}]}),'usage':{},'cost':0,'remote_id':'t','request_hash':'h'}
  monkeypatch.setattr(provider,'generate',fake);t=tasks.enqueue(p,'write',{'section_id':sid,'base_revision_id':base['id'],'operation':'revise','target_node_ids':[target]});tasks.run_one();task=db.one('SELECT * FROM tasks WHERE id=?',(t['id'],));assert task['status']=='succeeded',task['error'];assert documents.plain(db.loads(task['result'])['document'])=='首段保留\n中间段落已修改\n尾段保留'
 
 def test_selected_generation_rejects_locked_target(client):

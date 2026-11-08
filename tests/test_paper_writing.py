@@ -15,6 +15,7 @@ def manuscript(client, monkeypatch):
     db.set_setting('provider', {**provider.config(), 'model': 'paper-fixture', 'context_limit': 200000,
                               'max_output_tokens': 2048, 'input_price': 1., 'output_price': 4.})
     monkeypatch.setattr(provider, 'get_key', lambda: 'paper-fixture-key')
+    monkeypatch.setattr(security, 'get_key', lambda *a, **k: 'paper-fixture-key')
     monkeypatch.setattr(knowledge_service, 'prepare_writing', lambda *a, **k: {
         'sources': [], 'knowledge_units': [], 'gaps': [], 'selected_unit_ids': [], 'document_readings': []})
     from app import guidance_preparation
@@ -27,15 +28,39 @@ def manuscript(client, monkeypatch):
         assert response.status_code == 200, response.text
         created.append(response.json())
     calls = []
+    review_calls = []
     def generate(system, user, images=None):
         payload = db.loads(user)
+        # The agent review path wraps the payload in a messages frame, while the
+        # writing path passes the context dict directly.  Detect either shape.
+        def nested(obj):
+            if isinstance(obj, dict) and 'messages' in obj:
+                first = obj.get('messages', [{}])[0]
+                if isinstance(first, dict) and isinstance(first.get('content'), str):
+                    try: return db.loads(first['content'])
+                    except Exception: return {}
+            return obj
+        inner = nested(payload)
+        if payload.get('operation')=='review_candidate_discourse':
+            return {'text':db.dumps({'coverage_complete':True,'findings':[],
+                'rule_reviews':[{'rule_id':r['id'],'status':'satisfied','paragraph_indices':[0],
+                    'quote':payload['candidate_paragraphs'][0]['text'],'reason':'已保留合成夹具的来源与范围。'}
+                    for r in payload.get('rule_applications',[])]}),
+                    'usage':{},'cost':.001,'remote_id':'discourse-fixture','request_hash':'fixture'}
+        if 'messages' in payload or ('passages' in inner or 'navigation_indexes' in inner or 'question' in inner):
+            review_calls.append(inner)
+            parsed={'findings': [], 'coverage_complete': True,'summary': '夹具全文核验通过。'}
+            if 'navigation_indexes' in inner:parsed['requests']=[]
+            return {'text': db.dumps({'agent_transport':True,'text':db.dumps(parsed),'tool_calls':[]}),
+                    'usage': {}, 'cost': .001, 'remote_id': 'fixture', 'request_hash': 'fixture'}
         calls.append(payload)
         text = ('English translation of ' + payload['source_abstract']['text']
                 if 'source_abstract' in payload else payload['section']['title'] + '完整候选：仅描述有依据的研究范围。')
         return {'text': db.dumps({'paragraphs': [{'text': text}]}), 'usage': {},
                 'cost': .001, 'remote_id': 'fixture', 'request_hash': 'fixture'}
     monkeypatch.setattr(provider, 'generate', generate)
-    return {'client': client, 'pid': pid, 'sections': created, 'calls': calls, 'generate': generate}
+    return {'client': client, 'pid': pid, 'sections': created, 'calls': calls,
+            'review_calls': review_calls, 'generate': generate}
 
 
 def launch(env, **extra):
@@ -115,7 +140,7 @@ def test_introduction_candidate_repairs_malformed_or_empty_model_response(manusc
         assert repairs[1]['request_parameters']['repair_attempt']==2
         assert introduction['validation_attempts'][0]['error'] not in introduction_systems[1]
     assert next(c for c in result['section_checks'] if c['section_id']==introduction['section_id'])['response_format_retries']==1
-    assert len(result['completed_run_ids'])==6
+    assert len(result['completed_run_ids'])==10  # Six writing/repair calls and four rule/discourse reviews.
     assert db.one('SELECT status FROM tasks WHERE id=?',(tid,))['status']=='succeeded'
 
 
@@ -198,9 +223,10 @@ def test_one_task_can_resume_after_budget_stop_without_regenerating_completed_co
     original = tasks.model_call
     count = []
     def pause(*args,**kwargs):
-        count.append(True)
-        if len(count) == 2:
-            raise BudgetExceeded('模拟本次预算不足')
+        if args[3].get('writing_stage')!='discourse_review':
+            count.append(True)
+            if len(count) == 2:
+                raise BudgetExceeded('模拟本次预算不足')
         return original(*args,**kwargs)
     monkeypatch.setattr(tasks, 'model_call', pause)
     response = launch(e)
@@ -228,9 +254,10 @@ def test_unknown_remote_work_requires_acknowledgement_but_completed_sections_are
     count = []
     original = e['generate']
     def disconnect(system, user, images=None):
-        count.append(True)
-        if len(count) == 2:
-            raise provider.ProviderError('模拟连接断开，执行情况未知', unknown=True)
+        if db.loads(user).get('operation')!='review_candidate_discourse':
+            count.append(True)
+            if len(count) == 2:
+                raise provider.ProviderError('模拟连接断开，执行情况未知', unknown=True)
         return original(system, user, images)
     monkeypatch.setattr(provider, 'generate', disconnect)
     tid = launch(e).json()['id']
@@ -243,6 +270,37 @@ def test_unknown_remote_work_requires_acknowledgement_but_completed_sections_are
     response = e['client'].post(path, json={'acknowledge_possible_duplicate_charge': True})
     assert response.status_code == 200
     assert db.one('SELECT status FROM generation_runs WHERE status=?', ('outcome_unknown',))
+
+
+def test_rule_review_budget_pause_resumes_paid_draft_without_regenerating_it(manuscript,monkeypatch):
+    e=manuscript;original=tasks.model_call;paused=False
+    def stop_review(*args,**kwargs):
+        nonlocal paused
+        if args[3].get('writing_stage')=='discourse_review' and not paused:
+            paused=True
+            raise BudgetExceeded('模拟规则复核前费用不足')
+        return original(*args,**kwargs)
+    monkeypatch.setattr(tasks,'model_call',stop_review)
+    tid=launch(e).json()['id'];assert tasks.run_one()
+    stopped=db.one('SELECT * FROM tasks WHERE id=?',(tid,))
+    assert stopped['status']=='budget_blocked' and len(e['calls'])==1
+    first_section=e['calls'][0]['section']['id']
+    from app.writing_flow import checkpointed_candidate_run_ids
+    known=checkpointed_candidate_run_ids(stopped)
+    assert len(known)==1
+    known_run=next(iter(known))
+    db.execute("UPDATE generation_runs SET status='outcome_unknown' WHERE id=?",(known_run,))
+    assert not checkpointed_candidate_run_ids(stopped)
+    uncertain=e['client'].post(f'/api/v1/projects/{e["pid"]}/paper-writing/{tid}/resume',json={})
+    assert uncertain.status_code==422 and uncertain.json()['detail']['code']=='PAPER_REMOTE_ACK_REQUIRED'
+    db.execute("UPDATE generation_runs SET status='completed' WHERE id=?",(known_run,))
+    monkeypatch.setattr(tasks,'model_call',original)
+    resumed=e['client'].post(f'/api/v1/projects/{e["pid"]}/paper-writing/{tid}/resume',json={})
+    assert resumed.status_code==200,resumed.text
+    assert tasks.run_one()
+    completed=db.one('SELECT * FROM tasks WHERE id=?',(tid,))
+    assert completed['status']=='succeeded',completed['error']
+    assert len([row for row in e['calls'] if row.get('section',{}).get('id')==first_section])==1
 
 
 def test_root_task_budget_applies_to_all_calls_before_any_send(manuscript):
@@ -409,8 +467,11 @@ def test_capacity_stop_preserves_full_candidate_and_resumes_after_capacity_chang
     e = manuscript
     cfg = provider.config()
     from app.writing_request import FORMAT_REPAIR_INPUT_RESERVE
-    # Keep the original 18k draft allowance after reserving format-repair input.
-    initial_limit = 18000 + FORMAT_REPAIR_INPUT_RESERVE
+    from app.writing_expression import guidance
+    # Keep room for the shared prose instructions and task-point metadata.
+    # The test must reach the first call, then stop on its oversized manuscript
+    # context; it must not fail merely because the system prompt grew.
+    initial_limit = 23000 + FORMAT_REPAIR_INPUT_RESERVE + len(guidance().encode('utf-8')) + 4096
     db.set_setting('provider', {**cfg, 'context_limit': initial_limit})
     original = e['generate']
     def large_first(system, user, images=None):

@@ -37,6 +37,8 @@ class CandidateParagraph(BaseModel):
     fact_ids:list[str]=Field(default_factory=list,max_length=60)
     evidence_ids:list[str]=Field(default_factory=list,max_length=60)
     visual_ids:list[str]=Field(default_factory=list,max_length=20)
+    project_material_ids:list[str]=Field(default_factory=list,max_length=30)
+    visual_plan_ids:list[str]=Field(default_factory=list,max_length=12)
     knowledge_unit_ids:list[str]=Field(default_factory=list,max_length=60)
     document_reading_ids:list[str]=Field(default_factory=list,max_length=30)
     claim_version_ids:list[str]=Field(default_factory=list,max_length=60)

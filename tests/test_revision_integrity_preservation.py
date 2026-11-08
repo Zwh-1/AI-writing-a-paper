@@ -28,6 +28,9 @@ def scenario(env,monkeypatch,mode):
     def transport(system,user,images=None):
         nonlocal revised_value
         payload=db.loads(user)
+        if payload.get('operation')=='review_candidate_discourse':
+            return response({'coverage_complete':True,'findings':[],'rule_reviews':[],
+                             'summary':'合成篇章核验，与修订调用分别计数。'})
         if 'claim_reviews' in system:
             calls['semantic']+=1
             return response({'claim_reviews':[{'claim_id':claim['claim_id'],

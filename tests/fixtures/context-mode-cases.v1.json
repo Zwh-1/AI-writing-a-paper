@@ -1,0 +1,13 @@
+{
+  "schema": "context.acceptance.cases.v1",
+  "cases": [
+    {"id": "short", "text": "本研究仅讨论已有设计，尚未进行性能实验。", "repeat": 1},
+    {"id": "long", "text": "本段完整说明研究对象、方法条件和局限，不把尚未执行的计划写成成果。", "repeat": 1200},
+    {"id": "mixed", "text": "研究范围（scope）限于授权材料。The protocol preserves conditions and citations.", "repeat": 30},
+    {"id": "numeric_conflict", "text": "样本数为120人。", "current_text": "样本数为150人。", "repeat": 1},
+    {"id": "stale_navigation", "text": "原始范围为单校样本。", "repeat": 1},
+    {"id": "revoked", "text": "已撤回外发授权的原文。", "repeat": 1},
+    {"id": "targeted_revision", "text": "前后章节只作连贯性参照，保留未修改段落。", "repeat": 1}
+  ],
+  "measurement_scope": "local assembly and guards only; provider tokens and human metrics remain unknown"
+}

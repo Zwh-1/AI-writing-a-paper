@@ -76,6 +76,7 @@ function PaperWorkspace({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [pollError, setPollError] = useState("");
+  const [reviewTask, setReviewTask] = useState<Row | null>(null);
   const [reviewed, setReviewed] = useState(false);
   const [acknowledged, setAcknowledged] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -154,6 +155,30 @@ function PaperWorkspace({
       .catch((failure) => { if (active) setError((failure as Error).message); });
     return () => { active = false; };
   }, [pid, task?.id, task?.status, task?.result?.paper_hash]);
+
+  useEffect(() => {
+    if (!reviewTask || !["queued", "running"].includes(reviewTask.status)) return;
+    let active = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const pollReview = async () => {
+      try {
+        const next = await api(`/tasks/${reviewTask.id}`, { timeout: 10000 });
+        if (!active) return;
+        setReviewTask(next);
+        if (["queued", "running"].includes(next.status)) {
+          timer = setTimeout(() => void pollReview(), 2000);
+        } else if (task) {
+          const current = await api(`/tasks/${task.id}`);
+          if (active) setTask(current);
+          if (next.status !== "succeeded" && active) setError(next.error || "全文审查未完成，候选和已发现问题已保留。");
+        }
+      } catch (failure) {
+        if (active) { setError((failure as Error).message); timer = setTimeout(() => void pollReview(), 5000); }
+      }
+    };
+    timer = setTimeout(() => void pollReview(), 1000);
+    return () => { active = false; if (timer) clearTimeout(timer); };
+  }, [reviewTask?.id, reviewTask?.status, task?.id]);
 
   // Poll the running task with a self-scheduling loop: a failing read must not
   // stop the loop or freeze the view on a stale snapshot, and a hung read must
@@ -244,6 +269,10 @@ function PaperWorkspace({
   const superseded = result.superseded_by_task_id;
   const findings: Row[] = result.review?.findings ?? [];
   const structureErrors = findings.filter((f) => f.severity === "error");
+  const semanticReview = result.whole_paper_review ?? result.review?.whole_paper_review;
+  const reviewRunning = !!reviewTask && ["queued", "running"].includes(reviewTask.status);
+  const reviewIncomplete = result.whole_paper_review_required &&
+    (semanticReview?.status !== "completed" || !semanticReview?.coverage_complete);
   const toggle = (values: string[], value: string) => values.includes(value)
     ? values.filter((v) => v !== value) : [...values, value];
   const locate = (sid: string) => document.getElementById(`paper-section-${sid}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -805,6 +834,20 @@ function PaperWorkspace({
             {complete && (
               <div className="paper-review" aria-label="全文审阅问题">
                 <h3>全文审阅</h3>
+                <p className="paper-note" role="status">
+                  全文论证审查：{reviewRunning ? "正在重新审查" : ({ completed: "已完成", failed: "执行失败，问题已保留", skipped: "尚未运行", running: "检查中" } as Record<string, string>)[semanticReview?.status] ?? "尚未运行"}
+                  {semanticReview?.status === "completed" && !semanticReview?.coverage_complete ? "；仍有未覆盖范围" : ""}
+                </p>
+                {semanticReview?.error && <p className="alert">{semanticReview.error}</p>}
+                {!!semanticReview?.unresolved_scopes?.length && <p className="paper-note">有 {semanticReview.unresolved_scopes.length} 项范围待补充核验。</p>}
+                {!adopted && !superseded && <button className="btn" disabled={busy || reviewRunning}
+                  onClick={() => void perform(async () => {
+                    const next = await api(`/projects/${pid}/paper-writing/${task.id}/recheck`, {
+                      method: "POST", headers: { "Idempotency-Key": crypto.randomUUID() },
+                      body: JSON.stringify({ paper_hash: result.paper_hash }),
+                    });
+                    setReviewTask(next); return next;
+                  }, "已提交全文审查，保留当前候选正文")}>重新审查全文</button>}
                 <p className="paper-note">{result.review?.note}</p>
                 <p>发现 {findings.length} 项问题，其中 {structureErrors.length} 项影响完整写入。</p>
                 {findings.length > 0 && (
@@ -967,7 +1010,7 @@ function PaperWorkspace({
                 </p>
                 <button
                   className="btn primary"
-                  disabled={!reviewed || busy || structureErrors.length > 0}
+                  disabled={!reviewed || busy || reviewRunning || reviewIncomplete || structureErrors.length > 0}
                   onClick={() =>
                     void perform(async () => {
                       const saved = await api(

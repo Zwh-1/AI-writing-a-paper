@@ -3,6 +3,7 @@ from contextlib import nullcontext
 import pytest
 
 from test_writing_agent import env
+from test_workbench import client, project
 from app import db, knowledge_service, tasks, writing_live, writing_retrieval, writing_flow
 
 
@@ -53,7 +54,8 @@ def test_final_request_is_checked_again_after_catalogue_alignment(env, monkeypat
     assert not db.rows('SELECT id FROM generation_runs WHERE task_id=?', (task['id'],))
 
 
-def test_non_json_independent_review_remains_unverified_without_losing_candidate(monkeypatch):
+def test_non_json_independent_review_remains_unverified_without_losing_candidate(client,monkeypatch):
+    pid=project(client)
     monkeypatch.setattr(writing_flow, 'settings', lambda pid: {'semantic_review': True})
     monkeypatch.setattr(writing_flow, '_stage_fits', lambda *args: True)
     monkeypatch.setattr(writing_flow, '_cached_call',
@@ -63,7 +65,7 @@ def test_non_json_independent_review_remains_unverified_without_losing_candidate
     context={'sources':[{'id':'source','text':'实际论断'}], 'writing_brief':{'points':[]}}
     local={'claim_checks':[{'claim_id':'claim','paragraph_index':0,'text':'实际论断',
                             'support':'supported'}], 'paragraphs':[]}
-    result=writing_flow._semantic({'project_id':'project'},section,[paragraph],context,{},local)
+    result=writing_flow._semantic({'project_id':pid},section,[paragraph],context,{},local)
     assert result['status']=='incomplete' and result['coverage_complete'] is False
     assert result['claims']==[]
     assert result['findings'][0]['kind']=='verification_incomplete'

@@ -264,10 +264,12 @@ def save_params(pid, operation, values):
     return params_for(pid, operation)
 
 
-def paragraph_plan(target_words, kind, params):
-    """Split the chapter target into paragraphs with an explicit purpose each."""
+def paragraph_plan(target_words, kind, params, purposes=None, point_ids=None):
+    """Suggest a budget across ordered tasks without padding the final topic."""
     target = max(0, int(target_words or 0))
-    purposes = KIND_PURPOSES.get(kind) or KIND_PURPOSES['body']
+    purposes = list(purposes or KIND_PURPOSES.get(kind) or KIND_PURPOSES['body'])
+    if point_ids is not None and len(point_ids) != len(purposes):
+        raise ValueError('段落计划的任务编号与职责数量不一致')
     per = int(params.get('paragraph_target_words', PARAMS['paragraph_target_words']['default']))
     ceiling = int(params.get('max_paragraphs', PARAMS['max_paragraphs']['default']))
     count = max(3, min(ceiling, max(len(purposes), int(round(target / per)) if per else len(purposes))))
@@ -276,9 +278,15 @@ def paragraph_plan(target_words, kind, params):
     base, extra = divmod(target, count) if count else (0, 0)
     rows = []
     for index in range(count):
-        purpose = purposes[index] if index < len(purposes) else f'继续展开“{purposes[-1]}”'
-        rows.append({'index': index, 'purpose': purpose, 'target_words': base + (1 if index < extra else 0)})
-    return {'count': count, 'total_words': target, 'paragraphs': rows}
+        # Group neighbouring slots by task; a long chapter must not spend all
+        # remaining slots repeatedly expanding only the final responsibility.
+        start=index*len(purposes)//count
+        end=max(start+1,(index+1)*len(purposes)//count)
+        purpose='；'.join(purposes[start:end])
+        row={'index': index, 'purpose': purpose, 'target_words': base + (1 if index < extra else 0)}
+        if point_ids is not None:row['point_ids']=list(point_ids[start:end])
+        rows.append(row)
+    return {'count': count, 'total_words': target, 'paragraphs': rows, 'advisory': True}
 
 
 def resolve(pid, operation, section=None):

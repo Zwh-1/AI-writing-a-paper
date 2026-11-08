@@ -53,6 +53,24 @@ def assemble(pid,sid,contract_id,profile,remote=True,evidence_ids=None,operation
     ids=list(dict.fromkeys([*c.get('evidence_ids',[]),*fact_evidence_ids,*artifact_evidence_ids,*(evidence_ids or []),*intent_ids]))
     if len(ids)>80:fail('CONTEXT_BUDGET_EXCEEDED','本单元证据过多，请缩小范围')
     ee=[evidence.get(pid,eid,remote) for eid in ids]
+    if s['kind']=='results':
+        known={item['id'] for item in ee}
+        for row in db.rows("SELECT id FROM evidence_items WHERE project_id=? AND origin_type='artifact' AND kind IN ('test_run','data_result') AND validity='current' ORDER BY created_at DESC,id LIMIT 12",(pid,)):
+            if len(ee)>=80:break
+            if row['id'] in known or remote and not evidence.allowed_remote(pid,row['id']):continue
+            observed=evidence.get(pid,row['id'],remote)
+            if observed['version_current']:ee.append(observed);known.add(observed['id'])
+    grounding=None
+    if snapshot and remote:
+        from ..project_grounding import collect as collect_project
+        grounding,observed=collect_project(pid,snapshot['id'],{**s,'goal':c.get('goal') or s.get('goal','')},s['title']+' '+s['goal'],ee)
+        known={item['id'] for item in ee}
+        added=[item for item in observed if item['id'] not in known]
+        ee.extend(added)
+        # The agent already investigates its explicit observations in a
+        # separate stage. A duplicate navigation dossier adds no new reading.
+        if not added and not grounding.get('chapter_materials'):grounding=None
+        if len(ee)>80:fail('CONTEXT_BUDGET_EXCEEDED','本节项目依据超过80项，请缩小明确研究范围')
     reference_sources={};reference_units={};reference_readings={}
     for e in ee:
         if e['origin_type']=='document_reading':
@@ -76,6 +94,13 @@ def assemble(pid,sid,contract_id,profile,remote=True,evidence_ids=None,operation
     payload['project_inputs']={'rule_package_id':package['id'],'rule_ids':[r['id'] for r in rr],'evidence_ids':[e['id'] for e in ee],'reference_ids':[r['id'] for r in references],'material_evidence_ids':[e['id'] for e in ee if e['kind'] in ('material_observation','literature')]}
     manifest={'project_id':pid,'section_id':sid,'project_state_revision':head['revision'],'core_version_id':head['core_version_id'],'target_snapshot_id':head['target_snapshot_id'],'contract_version_id':contract_id,'rule_package_id':p['rule_package_id'],'evidence_versions':{e['id']:e['origin_version'] for e in ee},'fact_versions':{f['id']:f['revision'] for f in facts},'related_revisions':versions,'base_revision_id':s['current_revision_id'],'rule_ids':[r['id'] for r in rr],'file_ids':sorted(file_ids),'remote':remote,'profile_fingerprint':profile['route_fingerprint'],'prompt_version':'agent.v1','schema_version':'agent.v1','permissions_hash':digest([(e['id'],evidence.allowed_remote(pid,e['id'])) for e in ee])}
     payload.update(continuity);manifest.update(continuity_manifest);manifest['terminology_hash']=digest(payload['terminology'])
+    for row,rule in zip(payload['rules'],rr):row['applies_to']=rule.get('applies_to',[])
+    if grounding:
+        chapter=grounding.pop('chapter_materials',None)
+        if chapter:payload['chapter_materials']=chapter
+        grounding['hash']=digest({key:value for key,value in grounding.items() if key!='hash'})
+        payload['project_grounding']=grounding
+        manifest['project_grounding_hash']=grounding['hash']
     from ..section_materials import snapshot as material_snapshot
     from ..resource_refs import source_files
     product_inputs,material_inputs=material_snapshot(pid,sid,remote)
@@ -85,6 +110,10 @@ def assemble(pid,sid,contract_id,profile,remote=True,evidence_ids=None,operation
     manifest['file_ids']=sorted(set(manifest['file_ids'])|set(source_files(pid,manifest['resource_refs'])))
     from ..source_payload import compact_reference_metadata
     payload['evidence']=[evidence.for_model(e) for e in ee];payload['references']=[{**{k:r[k] for k in ('id','source_ids','knowledge_unit_ids','document_reading_ids','verification')},'metadata':compact_reference_metadata(r['metadata'])} for r in references]
+    if s['kind']=='results':
+        from ..chapter_materials import empty,with_execution_records
+        chapter=with_execution_records(payload.get('chapter_materials') or empty(snapshot['id'] if snapshot else None),s,payload['evidence'])
+        if chapter['test_cases'] or chapter['execution_records']:payload['chapter_materials']=chapter
     manifest['reference_metadata_hashes']={r['id']:digest(r['metadata']) for r in references}
     manifest['evidence_payload_hashes']={e['id']:e['payload_hash'] for e in ee}
     for item,original in zip(payload['evidence'],ee):
@@ -149,23 +178,18 @@ def select_evidence(items,selected):
         selected.update(added)
 
 def save_context(step_id,payload,manifest,system,cfg):
-    from .packing import fit
+    from .packing import fit,estimate as estimate_wire
     fit(payload,manifest,system,cfg)
     from ..source_payload import token_upper_bound
     reserve=int(cfg.get('max_output_tokens',8192));limit=int(cfg.get('context_limit',32000))
     def estimate_payload():
-        from .identifiers import encode
-        model_payload,_=encode(payload,manifest)
-        return token_upper_bound(system,db.dumps({'messages':[{'role':'user','content':db.dumps(model_payload)}],'tools':[]}))
+        return estimate_wire(payload,manifest,system,cfg)
     # Optional excerpts may be recovered by the expansion stage. Explicit
     # dependencies and already expanded premises retain their version guards.
     from ..writing_continuity import fit_optional
     fit_optional(payload,manifest,lambda:estimate_payload()+reserve<=limit)
     serialized=db.dumps(payload)
-    from .identifiers import encode
-    model_payload,_=encode(payload,manifest)
-    frame={'messages':[{'role':'user','content':db.dumps(model_payload)}],'tools':[]}
-    estimate=token_upper_bound(system,db.dumps(frame))
+    estimate=estimate_payload()
     if estimate+reserve>limit:fail('CONTEXT_BUDGET_EXCEEDED','完整论文正文、必要规则和证据超过预算；未截断全文，请调整已验证的接口上下文配置或缩小项目资料范围',input_estimate=estimate,reserved_output=reserve,limit=limit)
     for profile in ('','gpt-fallback','material-summary'):
         key=security.get_key(profile)

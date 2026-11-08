@@ -176,31 +176,23 @@ def prepare(pid,section,query,task_id=None):
                 raise HTTPException(409,'明确指定的任务恢复代码证据不属于当前快照：'+identity)
             gaps.append('章节代码证据来自旧快照，已使用当前项目快照重新取证');continue
         items.append(item)
-    if snapshot and not any(i['origin_type']=='code' for i in items):
+    if section['kind']=='results':
+        known={item['id'] for item in items}
+        for row in db.rows("SELECT id FROM evidence_items WHERE project_id=? AND origin_type='artifact' AND kind IN ('test_run','data_result') AND validity='current' ORDER BY created_at DESC,id LIMIT 12",(pid,)):
+            if row['id'] in known or not evidence.allowed_remote(pid,row['id']):continue
+            item=evidence.get(pid,row['id'],remote=True)
+            if item['version_current']:
+                items.append(item);known.add(item['id'])
+    grounding=None
+    if snapshot:
         snap=db.one('SELECT * FROM repository_snapshots WHERE id=? AND project_id=?',(snapshot,pid))
         binding=db.one('SELECT * FROM repository_bindings WHERE id=?',(snap['binding_id'],)) if snap else None
         if snap and binding and binding['egress_policy']=='selected_content':
-            aliases={'requirements':'user role permission usecase','system_design':'architecture module interface schema database',
-                     'implementation':'service contract function api','results':'test assert benchmark','introduction':'README overview',
-                     'abstract':'README overview','conclusion':'README test','body':'README function'}
-            words=list(dict.fromkeys(re.findall(r'[A-Za-z][A-Za-z0-9_]{2,}',query+' '+aliases.get(section['kind'],'README module'))))[:14]
-            terms=' OR '.join('LOWER(relative_path||\' \'||symbol) LIKE ?' for _ in words) or '1=1'
-            units=db.rows('SELECT relative_path,line_start,line_end FROM code_units WHERE snapshot_id=? AND ('+terms+") ORDER BY CASE kind WHEN 'contract' THEN 0 WHEN 'class' THEN 0 WHEN 'function' THEN 1 ELSE 2 END,length(relative_path),line_start LIMIT 12",[snapshot,*['%'+w.lower()+'%' for w in words]])
-            if not units:units=db.rows("SELECT relative_path,line_start,line_end FROM code_units WHERE snapshot_id=? AND kind IN ('function','contract','class') ORDER BY length(relative_path),relative_path,line_start LIMIT 4",(snapshot,))
-            paths=db.rows("SELECT relative_path FROM repository_snapshot_files WHERE snapshot_id=? AND LOWER(relative_path) LIKE '%readme%' ORDER BY length(relative_path) LIMIT 1",(snapshot,))
-            ranges=([(paths[0]['relative_path'],1,25)] if paths else [])+[(u['relative_path'],u['line_start'],u['line_end']) for u in units if u['line_end']-u['line_start']<=1000]
-            seen=set()
-            for path,start,end in ranges:
-                if (path,start,end) in seen:continue
-                seen.add((path,start,end))
-                raw=repository.read(pid,snapshot,path,start,end,remote=True)
-                if not raw['text'].strip() or len(raw['text'].encode('utf-8'))>5000:continue
-                old=db.one("SELECT id FROM evidence_items WHERE project_id=? AND origin_type='code' AND origin_id=? AND locator_json=? AND validity='current'",(pid,snapshot,db.dumps({'path':path,'line_start':start,'line_end':end})))
-                item=evidence.get(pid,old['id'],remote=True) if old else evidence.create(pid,{'kind':'test_definition' if re.search(r'(?:test|spec)',path,re.I) else 'code_observation',
-                    'origin_type':'code','origin_id':snapshot,'locator':{'path':path,'line_start':start,'line_end':end},
-                    'conditions':['当前项目快照中的明确行范围，不代表已读取完整仓库；静态代码与测试定义不能证明实际运行、部署或效果']})
-                items.append(item)
-                if len(items)>=5:break
+            from .project_grounding import collect as collect_project
+            grounding,observed=collect_project(pid,snapshot,{**section,'goal':c.get('goal') or section.get('goal','')},query,items)
+            known={item['id'] for item in items}
+            items.extend(item for item in observed if item['id'] not in known)
+            pinned.update(grounding['required_evidence_ids'])
     from .writing_agent.packing import rank,terms
     query_terms=terms(query)
     prefer_code=section['kind'] not in ('literature','literature_review')
@@ -238,6 +230,23 @@ def prepare(pid,section,query,task_id=None):
     manifest={'live_input_versions':versions(pid,task_id),'evidence_versions':{i['id']:i['origin_version'] for i in items},
               'permission_stamps':{i['id']:evidence.permission_stamp(pid,i['id']) for i in items},
               'asset_versions':{a['id']:digest([a['sha256'],db.loads(a['metadata'],{})]) for a in db.rows('SELECT * FROM artifacts WHERE project_id=?',(pid,)) if any(x['id']==a['id'] for x in assets)}}
+    if grounding:
+        chapter=grounding.pop('chapter_materials',None)
+        if section['kind']=='results':
+            from .chapter_materials import empty,with_execution_records
+            chapter=with_execution_records(chapter or empty(snapshot),section,payload['project_evidence'])
+        if chapter and any(chapter.get(lane) for lane in ('database_tables','frontend_pages','api_routes','test_cases','execution_records')):
+            payload['chapter_materials']=chapter
+        grounding['hash']=digest({key:value for key,value in grounding.items() if key!='hash'})
+        payload['project_grounding']=grounding
+        manifest['project_grounding_hash']=grounding['hash']
+    elif section['kind']=='results':
+        from .chapter_materials import empty,with_execution_records
+        chapter=with_execution_records(empty(snapshot),section,payload['project_evidence'])
+        if chapter['execution_records']:payload['chapter_materials']=chapter
+    if payload.get('chapter_materials'):
+        required=set(payload['chapter_materials']['required_evidence_ids'])
+        payload['automatic_project_evidence_ids']=[eid for eid in payload['automatic_project_evidence_ids'] if eid not in required]
     if recovery_ids:manifest['task_scoped_recovery_evidence_ids']=recovery_ids
     return payload,manifest,items
 

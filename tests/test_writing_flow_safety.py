@@ -165,11 +165,12 @@ def test_oversize_semantic_stage_saves_incomplete_candidate_without_calling_mode
 
 
 def test_oversize_evidence_revision_saves_candidate_without_unchecked_send(writing_project,monkeypatch):
-    e=writing_project;task=_running(e);context,manifest=_basis(e)
+    e=writing_project
+    writing_flow.save_settings(e['pid'],{'semantic_review':False,'originality_check':False,'max_revision_rounds':1})
+    task=_running(e);context,manifest=_basis(e)
     section=security.require_section(e['sid'])
     candidate={'paragraphs':[{'text':'模块职责清晰有助于维护。','source_ids':[context['sources'][0]['id']]}]}
     candidate['retrieval_requests']=[{'query':'补读模块职责和授权条件'}]
-    writing_flow.save_settings(e['pid'],{'semantic_review':False,'originality_check':False,'max_revision_rounds':1})
     db.set_setting('provider',{**provider.config(),'context_limit':2000,'max_output_tokens':512})
     original_prepare=writing_retrieval.prepare
     def read_more(pid,sid,query,**kwargs):
@@ -185,8 +186,9 @@ def test_oversize_evidence_revision_saves_candidate_without_unchecked_send(writi
 
 
 def test_simple_unlinked_fact_without_material_is_incomplete_not_passed(writing_project,monkeypatch):
-    e=writing_project;task=_running(e);section=security.require_section(e['sid'])
+    e=writing_project
     writing_flow.save_settings(e['pid'],{'max_revision_rounds':0,'originality_check':False})
+    task=_running(e);section=security.require_section(e['sid'])
     monkeypatch.setattr(provider,'generate',lambda *a,**k:pytest.fail('no sources should not create a fake semantic pass'))
     candidate={'paragraphs':[{'text':'系统采用三层架构。'}]}
     _,_,_,report,_=writing_flow.finish(task,section,candidate,'synthetic',{'operation':'generate'}, {},tasks.candidate_from_text)
@@ -196,8 +198,9 @@ def test_simple_unlinked_fact_without_material_is_incomplete_not_passed(writing_
 
 
 def test_disabled_semantic_review_is_not_reported_as_full_quality_pass(writing_project,monkeypatch):
-    e=writing_project;task=_running(e);context,manifest=_basis(e)
+    e=writing_project
     writing_flow.save_settings(e['pid'],{'semantic_review':False,'max_revision_rounds':0,'originality_check':False})
+    task=_running(e);context,manifest=_basis(e)
     monkeypatch.setattr(provider,'generate',lambda *a,**k:pytest.fail('disabled semantic review sent a model request'))
     candidate={'paragraphs':[{'text':'本文说明研究安排。'}]}
     _,_,_,report,_=writing_flow.finish(task,security.require_section(e['sid']),candidate,'synthetic',context,manifest,tasks.candidate_from_text)
@@ -207,8 +210,9 @@ def test_disabled_semantic_review_is_not_reported_as_full_quality_pass(writing_p
 
 
 def test_report_fingerprint_identifies_final_candidate_including_unresolved_gaps(writing_project,monkeypatch):
-    e=writing_project;task=_running(e)
+    e=writing_project
     writing_flow.save_settings(e['pid'],{'max_revision_rounds':0,'originality_check':False})
+    task=_running(e)
     monkeypatch.setattr(provider,'generate',lambda *a,**k:pytest.fail('missing evidence should remain explicit'))
     candidate=tasks.candidate_from_text(db.dumps({'paragraphs':[{'text':'系统采用三层架构。'}],'unresolved_claims':['缺少实现原文']}))[0]
     current,_,_,report,_=writing_flow.finish(task,security.require_section(e['sid']),candidate,'synthetic',{}, {},tasks.candidate_from_text)

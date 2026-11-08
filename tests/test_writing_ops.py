@@ -87,6 +87,29 @@ def test_research_question_is_carried_but_placeholder_is_ignored(env):
     assert all(point['id'] != 'rq' for point in placeholder['points'])
 
 
+def test_long_chapter_plan_does_not_pad_the_final_responsibility(env):
+    plan = writing_ops.paragraph_plan(3000, 'system_design', {'paragraph_target_words': 220, 'max_paragraphs': 30})
+    purposes = [row['purpose'] for row in plan['paragraphs']]
+    expected = writing_ops.KIND_PURPOSES['system_design']
+    assert set(purposes) == set(expected)
+    assert purposes.count(expected[-1]) <= 3
+    assert [expected.index(purpose) for purpose in purposes] == sorted(expected.index(purpose) for purpose in purposes)
+    brief = writing_brief.build({**SECTION, 'goal': '解释授权校验；说明撤销状态读取；'}, PROJECT, {}, [], [], [], '')
+    assert {row['purpose'] for row in brief['paragraph_plan']['paragraphs']} == {'解释授权校验', '说明撤销状态读取'}
+    assert sum(row['target_words'] for row in brief['paragraph_plan']['paragraphs']) == 3000
+
+
+def test_natural_paragraph_count_is_advisory_but_missing_content_and_evidence_remain_findings(env):
+    brief = writing_brief.build(SECTION, PROJECT, {}, [], [], [], '')
+    paragraphs = [{'text': '测试显示响应时间降低了40%。', 'brief_points': ['k1']}]
+    result = writing_checks.check(SECTION, brief, paragraphs)
+    codes = {row['code'] for row in result['findings']}
+    assert 'paragraph_plan_short' not in codes
+    assert {'brief_point_missing', 'claim_without_evidence', 'section_length_short'} <= codes
+    legacy = {**brief, 'paragraph_plan': {**brief['paragraph_plan'], 'advisory': False}}
+    assert 'paragraph_plan_short' in {row['code'] for row in writing_checks.check(SECTION, legacy, paragraphs)['findings']}
+
+
 def test_checks_flag_missing_points_and_unanchored_numbers(env):
     brief = writing_brief.build(SECTION, PROJECT, {}, [], [], [], '')
     paragraphs = [{'text': '本系统采用分层架构，接口层负责鉴权。', 'brief_points': ['k1']},
@@ -97,7 +120,10 @@ def test_checks_flag_missing_points_and_unanchored_numbers(env):
     assert verdict['coverage']['covered'] == 1 and verdict['coverage']['required'] == 5
     assert verdict['passed'] is False
     covered = [{'text': '总体架构为三层。', 'brief_points': ['k1', 'k2', 'k3', 'k4', 'k5']}]
-    assert writing_checks.check(SECTION, brief, covered, '总体架构为三层。')['passed'] is True
+    covered_result = writing_checks.check(SECTION, brief, covered, '总体架构为三层。')
+    assert covered_result['coverage']['covered'] == covered_result['coverage']['required']
+    assert 'brief_point_missing' not in {finding['code'] for finding in covered_result['findings']}
+    assert covered_result['passed'] is False  # Coverage labels do not prove evidence or sufficient content.
     unknown = writing_checks.check(SECTION, brief, [{'text': '架构。', 'brief_points': ['zz']}], '架构。')
     assert 'brief_point_unknown' in {finding['code'] for finding in unknown['findings']}
 
@@ -134,6 +160,7 @@ def test_whole_paper_plan_exposes_paragraph_plan(env):
     plan = preview.json()['writing_plan']
     assert plan and plan[0]['paragraphs'] >= 3
     assert plan[0]['paragraph_plan'][0]['purpose']
+    assert plan[0]['paragraph_plan_advisory'] is True
 
 
 def test_cross_section_duplicate_flags_a_paragraph_copied_from_another_chapter():

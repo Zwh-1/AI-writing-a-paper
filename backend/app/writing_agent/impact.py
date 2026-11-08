@@ -130,6 +130,11 @@ def check_manifest(pid,manifest):
 
 
 def _check_manifest(pid,manifest):
+    if manifest.get('project_memory'):
+        from ..project_memory import validate_context
+        from fastapi import HTTPException
+        try:validate_context(pid,manifest['project_memory'])
+        except HTTPException:return ['项目记忆或其来源版本、权限']
     if manifest.get('evidence_bundle'):
         from ..writing_retrieval import validate as validate_bundle
         try:validate_bundle(pid,manifest['evidence_bundle'],remote=bool(manifest.get('remote',True)))

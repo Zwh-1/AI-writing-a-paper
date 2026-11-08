@@ -234,7 +234,11 @@ def resume_authorization(task):
 
 def replay_allowed(task,run):
     resumed=resume_authorization(task)
-    if not resumed or resumed['run_fingerprints'].get(run['id'])!=digest(run):return False
+    # Indexed cache lookups may add presentation fields such as rowid/sequence.
+    # Authorize against the unchanged authoritative row, never that projection.
+    original=db.one('SELECT * FROM generation_runs WHERE id=? AND project_id=?',(run['id'],task['project_id']))
+    if (not resumed or not original or resumed['run_fingerprints'].get(run['id'])!=digest(original)
+            or any(key in run and run[key]!=value for key,value in original.items())):return False
     return not db.one("SELECT id FROM generation_runs WHERE project_id=? AND json_extract(manifest,'$.knowledge_authorized_replay_of_run_id')=? AND status NOT IN ('rejected','failed_before_send') LIMIT 1",(task['project_id'],run['id']))
 
 

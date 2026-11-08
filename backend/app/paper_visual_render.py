@@ -2,6 +2,7 @@
 import io
 import math
 import heapq
+import re
 from functools import lru_cache
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
@@ -20,16 +21,28 @@ def _lines(text, font, width):
     result = []
     for paragraph in str(text).split('\n'):
         line = ''
-        for char in paragraph:
-            if line and font.getlength(line + char) > width:
+        # Prefer word, camel-case, path and underscore boundaries. Preserve every
+        # character; only an individual token wider than the box needs splitting.
+        tokens=re.findall(r'[A-Z]+(?=[A-Z][a-z])|[A-Z]?[a-z]+|[A-Z]+|[0-9]+|[^A-Za-z0-9]',paragraph)
+        for token in tokens:
+            if line and font.getlength(line + token) > width:
                 result.append(line)
                 line = ''
-            line += char
+            if font.getlength(token)>width:
+                for char in token:
+                    if line and font.getlength(line+char)>width:
+                        result.append(line);line=''
+                    line+=char
+            else:line += token
         result.append(line)
     return result
 
 
 class Canvas:
+    def __new__(cls,*args,**kwargs):
+        from .visual_delivery import ACTIVE,VectorCanvas
+        if ACTIVE.get():return VectorCanvas(*args,**kwargs)
+        return super().__new__(cls)
     def __init__(self, width, height):
         # Both sides are at least 1080 px; extra supersampling keeps fine lines crisp.
         self.scale = max(2, 1080 / min(width, height))

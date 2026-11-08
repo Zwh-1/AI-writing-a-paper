@@ -46,7 +46,13 @@ def test_selected_rewrite_receives_read_only_surroundings_and_preserves_them(cli
     db.set_setting('provider',{**provider.config(),'model':'fixture'})
     captured={}
     def generate(system,user,images=None):
-        captured.update(payload=db.loads(user),system=system)
+        value=db.loads(user)
+        if value.get('operation')=='review_candidate_discourse':
+            return {'text':db.dumps({'coverage_complete':True,'findings':[],'rule_reviews':[
+                {'rule_id':r['id'],'status':'satisfied','paragraph_indices':[0],
+                 'quote':value['candidate_paragraphs'][0]['text'],'reason':'按合成规则保留范围。'}
+                for r in value.get('rule_applications',[])]}),'usage':{},'cost':0,'remote_id':'review','request_hash':'review'}
+        captured.update(payload=value,system=system)
         return {'text':db.dumps({'paragraphs':[{'text':'承接前文并保留范围的新段落。'}]}),'usage':{},'cost':0,'remote_id':'fixture','request_hash':'fixture'}
     monkeypatch.setattr(provider,'generate',generate)
     task=tasks.enqueue(pid,'write',{'section_id':sid,'base_revision_id':revision['id'],'operation':'revise','target_node_ids':[target]})
@@ -76,6 +82,9 @@ def test_agent_draft_and_review_receive_route_and_terminology(env,monkeypatch):
     assert session['status']=='needs_review',session
     draft=next(payload for system,payload in calls if '返回 {"paragraphs"' in system)
     review=next(payload for system,payload in calls if '通读当前段落' in system)
+    from app.writing_expression import guidance, review_guidance
+    assert any(guidance() in system for system,payload in calls if '返回 {"paragraphs"' in system)
+    assert any(review_guidance() in system for system,payload in calls if '通读当前段落' in system)
     for payload in (draft,review):
         assert any(row['title']=='研究范围' for row in payload['outline'])
         assert any('不声称测试通过' in row['text'] for row in payload['related_sections'])
@@ -158,7 +167,13 @@ def test_every_writing_operation_sends_all_saved_chapter_text_to_provider(client
     db.set_setting('provider',{**provider.config(),'model':'fixture','context_limit':120000,'max_output_tokens':2048})
     captured={}
     def generate(system,user,images=None):
-        captured.update(payload=db.loads(user),system=system)
+        value=db.loads(user)
+        if value.get('operation')=='review_candidate_discourse':
+            return {'text':db.dumps({'coverage_complete':True,'findings':[],'rule_reviews':[
+                {'rule_id':r['id'],'status':'satisfied','paragraph_indices':[0],
+                 'quote':value['candidate_paragraphs'][0]['text'],'reason':'按合成规则保留范围。'}
+                for r in value.get('rule_applications',[])]}),'usage':{},'cost':0,'remote_id':'review','request_hash':'review'}
+        captured.update(payload=value,system=system)
         if operation=='polish':return {'text':db.dumps({'paragraphs':[{'source_node_id':row['source_node_id'],'text':row['text']} for row in captured['payload']['polish_blocks']]}),'usage':{},'cost':0,'remote_id':'fixture','request_hash':'fixture'}
         return {'text':db.dumps({'paragraphs':[{'text':'本次操作生成的候选。'}]}),'usage':{},'cost':0,'remote_id':'fixture','request_hash':'fixture'}
     monkeypatch.setattr(provider,'generate',generate)
@@ -171,7 +186,12 @@ def test_every_writing_operation_sends_all_saved_chapter_text_to_provider(client
     assert payload['paper_context']['saved_sections']==8 and payload['paper_context']['complete']
     assert payload['operation']==operation
     if operation=='polish':assert payload['polish_policy']['id']=='academic_polish.v1' and '独立学术润写模块' in captured['system']
-    else:assert payload['operation_goal'] in captured['system']
+    else:
+        from app import prompt_layout
+        from app.writing_expression import guidance
+        assert guidance() in captured['system']
+        if prompt_layout.enabled(task):assert 'operation_goal与instruction' in captured['system']
+        else:assert payload['operation_goal'] in captured['system']
     manifest=db.loads(result['result'])['manifest']
     assert manifest['paper_context']['scope']=='full_saved_manuscript'
     assert set(manifest['related_revisions'])==set(originals)-{current}

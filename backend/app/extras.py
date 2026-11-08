@@ -112,20 +112,8 @@ def semantic_review(pid):security.require_project(pid);return tasks.enqueue(pid,
 
 @router.post('/projects/{pid}/charts')
 def create_chart(pid,body:dict):
-    security.require_project(pid);f=db.one('SELECT * FROM files WHERE id=? AND project_id=?',(body['file_id'],pid))
-    if not f or f['extension'] not in ('.csv','.xlsx'):raise HTTPException(422,'选择本项目CSV/XLSX')
-    import pandas as pd,matplotlib
-    matplotlib.use('Agg')
-    import matplotlib.pyplot as plt
-    from matplotlib.font_manager import FontProperties
-    path=security.safe_object(f['sha256']);frame=pd.read_excel(path,engine='openpyxl') if f['extension']=='.xlsx' else pd.read_csv(path)
-    column=body.get('column')
-    if column not in frame.columns:raise HTTPException(422,'列名不存在')
-    values=pd.to_numeric(frame[column],errors='coerce').dropna()
-    if values.empty:raise HTTPException(422,'本列没有可绘图数值')
-    font=FontProperties(fname='C:/Windows/Fonts/msyh.ttc') if __import__('pathlib').Path('C:/Windows/Fonts/msyh.ttc').exists() else FontProperties()
-    fig,ax=plt.subplots(figsize=(8,4.6),dpi=160);ax.hist(values,bins=min(20,max(3,len(values)//2)),color='#5d9a81',edgecolor='white');ax.set_title(body.get('title') or column+'分布',fontproperties=font);ax.set_xlabel(column,fontproperties=font);ax.set_ylabel('频数',fontproperties=font);ax.spines[['top','right']].set_visible(False);fig.tight_layout();buffer=io.BytesIO();fig.savefig(buffer,format='png');plt.close(fig)
-    aid=db.uid();sha=security.put_blob(buffer.getvalue());meta={'source_file_id':f['id'],'source_hash':f['sha256'],'column':column,'operation':'histogram','n':len(values),'actual_execution':True,'egress':f['egress']};db.execute('INSERT INTO artifacts VALUES(?,?,?,?,?,?,?)',(aid,pid,body.get('title') or column+'分布图','figure',sha,db.dumps(meta),db.now()));return {'id':aid,'sha256':sha,'metadata':meta}
+    from .statistical_charts import create
+    return create(pid,body)
 @router.get('/artifacts/{aid}/download')
 def artifact_download(aid):
     from fastapi.responses import FileResponse

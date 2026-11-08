@@ -16,6 +16,12 @@ def prepare(pid, options):
     reviews.run(pid)
     with db.transaction():
         frozen = freeze(pid)
+        from .academic_standards import report as bibliography_report
+        standards=frozen['settings']['academic_standards:'+pid]
+        cited_ids={row['reference_id'] for row in frozen['citations']}
+        reference_report=bibliography_report([row for key,row in frozen['references'].items() if key in cited_ids],standards)
+        if mode=='strict' and (reference_report['unresolved_conflicts'] or standards['bibliography_version']!='legacy' and reference_report['errors']):
+            raise HTTPException(409,{'code':'ACADEMIC_STANDARD_ISSUES','message':'正式导出前请处理规范冲突和已引用书目缺项','report':reference_report})
         report = None
         if mode == 'strict' or db.one('SELECT id FROM thesis_core_versions WHERE project_id=? LIMIT 1', (pid,)):
             from .writing_agent.paper_review import export_report
@@ -28,7 +34,7 @@ def prepare(pid, options):
         'artifacts': frozen['artifacts'], 'rules': frozen['package'], 'settings': frozen['settings'],
         'file_versions':frozen['file_versions'],'research_trace':frozen.get('research_trace',{})}).encode()).hexdigest()
     return {'snapshot': frozen, 'snapshot_id': identity, 'mode': mode, 'writing_report': report,
-            'checks': {'writing': report, 'format_conflicts': formatting['conflicts'], 'visual_verification': 'not_run'}}
+            'checks': {'writing': report, 'bibliography':reference_report, 'format_conflicts': formatting['conflicts'], 'visual_verification': 'not_run'}}
 
 
 def artifacts(identity):
@@ -89,6 +95,14 @@ def markdown(pid, prepared):
         revision = frozen['revisions'].get(section['id'])
         if revision:
             parts.append(markdown_document(db.loads(revision['document'], {})))
+    from .bibliography_format import render as render_reference
+    used_refs=list(dict.fromkeys(row['reference_id'] for row in frozen['citations']))
+    for index,identity in enumerate(used_refs,1):
+        parts=[part.replace('[cite:'+identity+']','['+str(index)+']') for part in parts]
+    if used_refs:
+        parts.append('## 参考文献')
+        parts.extend('['+str(index)+'] '+render_reference(db.loads(frozen['references'][identity]['metadata'],{}),
+            frozen['settings']['academic_standards:'+pid]['bibliography_version'])['text'] for index,identity in enumerate(used_refs,1))
     (folder / 'document.md').write_text('\n\n'.join(parts), encoding='utf-8')
     from PIL import Image
     used={node['attrs'].get('assetVersionId') or node['attrs'].get('artifactId')
@@ -100,5 +114,6 @@ def markdown(pid, prepared):
         with Image.open(security.safe_object(artifact['sha256'])) as picture:
             picture.convert('RGB').save(folder/('图-'+resource_id+'.png'),format='PNG')
     (folder / 'knowledge-trace.json').write_text(db.dumps({'knowledge':frozen.get('graph_wiki', {}),'research':frozen.get('research_trace',{})}), encoding='utf-8')
+    (folder / 'academic-standards.json').write_text(db.dumps(prepared['checks']['bibliography']),encoding='utf-8')
     db.execute('INSERT INTO exports VALUES(?,?,?,?,?,?)', (identity, pid, db.dumps({'mode': prepared['mode']}), 'document.md', 'ready', db.now()))
     return {'export_id': identity, 'download': f'/api/v1/exports/{identity}/files/document.md'}

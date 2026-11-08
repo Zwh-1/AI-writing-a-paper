@@ -24,6 +24,12 @@ def writing_project(client, monkeypatch):
     def transport(system, user, images=None):
         payload = db.loads(user)
         sent.append((system, payload))
+        if payload.get('operation')=='review_candidate_discourse':
+            return response({'coverage_complete':True,'findings':[],
+                'rule_reviews':[{'rule_id':r['id'],'status':'satisfied','paragraph_indices':[0],
+                    'quote':payload['candidate_paragraphs'][0]['text'],'reason':'合成夹具的规则边界已保留。'}
+                    for r in payload.get('rule_applications',[])],
+                'summary':'夹具只核对给定连续正文。'})
         if 'claim_reviews' in system:
             sources = payload['actual_sources']
             return response({'claim_reviews': [
@@ -60,6 +66,12 @@ def write(env):
 def test_normal_writer_reads_library_without_manual_material_selection_and_maps_citations(writing_project):
     e = writing_project
     task, result = write(e)
+    from app.writing_expression import guidance, review_guidance
+    draft_system, draft_request = next((system, request) for system, request in e['sent'] if 'claim_reviews' not in system)
+    assert guidance() in draft_system
+    assert draft_request['writing_brief']['paragraph_plan']['advisory'] is True
+    assert all(card.get('analysis_goal') and card.get('expected_information_gain') for card in draft_request['argument_plan']['paragraph_cards'])
+    assert all(review_guidance() in system for system, request in e['sent'] if 'claim_reviews' in system)
     assert result['evidence_bundle']['primary_evidence']
     assert result['argument_plan']['paragraph_cards']
     assert result['writing_quality']['semantic']['coverage_complete']
@@ -71,7 +83,7 @@ def test_normal_writer_reads_library_without_manual_material_selection_and_maps_
     assert accepted.status_code == 200, accepted.text
     assert db.one('SELECT * FROM citations WHERE revision_id=?', (accepted.json()['id'],))
     assert db.one('SELECT * FROM sentence_claim_links')
-    assert len(db.rows('SELECT * FROM generation_runs WHERE task_id=?', (task['id'],))) == 2
+    assert len(db.rows('SELECT * FROM generation_runs WHERE task_id=?', (task['id'],))) == 3
 
 
 def test_evidence_packet_revalidated_when_accepting_after_revocation(writing_project):

@@ -38,13 +38,13 @@ def body_headers(doc,section,policy,title,field,first_title):
     # Built-in style names are localized by the Office UI. The numeric
     # STYLEREF selector is language-independent; custom style names stay named.
     selector='1' if chapter_style in ('Heading 1','标题 1','标题1') else '"'+chapter_style+'"'
-    # Preserve the existing even-page chapter-header rule while applying the
-    # user's odd-page title-only requirement. Both stories use the same H1.
-    for header,chapter in ((section.header,True),(section.even_page_header,True)):
+    # 单页（奇数页）显示论文题目；双页（偶数页）按课程原规则显示当前章标题。
+    # 偶数页用 STYLEREF 域动态取当前一级标题，随所在章节变化。
+    for header,even_page in ((section.header,False),(section.even_page_header,True)):
         header.is_linked_to_previous=False;paragraph=header.paragraphs[0]
         paragraph.clear();unindent(paragraph);paragraph.alignment=1;paragraph.paragraph_format.line_spacing=1
         paragraph.paragraph_format.space_before=Pt(0);paragraph.paragraph_format.space_after=Pt(0)
-        if chapter:field(paragraph,' STYLEREF '+selector+' ',first_title)
+        if even_page:field(paragraph,' STYLEREF '+selector+' ',first_title)
         else:paragraph.add_run(title)
         for run in paragraph.runs:
             run.font.name='Times New Roman';run.font.size=Pt(policy.get('header_font_size',12))

@@ -33,6 +33,7 @@ def run(task,profile,payload,manifest,step_id,assert_active=lambda:None):
     data['available_section_versions']=[{'section_id':sid,'revision_id':rid} for sid,rid in versions.items()]
     data['expanded_original_passages']=[]
     system=prompts.COHERENCE+' 若相关定义、指代或限定不在当前原文中，返回context_requests列表，每项含section_id、revision_id、node_id（空表示从首段开始）、before、after、reason。只能请求给定正文版本；工具会读取完整段落。已读范围返回前后节点供继续扩展。请求尚未满足时coverage_complete必须为false；最多扩展3轮。'
+    system,manifest=provider_adapter.prepare_system(task,system,data,manifest)
     for turn in range(4):
         assert_active();context.save_context(step_id,data,manifest,system,cfg)
         raw=provider_adapter.call(task,profile,system,data,{**manifest,'coherence_expansion_round':turn})

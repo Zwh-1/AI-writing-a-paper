@@ -4,6 +4,7 @@ from .common import owned,blob,unblob,digest,fail
 from . import repository,evidence,code_index
 
 SPECS={
+ 'load_skill':({'skill_id':'string'},{'resource':'string'}),
  'search_writing_materials':({'query':'string'},{'limit':'integer','channels_json':'string','source_refs_json':'string'}),
  'read_writing_materials':({'candidates_json':'string','query':'string'},{'operation':'string','max_chars':'integer'}),
  'search_graph':({'query':'string'},{'namespace':'string','depth':'integer'}),
@@ -46,6 +47,7 @@ def schemas(include_knowledge=False,include_code=True):
       'record_document_findings':'记录候选阅读发现。findings_json为数组，每项包含topic,status,passage_ids,quote,note；status为present/missing/contradicted。引句必须逐字来自已读取原文，模型不能代填人工确认。',
       'search_writing_materials':'按当前章节问题搜索研究材料、规则、笔记和产物。仅返回候选目录；不得把命中摘要当作已读取依据。channels_json可给通道数组，source_refs_json可限定来源。继续read_writing_materials读取实际材料。',
       'read_writing_materials':'读取搜索所得候选。candidates_json为含source_ref的候选数组；文字由服务端按版本和权限读取，不接受模型自编原文。query须说明具体补证问题；规则、指导和个人笔记不能当作研究结果。'}
+    descriptions['load_skill']='从本任务冻结的 skill_catalogue 选择 skill_id，先读取技能说明，再按返回的 resources.path 读取所需资源。技能仅提供工作流指导，不能证明研究事实，也不能授予目录外工具、文件或网络权限。'
     return [{'type':'function','function':{'name':name,'description':descriptions.get(name,'读取本次授权范围内的'+name+('；单次完整请求片段最多6000 UTF-8字节，超限只返回缩小范围提示，不读取给模型；请先检索再定位必要行' if name=='read_code' else '')),'parameters':{'type':'object','properties':{k:{'type':t} for k,t in {**required,**optional}.items()},'required':list(required),'additionalProperties':False}}} for name,(required,optional) in SPECS.items() if (include_code or name not in CODE_TOOLS) and (include_knowledge or name not in ('search_graph','read_graph_assertion','search_wiki','read_wiki_page','get_knowledge_lineage'))]
 
 
@@ -65,7 +67,12 @@ def investigation_system(system,snapshot_id):
     return system if snapshot_id or MATERIAL_ONLY_NOTE in system else system+MATERIAL_ONLY_NOTE
 
 def execute(pid,step_id,name,arguments,call_id,snapshot_id=None):
-    if name in ('open_literature_document','read_document_range','record_document_findings','read_writing_materials'):
+    from ..ai_runtime.tools import invoke
+    return invoke(pid,step_id,name,arguments,call_id,snapshot_id,_execute_scoped)
+
+
+def _execute_scoped(pid,step_id,name,arguments,call_id,snapshot_id=None):
+    if name in ('open_literature_document','read_document_range','record_document_findings','read_writing_materials','load_skill'):
         with db.transaction():return _execute(pid,step_id,name,arguments,call_id,snapshot_id)
     return _execute(pid,step_id,name,arguments,call_id,snapshot_id)
 
@@ -94,6 +101,20 @@ def _execute(pid,step_id,name,arguments,call_id,snapshot_id):
         channel_scope=['code',snapshot_id,b['scope_revision']]
     extra='';read_evidence_ids=[]
     from ..knowledge_tools import NAMES as knowledge_tools,execute as knowledge_execute
+    if name=='load_skill':
+        from ..skill_runtime import load
+        from ..ai_runtime.policy import frozen
+        task=db.one('SELECT t.* FROM tasks t JOIN writing_steps s ON s.task_id=t.id WHERE s.id=?',(step_id,))
+        snap=frozen(task).get('skills') if task else None
+        if not snap or not snap['policy']['enabled']:fail('TOOL_DENIED','本任务未启用技能加载',403)
+        data=load(snap,arguments['skill_id'],arguments.get('resource'))
+        used=0;loaded=set()
+        for previous in db.rows("SELECT result_blob FROM tool_observations WHERE step_id=? AND tool_name='load_skill' AND call_id!=?",(step_id,call_id)):
+            value=unblob(previous['result_blob'])['data'];key=(value['skill_id'],value.get('resource'))
+            if key not in loaded:used+=len(value['text'].encode());loaded.add(key)
+        if (arguments['skill_id'],arguments.get('resource')) not in loaded:used+=len(data['text'].encode())
+        if used>snap['policy']['max_input_bytes']:fail('TOOL_RESULT_TOO_LARGE','技能累计加载超过本任务步骤预算')
+        extra=data['content_hash']
     if name in ('search_writing_materials','read_writing_materials'):
         from .. import writing_retrieval
         if prior and name=='read_writing_materials':
@@ -108,7 +129,11 @@ def _execute(pid,step_id,name,arguments,call_id,snapshot_id):
         if name=='search_writing_materials':
             limit=arguments.get('limit',8)
             if not 1<=limit<=20:fail('INVALID_TOOL_ARGUMENTS','素材检索条数为1至20')
-            data=writing_retrieval.search(pid,scope['section_id'],arguments['query'],limit=limit,channels=json_array('channels_json'),source_refs=json_array('source_refs_json'),remote=True)
+            from ..ai_runtime.tools import active
+            if active():
+                from ..ai_runtime.retrievers import search as search_materials
+            else:search_materials=writing_retrieval.search
+            data=search_materials(pid,scope['section_id'],arguments['query'],limit=limit,channels=json_array('channels_json'),source_refs=json_array('source_refs_json'),remote=True)
         else:
             candidates=json_array('candidates_json',[])
             if not 1<=len(candidates)<=12:fail('INVALID_TOOL_ARGUMENTS','一次读取1至12项素材候选')
@@ -163,7 +188,7 @@ def _execute(pid,step_id,name,arguments,call_id,snapshot_id):
         if old['arguments_blob']!=blob(arguments) or old['tool_name']!=name:fail('TOOL_CALL_CONFLICT','同一调用ID不能改变参数',409)
         if old['egress_revision']!=epoch:fail('SOURCE_ACCESS_REVOKED','缓存来源权限已变化',403)
         return unblob(old['result_blob'])
-    if name in knowledge_tools or name in ('search_writing_materials','read_writing_materials'):
+    if name in knowledge_tools or name in ('search_writing_materials','read_writing_materials','load_skill'):
         pass
     elif name in reading_tools:
         from .. import document_reading as reader

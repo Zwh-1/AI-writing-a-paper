@@ -74,7 +74,20 @@ def call(task,profile,system,payload,manifest,tools=None,messages=None,items=Non
         return _call_locked(task,profile,system,payload,metadata,tools,messages,items)
 
 
+def prepare_system(task,system,payload,manifest):
+    """Apply guidance before retrieval budgets the payload against the prompt."""
+    from ..writing_continuity import POLICY
+    if payload.get('continuity',{}).get('version')=='paper_continuity.v3.hierarchical':
+        system=system.replace(POLICY,payload['continuity']['policy'])
+    if payload.get('task_spec') and manifest.get('stage')=='draft':
+        from ..ai_contracts.tasks import INSTRUCTION
+        if INSTRUCTION not in system:system+=INSTRUCTION
+    from ..skill_runtime import enrich
+    return enrich(task,system,'',manifest)
+
+
 def _call_locked(task,profile,system,payload,manifest,tools=None,messages=None,items=None):
+    system,manifest=prepare_system(task,system,payload,manifest)
     from .profiles import for_session,record_capability
     from ..tasks import model_call
     p,cfg,key=for_session(task['project_id'],profile['id']);cfg['agent_transport']=True
@@ -82,7 +95,8 @@ def _call_locked(task,profile,system,payload,manifest,tools=None,messages=None,i
         from .coordinator import assert_lease
         assert_lease(manifest['writing_step_id'],manifest['lease_epoch'])
     from .identifiers import encode
-    model_payload,aliases=encode(payload,manifest) if messages is None and not tools else (payload,{})
+    from .packing import for_transport
+    model_payload,aliases=encode(for_transport(payload,system),manifest) if messages is None and not tools else (payload,{})
     if aliases:
         manifest={**manifest,'identifier_aliases':aliases}
         if ALIAS_NOTE not in system:system+=ALIAS_NOTE
@@ -134,6 +148,7 @@ def _call_locked(task,profile,system,payload,manifest,tools=None,messages=None,i
             tasks._validate_model_presend(task,meta)
             from ..security import safe_object
             saved=json.loads(safe_object(meta['output_blob']).read_text(encoding='utf-8'))
+            saved['run_id']=old['id']
             return finish_structured(task,profile,system,payload,manifest,saved,aliases,tools,messages,items,frame_hash)
         if old['status'] in ('pending','sent','outcome_unknown','completed_invalid'):raise provider.ProviderError('此检查点的远端结果未知，不自动重复请求',unknown=True)
     session_id=manifest.get('writing_session_id')
@@ -171,6 +186,7 @@ def _call_locked(task,profile,system,payload,manifest,tools=None,messages=None,i
         observed,actual,actual_key,same_route=_observation_scope(task,p,cfg,key,result,frame_hash)
         _observe_billing(task,frame_hash,before,actual,actual_key,same_route,result,cfg.get('reconcile_billing',False))
     parsed=json.loads(result['text'])
+    if result.get('run_id'):parsed['run_id']=result['run_id']
     if observed:
         record_reasoning_observation(task['project_id'],observed['id'],actual,result)
         evidence={'run_request_hash':result['request_hash'],'scope':'this_sample'}

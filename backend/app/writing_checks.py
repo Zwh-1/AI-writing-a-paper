@@ -110,7 +110,49 @@ def coverage(brief, paragraphs):
             'unknown': unknown[:8]}
 
 
-def check(section, brief, paragraphs, text='', related=(), facts=(), terms=()):
+def evidence_checkpoints(brief, paragraphs, *, pid=None, context=None, manifest=None):
+    """Check each covered point against its declared evidence requirement.
+
+    A point that claims coverage but does not bind the evidence its checkpoint
+    requires is an unresolved argument gap, not a stylistic omission.  This is
+    the checkable form of the P1 change: "needs X evidence / conclusion of Y
+    strength" becomes a local, deterministic audit rather than a prompt hint.
+    """
+    checkpoints = {item['point_id']: item for item in (brief.get('argument_checkpoints') or [])}
+    from .writing_evidence_quality import bound_categories, _asserts_measurement
+    unresolved = []
+    for index, paragraph in enumerate(paragraphs):
+        points = paragraph.get('brief_points') or []
+        for point_id in points:
+            spec = checkpoints.get(point_id)
+            if not spec:
+                continue
+            needs = spec.get('needs') or []
+            categories = bound_categories(pid, paragraph, context, manifest)
+            requirement = spec.get('requirements') or {'any_of': needs}
+            satisfied = (all(need in categories for need in requirement.get('all_of', [])) and
+                         (not requirement.get('any_of') or any(need in categories for need in requirement['any_of'])))
+            # A checkpoint that needs evidence must see at least one bound field.
+            if needs and not satisfied:
+                unresolved.append({
+                    'point_id': point_id, 'point_text': spec.get('text', ''),
+                    'paragraph_index': index, 'needs': needs,
+                    'strength': spec.get('strength', ''),
+                    'message': f'任务点“{spec.get("text", "")[:24]}”声明需要'
+                               f'{"、".join(needs)}依据，但对应段落没有可核对的相应等级记录。'})
+            # A checkpoint with a strength cap must not overclaim beyond it.
+            strength = spec.get('strength', '')
+            body = str(paragraph.get('text', ''))
+            if strength in ('static', 'designed') and _asserts_measurement(body) and 'run_result' not in categories:
+                unresolved.append({
+                    'point_id': point_id, 'point_text': spec.get('text', ''),
+                    'paragraph_index': index, 'needs': needs, 'strength': strength,
+                    'message': f'任务点“{spec.get("text", "")[:24]}”只能作静态/设计描述，'
+                               f'但段落出现实测或部署表述且未绑定实测证据。'})
+    return unresolved
+
+
+def check(section, brief, paragraphs, text='', related=(), facts=(), terms=(), *, context=None, manifest=None):
     """Return one compact verdict plus the findings that deserve a reviewer's attention.
 
     `related`, `facts` and `terms` are optional: when they are absent the three
@@ -140,9 +182,18 @@ def check(section, brief, paragraphs, text='', related=(), facts=(), terms=()):
         add('brief_point_unknown', f'段落回填了任务书里不存在的编号：{"、".join(cover["unknown"][:4])}',
             action='按任务书给出的编号重新回填；编号必须来自本次 brief。')
 
+    # P1: argument checkpoints make the "what evidence / how strong" target a
+    # deterministic audit.  A covered point missing its required evidence is a
+    # hard finding, not a style hint.
+    checkpoint_gaps = evidence_checkpoints(brief, paragraphs, pid=section.get('project_id'), context=context, manifest=manifest)
+    for gap in checkpoint_gaps:
+        add('argument_checkpoint_unresolved',
+            gap['message'],
+            action='为该任务点补读并绑定实际依据；材料确实不足时保留为未决点，不虚构结论强度。')
+
     plan = (brief.get('paragraph_plan') or {}).get('count') or 0
     written = len([paragraph for paragraph in paragraphs if str(paragraph.get('text', '')).strip()])
-    if plan and written < max(2, plan - max(2, plan // 3)):
+    if plan and not (brief.get('paragraph_plan') or {}).get('advisory') and written < max(2, plan - max(2, plan // 3)):
         add('paragraph_plan_short', f'任务书计划 {plan} 段，候选只有 {written} 段',
             action='按计划的段落职责补足说明、论证或过渡，避免把多点压进一段。')
 
@@ -190,11 +241,12 @@ def check(section, brief, paragraphs, text='', related=(), facts=(), terms=()):
             action=f'把「{zh}」后的英文改回术语表登记写法；确需新增写法时先更新术语表。')
 
     return {'version': VERSION, 'brief_hash': brief.get('hash'), 'words': words, 'target_words': target,
-            'coverage': cover, 'findings': findings,
+            'coverage': cover, 'checkpoint_gaps': checkpoint_gaps, 'findings': findings,
             'dimensions':{'task_point_declarations':'incomplete' if cover['missing'] else 'declared',
+                          'argument_checkpoints':'incomplete' if checkpoint_gaps else 'declared',
                           'actual_task_coverage':'requires_independent_review',
                           'quantitative_anchoring':'issues' if unanchored or drifted else 'local_checked',
                           'cross_section_copying':'issues' if duplicates else 'local_checked',
                           'terminology':'issues' if mismatched else 'local_checked',
                           'semantic_support':'not_checked'},
-            'passed': not cover['missing'] and not unanchored}
+            'passed': not cover['missing'] and not unanchored and not checkpoint_gaps}

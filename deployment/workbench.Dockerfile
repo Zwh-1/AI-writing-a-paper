@@ -3,6 +3,7 @@ WORKDIR /app
 COPY backend ./backend
 COPY frontend ./frontend
 COPY prompts ./prompts
+COPY skills ./skills
 COPY scripts ./scripts
 COPY .github/workflows ./.github/workflows
 COPY deployment ./deployment
@@ -22,9 +23,11 @@ FROM python:3.12-slim
 RUN apt-get update && apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-chi-sim tesseract-ocr-eng libreoffice-writer fonts-noto-cjk && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY deployment/requirements.workbench.txt ./requirements.txt
-RUN python -m pip install --no-cache-dir -r requirements.txt
+COPY requirements-ai.lock.txt ./requirements-ai.lock.txt
+RUN python -m pip install --no-cache-dir -r requirements.txt -r requirements-ai.lock.txt
 COPY backend ./backend
 COPY prompts ./prompts
+COPY skills ./skills
 COPY runner.py ./runner.py
 COPY services ./services
 COPY scripts/yantai_data_offline.py ./scripts/yantai_data_offline.py

@@ -25,6 +25,23 @@ def generate(env,monkeypatch,visual=False):
     captured={}
     def call(system,user,images=None):
         c=db.loads(user)
+        if c.get('operation')=='understand_project':
+            data={'observations':[{'question_id':q['id'],'status':'partial' if q['evidence_ids'] else 'unknown',
+                'summary':'只核对合取授权条件。','evidence_ids':q['evidence_ids'],'limitations':['静态范围。']}
+                for q in c['question_map']],
+                'workflows':[{'name':'操作授权','steps':[{'description':'发行方且开关启用时允许。',
+                    'evidence_ids':[c['project_evidence'][0]['id']]}]}],'identity_gaps':[]}
+            return {'text':db.dumps(data),'usage':{},'cost':0,'remote_id':'understanding','request_hash':'fixture'}
+        if c.get('operation')=='review_candidate_discourse':
+            data={'coverage_complete':True,'findings':[],'rule_reviews':[
+                {'rule_id':r['id'],'status':'satisfied','paragraph_indices':[0],
+                 'quote':c['candidate_paragraphs'][0]['text'],'reason':'合取条件与静态边界保留。'} for r in c.get('rule_applications',[])]}
+            return {'text':db.dumps(data),'usage':{},'cost':0,'remote_id':'review','request_hash':'fixture'}
+        if c.get('operation')=='verify_claim_batch':
+            data={'claim_reviews':[{'claim_id':row['claim_id'],'support':'supported',
+                  'source_quotes':[{'source_id':c['actual_sources'][0]['id'],'quote':c['actual_sources'][0]['text']}]}
+                  for row in c['claims']],'point_reviews':[],'findings':[]}
+            return {'text':db.dumps(data),'usage':{},'cost':0,'remote_id':'semantic','request_hash':'fixture'}
         # Independent semantic-review frames have a different contract and
         # omit duplicate text; retain the writer input for these assertions.
         if 'thesis_core' in c:captured.update(c)

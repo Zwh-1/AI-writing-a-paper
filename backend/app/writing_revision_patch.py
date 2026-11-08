@@ -6,7 +6,7 @@ from .writing_quality_protocols import digest, REVISION
 LINKS = ('source_ids', 'evidence_ids', 'knowledge_unit_ids', 'fact_ids', 'document_reading_ids', 'reference_ids')
 PARAGRAPH_FIELDS = {'text', 'source_ids', 'evidence_ids', 'knowledge_unit_ids', 'fact_ids',
     'document_reading_ids', 'reference_ids', 'claim_spans', 'citation_intents', 'claim_version_ids',
-    'visual_ids', 'preserve_node_id', 'brief_points'}
+    'visual_ids', 'preserve_node_id', 'brief_points','project_material_ids','visual_plan_ids'}
 
 
 def contract(candidate, issues, allowed_reference_ids=()):

@@ -20,6 +20,16 @@ SCHEMA = 'runtime.build.v1'
 _LOADED = {}
 _GUARD = threading.RLock()
 CAPABILITIES = {
+    'project_memory_v1':'backend/app/project_memory.py',
+    'hierarchical_context_v1':'backend/app/writing_continuity.py',
+    'progressive_skills_v1':'backend/app/skill_runtime.py',
+    'vector_figure_delivery_v1':'backend/app/visual_delivery.py',
+    'langchain_metered_gateway_v1': 'backend/app/ai_runtime/gateway.py',
+    'langchain_scoped_tools_v1': 'backend/app/ai_runtime/tools.py',
+    'langchain_source_retriever_v1': 'backend/app/ai_runtime/retrievers.py',
+    'langgraph_chapter_v1': 'backend/app/ai_graphs/chapter.py',
+    'task_obligations_v1': 'backend/app/ai_contracts/tasks.py',
+    'fenced_node_receipts_v1': 'backend/app/ai_runtime/receipts.py',
     'runtime_diagnostics_v1': 'backend/app/runtime_api.py',
     'graceful_drain_v1': 'backend/app/runtime_identity.py',
     'cache_policy_v2': 'backend/app/ai_cache_policy.py',
@@ -46,7 +56,7 @@ def _digest(value):
 
 def _source_files(root):
     patterns = ('backend/**/*.py', 'backend/**/*.sql', 'frontend/src/**/*.ts', 'frontend/src/**/*.tsx',
-                'frontend/src/**/*.css', 'frontend/src/**/*.html', 'prompts/**/*.txt',
+                'frontend/src/**/*.css', 'frontend/src/**/*.html', 'prompts/**/*.txt','skills/**/*.md','skills/**/*.json','skills/**/*.txt',
                 'scripts/*.py', 'scripts/*.mjs', 'scripts/*.ps1',
                 '.github/workflows/*.yml', 'deployment/**/*.py', 'deployment/**/*.spec',
                 'deployment/**/*.nsi', 'deployment/*.Dockerfile', 'deployment/*.txt')

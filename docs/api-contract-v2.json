@@ -443,6 +443,15 @@
     },
     {
       "method": "GET",
+      "path": "/api/v2/ai-runtime/inventory",
+      "legacy_path": "/api/v1/ai-runtime/inventory",
+      "canonical": true,
+      "domain": "ai-runtime",
+      "owner": "app.ai_runtime.api",
+      "transport": "json"
+    },
+    {
+      "method": "GET",
       "path": "/api/v2/studio/cache/orphans",
       "legacy_path": "/api/v1/studio/cache/orphans",
       "canonical": true,
@@ -511,6 +520,24 @@
       "canonical": false,
       "domain": "gpt-fallback",
       "owner": "app.main",
+      "transport": "json"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/ai-runtime/policy",
+      "legacy_path": "/api/v1/ai-runtime/policy",
+      "canonical": true,
+      "domain": "ai-runtime",
+      "owner": "app.ai_runtime.api",
+      "transport": "json"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v2/ai-runtime/policy",
+      "legacy_path": "/api/v1/ai-runtime/policy",
+      "canonical": true,
+      "domain": "ai-runtime",
+      "owner": "app.ai_runtime.api",
       "transport": "json"
     },
     {
@@ -740,6 +767,15 @@
     },
     {
       "method": "POST",
+      "path": "/api/v2/projects/{project_id}/context-maintenance/actions/archive",
+      "legacy_path": "/api/v1/projects/{pid}/context-maintenance/archive",
+      "canonical": true,
+      "domain": "context-maintenance",
+      "owner": "app.context_maintenance",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
       "path": "/api/v2/projects/{project_id}/knowledge/transfers/actions/restore",
       "legacy_path": "/api/v1/projects/{pid}/knowledge/transfers/restore",
       "canonical": true,
@@ -835,6 +871,24 @@
       "canonical": true,
       "domain": "knowledge",
       "owner": "app.knowledge_api",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/ai-runtime/projects/{project_id}/context-experiments",
+      "legacy_path": "/api/v1/ai-runtime/projects/{pid}/context-experiments",
+      "canonical": true,
+      "domain": "ai-runtime",
+      "owner": "app.ai_runtime.api",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/ai-runtime/projects/{project_id}/context-assessments",
+      "legacy_path": "/api/v1/ai-runtime/projects/{pid}/context-assessments",
+      "canonical": true,
+      "domain": "ai-runtime",
+      "owner": "app.ai_runtime.api",
       "transport": "json"
     },
     {
@@ -1258,6 +1312,24 @@
       "canonical": true,
       "domain": "outline",
       "owner": "app.extras",
+      "transport": "json"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/projects/{project_id}/bibliography/validation",
+      "legacy_path": "/api/v1/projects/{pid}/bibliography/validation",
+      "canonical": true,
+      "domain": "bibliography",
+      "owner": "app.academic_standards",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/projects/{project_id}/memory/rebuild-chapters",
+      "legacy_path": "/api/v1/projects/{pid}/memory/rebuild-chapters",
+      "canonical": true,
+      "domain": "memory",
+      "owner": "app.project_memory",
       "transport": "json"
     },
     {
@@ -1703,6 +1775,24 @@
     },
     {
       "method": "POST",
+      "path": "/api/v2/projects/{project_id}/bibliography/preview",
+      "legacy_path": "/api/v1/projects/{pid}/bibliography/preview",
+      "canonical": true,
+      "domain": "bibliography",
+      "owner": "app.academic_standards",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/projects/{pid}/context-maintenance/archive",
+      "legacy_path": "/api/v1/projects/{pid}/context-maintenance/archive",
+      "canonical": false,
+      "domain": "context-maintenance",
+      "owner": "app.context_maintenance",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
       "path": "/api/v2/projects/{pid}/expenses/close-unverifiable",
       "legacy_path": "/api/v1/projects/{pid}/expenses/close-unverifiable",
       "canonical": false,
@@ -1771,6 +1861,15 @@
       "canonical": true,
       "domain": "format-profiles",
       "owner": "app.completion",
+      "transport": "json"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/projects/{project_id}/context-maintenance",
+      "legacy_path": "/api/v1/projects/{pid}/context-maintenance",
+      "canonical": true,
+      "domain": "context-maintenance",
+      "owner": "app.context_maintenance",
       "transport": "json"
     },
     {
@@ -1906,6 +2005,33 @@
       "canonical": true,
       "domain": "retrieval",
       "owner": "app.advanced",
+      "transport": "json"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/projects/{project_id}/academic-standards",
+      "legacy_path": "/api/v1/projects/{pid}/academic-standards",
+      "canonical": true,
+      "domain": "academic-standards",
+      "owner": "app.academic_standards",
+      "transport": "json"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v2/projects/{project_id}/academic-standards",
+      "legacy_path": "/api/v1/projects/{pid}/academic-standards",
+      "canonical": true,
+      "domain": "academic-standards",
+      "owner": "app.academic_standards",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/ai-runtime/projects/{project_id}/compare",
+      "legacy_path": "/api/v1/ai-runtime/projects/{pid}/compare",
+      "canonical": true,
+      "domain": "ai-runtime",
+      "owner": "app.ai_runtime.api",
       "transport": "json"
     },
     {
@@ -2639,6 +2765,15 @@
     },
     {
       "method": "GET",
+      "path": "/api/v2/projects/{project_id}/context-preview",
+      "legacy_path": "/api/v1/projects/{pid}/context-preview",
+      "canonical": true,
+      "domain": "context-preview",
+      "owner": "app.project_memory",
+      "transport": "json"
+    },
+    {
+      "method": "GET",
       "path": "/api/v2/projects/{project_id}/runtime-metrics",
       "legacy_path": "/api/v1/projects/{pid}/runtime-metrics",
       "canonical": true,
@@ -3031,6 +3166,24 @@
       "canonical": true,
       "domain": "sync",
       "owner": "app.advanced",
+      "transport": "json"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v2/projects/{project_id}/skills/policy",
+      "legacy_path": "/api/v1/projects/{pid}/skills/policy",
+      "canonical": true,
+      "domain": "skills",
+      "owner": "app.skill_runtime",
+      "transport": "json"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v2/projects/{project_id}/memory/policy",
+      "legacy_path": "/api/v1/projects/{pid}/memory/policy",
+      "canonical": true,
+      "domain": "memory",
+      "owner": "app.project_memory",
       "transport": "json"
     },
     {
@@ -3436,6 +3589,15 @@
       "canonical": true,
       "domain": "sync",
       "owner": "app.advanced",
+      "transport": "json"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/ai-runtime/projects/{project_id}",
+      "legacy_path": "/api/v1/ai-runtime/projects/{pid}",
+      "canonical": true,
+      "domain": "ai-runtime",
+      "owner": "app.ai_runtime.api",
       "transport": "json"
     },
     {
@@ -4102,6 +4264,33 @@
       "canonical": true,
       "domain": "citations",
       "owner": "app.extras",
+      "transport": "json"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/projects/{project_id}/skills",
+      "legacy_path": "/api/v1/projects/{pid}/skills",
+      "canonical": true,
+      "domain": "skills",
+      "owner": "app.skill_runtime",
+      "transport": "json"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/projects/{project_id}/memory",
+      "legacy_path": "/api/v1/projects/{pid}/memory",
+      "canonical": true,
+      "domain": "memory",
+      "owner": "app.project_memory",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/projects/{project_id}/memory",
+      "legacy_path": "/api/v1/projects/{pid}/memory",
+      "canonical": true,
+      "domain": "memory",
+      "owner": "app.project_memory",
       "transport": "json"
     },
     {
@@ -4934,6 +5123,15 @@
     },
     {
       "method": "POST",
+      "path": "/api/v2/projects/{project_id}/writing/diagnostics/{record_id}/register-real-candidate",
+      "legacy_path": "/api/v1/projects/{pid}/diagnostics/{rid}/register-real-candidate",
+      "canonical": true,
+      "domain": "writing",
+      "owner": "app.writing_agent.api",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
       "path": "/api/v2/projects/{project_id}/writing/sessions/{section_id}/actions/approve-judgment",
       "legacy_path": "/api/v1/projects/{pid}/writing-sessions/{sid}/approve-judgment",
       "canonical": true,
@@ -4966,6 +5164,15 @@
       "canonical": true,
       "domain": "knowledge",
       "owner": "app.knowledge_api",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/projects/{project_id}/writing/diagnostics/{record_id}/score-real-candidate",
+      "legacy_path": "/api/v1/projects/{pid}/diagnostics/{rid}/score-real-candidate",
+      "canonical": true,
+      "domain": "writing",
+      "owner": "app.writing_agent.api",
       "transport": "json"
     },
     {
@@ -5185,6 +5392,15 @@
       "transport": "json"
     },
     {
+      "method": "GET",
+      "path": "/api/v2/ai-runtime/projects/{project_id}/context-experiments/{resource_id}",
+      "legacy_path": "/api/v1/ai-runtime/projects/{pid}/context-experiments/{identity}",
+      "canonical": true,
+      "domain": "ai-runtime",
+      "owner": "app.ai_runtime.api",
+      "transport": "json"
+    },
+    {
       "method": "POST",
       "path": "/api/v2/projects/{project_id}/writing/sessions/{section_id}/actions/resume",
       "legacy_path": "/api/v1/projects/{pid}/writing-sessions/{sid}/resume",
@@ -5318,6 +5534,15 @@
       "domain": "knowledge",
       "owner": "app.knowledge_api",
       "transport": "file"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/projects/{project_id}/context-maintenance/restore/{resource_id}",
+      "legacy_path": "/api/v1/projects/{pid}/context-maintenance/restore/{identity}",
+      "canonical": true,
+      "domain": "context-maintenance",
+      "owner": "app.context_maintenance",
+      "transport": "json"
     },
     {
       "method": "GET",
@@ -5887,6 +6112,15 @@
       "transport": "json"
     },
     {
+      "method": "POST",
+      "path": "/api/v2/projects/{pid}/diagnostics/{rid}/register-real-candidate",
+      "legacy_path": "/api/v1/projects/{pid}/diagnostics/{rid}/register-real-candidate",
+      "canonical": false,
+      "domain": "diagnostics",
+      "owner": "app.writing_agent.api",
+      "transport": "json"
+    },
+    {
       "method": "GET",
       "path": "/api/v2/projects/{pid}/knowledge-base/documents/{file_id}/chunks",
       "legacy_path": "/api/v1/projects/{pid}/knowledge-base/documents/{file_id}/chunks",
@@ -5938,6 +6172,15 @@
       "canonical": true,
       "domain": "sections",
       "owner": "app.image_generation",
+      "transport": "json"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/projects/{project_id}/charts/{artifact_id}/verification",
+      "legacy_path": "/api/v1/projects/{pid}/charts/{aid}/verification",
+      "canonical": true,
+      "domain": "charts",
+      "owner": "app.statistical_charts",
       "transport": "json"
     },
     {
@@ -6068,6 +6311,15 @@
     },
     {
       "method": "POST",
+      "path": "/api/v2/projects/{project_id}/writing/papers/{task_id}/recheck",
+      "legacy_path": "/api/v1/projects/{pid}/paper-writing/{tid}/recheck",
+      "canonical": true,
+      "domain": "writing",
+      "owner": "app.paper_writing",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
       "path": "/api/v2/projects/{pid}/evidence-knowledge/units/{uid}/disputes",
       "legacy_path": "/api/v1/projects/{pid}/evidence-knowledge/units/{uid}/disputes",
       "canonical": false,
@@ -6184,6 +6436,15 @@
       "transport": "json"
     },
     {
+      "method": "POST",
+      "path": "/api/v2/projects/{pid}/diagnostics/{rid}/score-real-candidate",
+      "legacy_path": "/api/v1/projects/{pid}/diagnostics/{rid}/score-real-candidate",
+      "canonical": false,
+      "domain": "diagnostics",
+      "owner": "app.writing_agent.api",
+      "transport": "json"
+    },
+    {
       "method": "GET",
       "path": "/api/v2/projects/{project_id}/writing/papers/{task_id}/review",
       "legacy_path": "/api/v1/projects/{pid}/paper-writing/{tid}/review",
@@ -6226,6 +6487,15 @@
       "canonical": false,
       "domain": "knowledge",
       "owner": "app.knowledge_api",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/projects/{project_id}/charts/{artifact_id}/reproduce",
+      "legacy_path": "/api/v1/projects/{pid}/charts/{aid}/reproduce",
+      "canonical": true,
+      "domain": "charts",
+      "owner": "app.statistical_charts",
       "transport": "json"
     },
     {
@@ -6407,6 +6677,15 @@
       "domain": "artifacts",
       "owner": "app.advanced",
       "transport": "json"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/projects/{project_id}/charts/{artifact_id}/download",
+      "legacy_path": "/api/v1/projects/{pid}/charts/{aid}/download",
+      "canonical": true,
+      "domain": "charts",
+      "owner": "app.statistical_charts",
+      "transport": "file"
     },
     {
       "method": "POST",
@@ -6985,6 +7264,24 @@
       "transport": "json"
     },
     {
+      "method": "GET",
+      "path": "/api/v2/projects/{project_id}/skills/{resource_id}",
+      "legacy_path": "/api/v1/projects/{pid}/skills/{identity}",
+      "canonical": true,
+      "domain": "skills",
+      "owner": "app.skill_runtime",
+      "transport": "json"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v2/projects/{project_id}/memory/{resource_id}",
+      "legacy_path": "/api/v1/projects/{pid}/memory/{identity}",
+      "canonical": true,
+      "domain": "memory",
+      "owner": "app.project_memory",
+      "transport": "json"
+    },
+    {
       "method": "POST",
       "path": "/api/v2/projects/{pid}/studio/reader/{fid}/webpage",
       "legacy_path": "/api/v1/projects/{pid}/studio/reader/{fid}/webpage",
@@ -7000,6 +7297,15 @@
       "canonical": false,
       "domain": "writing-joint-reviews",
       "owner": "app.writing_agent.api",
+      "transport": "json"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/projects/{pid}/paper-writing/{tid}/recheck",
+      "legacy_path": "/api/v1/projects/{pid}/paper-writing/{tid}/recheck",
+      "canonical": false,
+      "domain": "paper-writing",
+      "owner": "app.paper_writing",
       "transport": "json"
     },
     {

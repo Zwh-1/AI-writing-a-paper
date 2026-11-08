@@ -145,6 +145,14 @@ def pack(context, knowledge, system, cfg):
     followup_reserve = max(0, int(cfg.get('reserved_followup_input', 0)))
     packing_limit = limit - followup_reserve
     def model_wire():
+        if context.get('chapter_materials'):
+            from .chapter_materials import available as available_structures
+            context['chapter_materials']=available_structures(context['chapter_materials'],
+                [row['id'] for row in context.get('project_evidence',[])])
+        if context.get('project_grounding'):
+            from .project_grounding import available
+            context['project_grounding']=available(context['project_grounding'],
+                [row['id'] for row in context.get('project_evidence',[])])
         from .prompt_layout import prepare as prepare_layout
         return prepare_layout({'payload':{'prompt_layout_version':cfg.get('prompt_layout_version')}},
                               system,context,'draft')[:2]

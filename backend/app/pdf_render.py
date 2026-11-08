@@ -11,7 +11,7 @@ from reportlab.platypus.tableofcontents import TableOfContents
 from . import documents,db
 from .security import safe_object
 
-def render_pdf(path,project,snapshots,refs,numbering,fmt,artifacts,figure_rows=None):
+def render_pdf(path,project,snapshots,refs,numbering,fmt,artifacts,figure_rows=None,bibliography_formatter=None):
     from .figure_standards import inventory,resolve_reference
     figure_rows=figure_rows if figure_rows is not None else inventory(project['id'],snapshots=snapshots,artifacts=artifacts)
     active_sid=None
@@ -33,7 +33,8 @@ def render_pdf(path,project,snapshots,refs,numbering,fmt,artifacts,figure_rows=N
         paragraph=Paragraph(escape(text),heading);paragraph._paper_toc=(level,text);return paragraph
     def text(n):
         if n['type']=='text':
-            value=escape(n.get('text',''))
+            from .documents import normalize_workflow_terms
+            value=escape(normalize_workflow_terms(n.get('text','')))
             tags={'bold':'b','italic':'i','underline':'u','superscript':'super','subscript':'sub'}
             for mark in n.get('marks',[]):
                 tag=tags.get(mark['type'])
@@ -57,7 +58,8 @@ def render_pdf(path,project,snapshots,refs,numbering,fmt,artifacts,figure_rows=N
         elif typ=='table':
             table_count+=1
             row=next((r for r in figure_rows if r['section_id']==active_sid and r['node_id']==attrs.get('nodeId')),None)
-            story.append(Paragraph(escape((row['label'] if row else f'表 {table_count}')+' '+(attrs.get('caption') or '【表题待补】')),caption))
+            from .documents import normalize_workflow_terms
+            story.append(Paragraph(escape((row['label'] if row else f'表 {table_count}')+' '+normalize_workflow_terms(attrs.get('caption') or '【表题待补】')),caption))
             source_rows=n.get('content',[]);columns=max((sum(max(1,int(c.get('attrs',{}).get('colspan',1))) for c in r.get('content',[])) for r in source_rows),default=1)
             values=[['']*columns for _ in source_rows];spans=[];occupied=set()
             for i,source_row in enumerate(source_rows):
@@ -71,15 +73,23 @@ def render_pdf(path,project,snapshots,refs,numbering,fmt,artifacts,figure_rows=N
                     occupied.update((r,c) for r in range(i,i+rs) for c in range(j,j+cs));j+=cs
             if values:
                 width=(210-float(fmt['margin_left'])-float(fmt['margin_right']))*mm
-                table=Table(values,colWidths=[width/columns]*columns,repeatRows=1,hAlign='LEFT')
+                from .table_continuation import ContinuedTable
+                from .table_continuation import validate_breaks
+                headers,_=validate_breaks(source_rows,[])
+                table=ContinuedTable(values,colWidths=[width/columns]*columns,repeatRows=headers,hAlign='LEFT')
+                table.continuation_caption=escape((row['label'] if row else f'表 {table_count}')+' '+normalize_workflow_terms(attrs.get('caption') or '【表题待补】'))
+                table.caption_style=caption
                 style=[('LINEABOVE',(0,0),(-1,0),1.5,colors.black),('LINEBELOW',(0,0),(-1,0),.75,colors.black),('LINEBELOW',(0,-1),(-1,-1),1.5,colors.black)] if attrs.get('tableStyle')=='three-line' else [('GRID',(0,0),(-1,-1),.5,colors.HexColor('#b5c5bc')),('BACKGROUND',(0,0),(-1,0),colors.HexColor('#edf3ee'))]
                 table.setStyle(TableStyle(style+spans+[('VALIGN',(0,0),(-1,-1),'TOP')]));story.extend([table,Spacer(1,8)])
-                if attrs.get('note'):story.append(Paragraph(escape('注：'+attrs['note']),table_style))
+                if attrs.get('note'):
+                    from .documents import normalize_workflow_terms
+                    story.append(Paragraph(escape('注：'+normalize_workflow_terms(attrs['note'])),table_style))
         elif typ=='figure':
             a=artifacts.get(attrs.get('artifactId'))
             if a:
                 row=next((r for r in figure_rows if r['section_id']==active_sid and r['node_id']==attrs.get('nodeId')),None)
-                image=Image(str(safe_object(a['sha256'])));image._restrictSize(145*mm,180*mm);story.append(image);fig+=1;story.append(Paragraph(escape((row['label'] if row else f'图 {fig}')+' '+attrs.get('caption',a['name'])),caption))
+                from .documents import normalize_workflow_terms
+                image=Image(str(safe_object(a['sha256'])));image._restrictSize(145*mm,180*mm);story.append(image);fig+=1;story.append(Paragraph(escape((row['label'] if row else f'图 {fig}')+' '+normalize_workflow_terms(attrs.get('caption',a['name']))),caption))
         elif typ=='formula':story.append(Paragraph(escape(attrs.get('expression','')),caption))
         else:
             for c in n.get('content',[]):block(c)
@@ -89,8 +99,9 @@ def render_pdf(path,project,snapshots,refs,numbering,fmt,artifacts,figure_rows=N
         for n in x['document'].get('content',[]):block(n)
     if refs:
         from .exports import bibliography_text
+        format_reference=bibliography_formatter or bibliography_text
         story.append(chapter_heading('参考文献'))
-        for rid,bib in refs.items():story.append(Paragraph(escape(f'[{numbering[rid]}] '+bibliography_text(db.loads(bib['metadata'],{}))),body))
+        for rid,bib in refs.items():story.append(Paragraph(escape(f'[{numbering[rid]}] '+format_reference(db.loads(bib['metadata'],{}))),body))
     def page_number(canvas,doc):canvas.saveState();canvas.setFont(name,9);canvas.drawCentredString(105*mm,12*mm,str(doc.page));canvas.restoreState()
     class IndexedDocument(SimpleDocTemplate):
         def afterFlowable(self,flowable):

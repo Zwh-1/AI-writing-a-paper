@@ -77,6 +77,13 @@ def run_investigation(task, step, session, profile, payload, manifest, *,
     catalog = tools.investigation_catalog(native=native,include_knowledge=bool(manifest.get('knowledge_refs')),
                             include_code=bool(session.get('target_snapshot_id')),allowed_tools=allowed_tools)
     permitted = {tool['function']['name'] if native else tool['name'] for tool in catalog}
+    from .ai_runtime.policy import frozen
+    skills=frozen(task).get('skills')
+    if skills and skills['policy']['enabled']:
+        payload={**payload,'skill_catalogue':[{'id':s['id'],'description':s['description'],'version':s['version']} for s in skills['catalogue']]}
+    else:
+        catalog=[tool for tool in catalog if (tool['function']['name'] if native else tool['name'])!='load_skill']
+        permitted.discard('load_skill')
     system = tools.investigation_system(system or prompts.INVESTIGATE,session.get('target_snapshot_id'))
     assert_active = assert_active or (lambda: assert_lease(step['id'], manifest['lease_epoch']))
     epoch=manifest.get('lease_epoch',step.get('lease_epoch',0))
@@ -86,6 +93,9 @@ def run_investigation(task, step, session, profile, payload, manifest, *,
                           sorted(permitted), rounds, maximum])
     if checkpoint and checkpoint.get('fingerprint') != fingerprint:
         fail('INPUT_VERSION_CHANGED', '取材检查点的上下文或配置已变化', 409)
+    # Preserve the checkpoint identity used by earlier task versions; the
+    # actual transport prompt still enters every capacity check below.
+    system,manifest=provider_adapter.prepare_system(task,system,payload,manifest)
     if not checkpoint:
         checkpoint = {'fingerprint': fingerprint, 'turn': 0, 'count': 0,
                       'messages': [{'role': 'user', 'content': db.dumps({'context': payload} if native else {'context': payload, 'available_tools': catalog})}],

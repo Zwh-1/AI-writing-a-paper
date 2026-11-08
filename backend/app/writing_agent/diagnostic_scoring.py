@@ -85,6 +85,15 @@ def blind_packet(pid,rid,evaluator):
     from .evaluations import run_dataset
     cases={c['id']:c for c in run_dataset(run)['cases']};identity=db.uid();mapping={};items=[]
     for row in db.rows("SELECT * FROM diagnostic_items WHERE run_id=? AND status='completed'",(rid,)):
+        result=unblob(row['result_blob'])
+        if result.get('real_whole_paper'):
+            frozen=result.get('evaluation_input') or {}
+            token='B-'+digest([identity,row['id']])[:20];mapping[token]=row['id']
+            items.append({'blind_item_token':token,'instruction':frozen.get('instruction','缺少冻结任务，无法确认支持性'),
+                          'context':frozen.get('context',{}),'answer':result.get('answer',''),
+                          'evaluation_standard':result.get('evaluation_standard',{}),'dimensions':DIMENSIONS,
+                          'evidence_context_complete':result.get('evidence_context_complete',False)})
+            continue
         case=cases[row['case_id']];variant=next(v for v in case['variants'] if v['name']==row['variant_id']);token='B-'+digest([identity,row['id']])[:20];mapping[token]=row['id']
         items.append({'blind_item_token':token,'instruction':case['prompt'],'context':variant['context'],'answer':unblob(row['result_blob']).get('answer',''),'evaluation_standard':case.get('gold'), 'dimensions':DIMENSIONS})
     items.sort(key=lambda r:digest([identity,r['blind_item_token']]))
@@ -129,7 +138,9 @@ def freeze_policy(pid,rid,body):
 def qualify(pid,rid,note,policy_id):
     from .evaluations import get,dataset
     from . import profiles
-    run=get(pid,rid);profile=profiles.get(pid,run['profile_id']);policy=db.one('SELECT * FROM writing_quality_policies WHERE id=? AND project_id=?',(policy_id,pid))
+    run=get(pid,rid)
+    if run['policy'].get('real_paper'):fail('CALIBRATION_REQUIRED','单篇论文评价不能授予模型通用资格，请另用完整校准题集',409)
+    profile=profiles.get(pid,run['profile_id']);policy=db.one('SELECT * FROM writing_quality_policies WHERE id=? AND project_id=?',(policy_id,pid))
     if not policy:fail('CALIBRATION_REQUIRED','请先依据实际人工分项标注冻结角色政策',409)
     p=db.loads(policy['content_json'],{});expected={(c['id'],v['name'],r) for c in run['evaluation_dataset']['cases'] for v in c['variants'] for r in range(p['minimum_repetitions'])};seen={(i['case_id'],i['variant_id'],i['repetition']) for i in run['items']}
     if p['dataset_hash']!=run['dataset_hash'] or digest(dataset())!=run['dataset_hash'] or p['profile_fingerprint']!=profile['route_fingerprint'] or not profile['configuration_current'] or seen!=expected or len(str(note))<12:fail('QUALIFICATION_INCOMPLETE','当前配置、完整重复样本或政策尚未满足',409)

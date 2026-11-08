@@ -1,0 +1,26 @@
+import { useEffect, useState } from "react";
+import { api, send } from "../client";
+type Row = Record<string, any>;
+export default function AcademicStandards({ pid }: { pid: string }) {
+  const [profile, setProfile] = useState<Row | null>(null), [report, setReport] = useState<Row | null>(null), [error, setError] = useState(""), [notice, setNotice] = useState(""), [busy, setBusy] = useState(false);
+  useEffect(() => { let live = true; api(`/projects/${pid}/academic-standards`).then(value => { if (live) setProfile(value.profile); }).catch(e => { if (live) setError(e.message); }); return () => { live = false; }; }, [pid]);
+  const perform = async (fn: () => Promise<unknown>) => { setBusy(true); setError(""); setNotice(""); try { await fn(); } catch (e) { setError((e as Error).message); } finally { setBusy(false); } };
+  const update = (key: string, id: string, patch: Row) => setProfile(current => current && ({ ...current, [key]: current[key].map((row: Row) => row.id === id ? { ...row, ...patch } : row) }));
+  const remove = (key: string, id: string) => setProfile(current => current && ({ ...current, [key]: current[key].filter((row: Row) => row.id !== id) }));
+  return <details><summary>论文标准与参考文献校验</summary>{error && <p role="alert">{error}</p>}{notice && <p role="status">{notice}</p>}{profile && <fieldset disabled={busy}>
+    <label>参考文献格式<select value={profile.bibliography_version} onChange={e => setProfile({ ...profile, bibliography_version: e.target.value })}><option value="legacy">保留历史格式</option><option value="gbt7714_2015">GB/T 7714—2015</option><option value="gbt7714_2025">GB/T 7714—2025</option></select></label>
+    <label>学位论文规范<select value={profile.thesis_version} onChange={e => setProfile({ ...profile, thesis_version: e.target.value })}><option value="gbt7713_2025">GB/T 7713.1—2025</option><option value="gbt7713_2006">GB/T 7713.1—2006</option></select></label>
+    <label>学校或投稿目标<input maxLength={300} value={profile.institution} onChange={e => setProfile({ ...profile, institution: e.target.value })} /></label>
+    <details><summary>项目适用条款与正式来源</summary>
+      {profile.requirements.map((row: Row) => <fieldset key={row.id}><label>条款内容<textarea value={row.statement} maxLength={4000} onChange={e => update("requirements", row.id, { statement: e.target.value })} /></label><label>正式来源<input value={row.source} onChange={e => update("requirements", row.id, { source: e.target.value })} /></label><label>条文位置<input value={row.clause ?? ""} onChange={e => update("requirements", row.id, { clause: e.target.value })} /></label><label>性质<select value={row.modality} onChange={e => update("requirements", row.id, { modality: e.target.value })}><option value="mandatory">必须遵守</option><option value="recommended">推荐</option></select></label><label>适用范围<input value={row.scope ?? ""} onChange={e => update("requirements", row.id, { scope: e.target.value })} /></label><button className="btn" type="button" onClick={() => remove("requirements", row.id)}>移除此条款</button></fieldset>)}
+      <button className="btn" type="button" disabled={profile.requirements.length >= 100} onClick={() => setProfile({ ...profile, requirements: [...profile.requirements, { id: crypto.randomUUID(), statement: "", source: "", modality: "mandatory", scope: "", clause: "" }] })}>添加适用条款</button>
+    </details>
+    <details><summary>规范冲突与处理决定</summary><p>保留冲突的各项来源，并填写采用决定与理由。未处理的冲突会阻止正式导出。</p>
+      {profile.conflicts.map((row: Row) => <fieldset key={row.id}><label>冲突内容<textarea value={row.statement} maxLength={4000} onChange={e => update("conflicts", row.id, { statement: e.target.value })} /></label><label>来源（每行一项，至少两项）<textarea value={row.sources.join("\n")} onChange={e => update("conflicts", row.id, { sources: e.target.value.split("\n") })} /></label><label>采用决定<input value={row.decision ?? ""} onChange={e => update("conflicts", row.id, { decision: e.target.value })} /></label><label>处理理由<textarea value={row.reason ?? ""} onChange={e => update("conflicts", row.id, { reason: e.target.value })} /></label><button className="btn" type="button" onClick={() => remove("conflicts", row.id)}>移除此冲突</button></fieldset>)}
+      <button className="btn" type="button" disabled={profile.conflicts.length >= 100} onClick={() => setProfile({ ...profile, conflicts: [...profile.conflicts, { id: crypto.randomUUID(), statement: "", sources: ["", ""], decision: "", reason: "" }] })}>添加规范冲突</button>
+    </details>
+    <button className="btn" type="button" onClick={() => void perform(async () => { const { version_hash, ...values } = profile; const result = await send(`/projects/${pid}/academic-standards`, values, "PUT"); setProfile(result.profile); setReport(null); setNotice("规范配置已保存，将随导出冻结"); })}>保存规范</button>
+    <button className="btn" type="button" onClick={() => void perform(async () => setReport(await api(`/projects/${pid}/bibliography/validation`)))}>校验书目字段</button>
+    {report && <><p>{report.references.length} 条书目，{report.errors} 个缺项或字段错误。来源真实性需另行核实。</p><ul>{report.references.flatMap((row: Row) => row.issues.map((issue: Row, index: number) => <li key={`${row.reference_id}:${index}`}>{row.text || row.reference_id}：{issue.message}</li>))}</ul></>}
+  </fieldset>}</details>;
+}

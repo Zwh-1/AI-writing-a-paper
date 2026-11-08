@@ -1,7 +1,7 @@
 """Durable logical intents and actual transport attempts, without replaying unknown work."""
 from contextlib import contextmanager
 from contextvars import ContextVar
-import hashlib
+import hashlib,time
 import json
 from . import db
 
@@ -131,6 +131,7 @@ def before_http(request,configuration,key):
                (db.dumps(identity),reserved,'reserved',db.now(),value['id']))
     _event(state,'reserved',{'reservation':reserved,'currency':cfg.get('currency')},value['id'])
     value['phase']='send_started'
+    value['http_started']=time.perf_counter()
     db.execute('UPDATE provider_attempts SET state=?,updated_at=? WHERE id=?',('send_started',db.now(),value['id']))
     db.execute('UPDATE request_intents SET state=?,updated_at=? WHERE id=?',('send_started',db.now(),state['id']))
     _event(state,'send_started',{'method':request.method,'request_sha256':hashlib.sha256(request.content).hexdigest()},value['id'])
@@ -140,5 +141,9 @@ def response_received(response):
     state=_SCOPE.get()
     if state is None or state['active'] is None:return
     value=state['active'];value['phase']='response_received'
+    if value.get('http_started') is not None:
+        from .ai_runtime.telemetry import record
+        record(state['task'],state['manifest'].get('stage',state['task']['kind']),
+               'provider_response_headers','completed',(time.perf_counter()-value['http_started'])*1000)
     _event(state,'response_received',{'http_status':response.status_code,
            'provider_request_id':response.headers.get('x-request-id')},value['id'])

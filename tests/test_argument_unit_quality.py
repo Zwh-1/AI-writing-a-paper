@@ -21,6 +21,26 @@ def checkpoint(task):
     return db.one("SELECT * FROM writing_steps WHERE task_id=? AND stage='argument_units' ORDER BY rowid DESC LIMIT 1",(task['id'],))
 
 
+def test_unit_paragraph_tasks_follow_assigned_points_instead_of_independent_slices():
+    from app import writing_brief
+    section={'id':'synthetic','kind':'system_design','target_words':3000,'goal':''}
+    brief=writing_brief.build(section,{},params={'paragraph_target_words':220})
+    cards=[{'id':'a'+str(index),'point_ids':[point['id']],'question':point['text']}
+           for index,point in enumerate(brief['points'])]
+    context={'section':section,'writing_brief':brief,'argument_plan':{'paragraph_cards':cards},
+             'sources':[{'id':'s1','text':'保留实际给定来源。'}]}
+    before=deepcopy(context);assigned=[]
+    for index in range(3):
+        unit=writing_flow._unit_request_context(section,context,cards,index,3,[])
+        points={point['id'] for point in unit['writing_brief']['points']}
+        planned=unit['writing_brief']['paragraph_plan']
+        assert all(set(row['point_ids']) <= points for row in planned['paragraphs'])
+        assert sum(row['target_words'] for row in planned['paragraphs'])==1000
+        assigned.extend(points)
+    assert len(assigned)==len(set(assigned))==len(brief['points'])
+    assert context==before
+
+
 def test_unit_scope_changes_output_targets_and_keeps_global_requirements(writing_project,monkeypatch):
     task,section,context,manifest=_unit_setup(writing_project)
     context['section']=deepcopy(section)
@@ -36,12 +56,15 @@ def test_unit_scope_changes_output_targets_and_keeps_global_requirements(writing
         assert payload['section']['target_words']==1000
         assert payload['section']['paragraph_count']==4
         assert payload['writing_brief']['paragraph_plan']['count']==4
+        assert payload['writing_brief']['paragraph_plan']['advisory'] is True
         assert sum(p['target_words'] for p in payload['writing_brief']['paragraph_plan']['paragraphs'])==1000
         assert len(payload['argument_plan']['paragraph_cards'])==2
         assert len(payload['writing_brief']['points'])==2
         assert payload['chapter_background']['instruction']==original['instruction']
         assert payload['chapter_background']['writing_brief']==original['writing_brief']
         assert payload['sources']==original['sources']
+        assert '不凑固定段数' in payload['instruction']
+        assert '转换对象或论点时交代具体关系' in payload['argument_unit']['policy']
         return response({'paragraphs':[{'text':'当前单元'+str(payload['argument_unit']['index'])}]})
     monkeypatch.setattr(provider,'generate',transport)
     run(task,section,context,manifest)

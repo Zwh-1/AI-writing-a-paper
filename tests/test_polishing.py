@@ -36,6 +36,8 @@ def test_polish_rules_are_independent_and_old_packages_are_immutable(client,monk
     _,result=execute(pid,sid,base['id'])
     assert result['document'] and result['polish_validation']['passed']
     system,context=calls[0]
+    from app.writing_expression import guidance
+    assert guidance() in system
     assert context['operation']=='polish' and context['polish_policy']['id']==VERSION
     assert {row['id'] for row in context['rules']}=={polish.json()['id']}
     assert edit['id'] not in result['manifest']['loaded_rule_ids']

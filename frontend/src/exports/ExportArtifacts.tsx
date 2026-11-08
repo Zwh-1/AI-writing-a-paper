@@ -2,6 +2,7 @@ import { useState } from "react";
 import { apiUrl, send } from "../api/client";
 import { useCommand } from "../tasks/useCommand";
 import type { Row } from "../workspace/types";
+import AcademicStandards from "./AcademicStandards";
 
 export function ExportFiles({ item }: { item: Row }) {
   return (
@@ -15,6 +16,14 @@ export function ExportFiles({ item }: { item: Row }) {
         )[item.format] || "历史导出"}{" "}
         · {item.mode === "strict" ? "正式" : "草稿"}
       </span>
+      {(item.artifacts || []).some((file: Row) =>
+        file.name === "论文_检测提交版.docx",
+      ) && (
+        <p>
+          检测网站可使用“论文_检测提交版.docx”，上传后请核对平台解析的正文顺序。
+          该副本保留正文、图表和参考文献，采用连续排版。
+        </p>
+      )}
       {(item.artifacts || []).map((file: Row) => (
         <a
           className={"btn " + (file.role === "archive" ? "primary" : "")}
@@ -48,6 +57,7 @@ export function ExportActions({
   return (
     <div className="studio-card">
       <h3>多格式导出</h3>
+      <AcademicStandards key={pid} pid={pid} />
       <p>使用当前正文快照与统一交付检查，保留具体产物和版本信息。</p>
       <div className="studio-toolbar">
         <label>

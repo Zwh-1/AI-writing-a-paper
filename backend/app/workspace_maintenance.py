@@ -80,6 +80,33 @@ def orphan_objects(body=None):
                 if isinstance(value,str):referenced.update(re.findall(r'(?<![0-9a-f])[0-9a-f]{64}(?![0-9a-f])',value))
     for row in db.rows('SELECT value FROM settings'):
         referenced.update(re.findall('[0-9a-f]{64}',row['value']))
+    # Graph checkpoints and archived memory manifests may be the only roots of
+    # a frozen context. Follow immutable JSON blobs before identifying orphans.
+    import sqlite3
+    from contextlib import closing
+    checkpoint=Path(db.DB_PATH).parent/'ai-graph-checkpoints.sqlite3'
+    if checkpoint.is_file():
+        try:
+            with closing(sqlite3.connect(checkpoint.resolve().as_uri()+'?mode=ro',uri=True)) as connection:
+                for table,column in (('checkpoints','checkpoint'),('writes','value')):
+                    if connection.execute('SELECT 1 FROM sqlite_master WHERE name=?',(table,)).fetchone():
+                        for row in connection.execute('SELECT '+column+' FROM '+table):
+                            if isinstance(row[0],bytes):referenced.update(x.decode() for x in re.findall(rb'(?<![0-9a-f])[0-9a-f]{64}(?![0-9a-f])',row[0]))
+        except sqlite3.Error as error:raise HTTPException(409,'图检查点不可读，未执行对象回收') from error
+    pending=list(referenced);visited=set()
+    while pending:
+        identity=pending.pop()
+        if identity in visited:continue
+        visited.add(identity)
+        if len(visited)>100000:raise HTTPException(409,'对象依赖规模超过维护上限，未执行回收')
+        path=DATA/'objects'/identity
+        if not path.is_file() or path.is_symlink() or path.stat().st_size>20_000_000:continue
+        with path.open('rb') as stream:
+            prefix=stream.read(1)
+            if prefix not in (b'{',b'[',b'"'):continue
+            raw=prefix+stream.read()
+        nested={x.decode() for x in re.findall(rb'(?<![0-9a-f])[0-9a-f]{64}(?![0-9a-f])',raw)}
+        pending.extend(nested-referenced);referenced.update(nested)
     cutoff=time.time()-86400
     files=[item for item in (DATA/'objects').iterdir() if item.is_file() and not item.is_symlink() and item.stat().st_mtime<cutoff and re.fullmatch('[0-9a-f]{64}',item.name) and item.name not in referenced]
     manifest=[{'sha256':item.name,'bytes':item.stat().st_size} for item in sorted(files)]

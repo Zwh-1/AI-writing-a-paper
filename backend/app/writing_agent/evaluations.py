@@ -90,6 +90,132 @@ def process(task,body):
     db.execute('UPDATE diagnostic_runs SET status=?,updated_at=? WHERE id=?',('completed' if not remaining else 'running',db.now(),run['id']))
     return result
 
+
+REAL_STANDARD={'task':'研究问题得到回应，章节职责和论证闭环清晰',
+               'sources':'逐项对照冻结原文、代码和运行记录；无证据时保持unknown',
+               'synthesis':'综述比较方法、条件和局限；设计解释取舍',
+               'language':'信息密度、重复、术语及限定准确',
+               'human_review':'模型评价不等于作者事实确认或人工盲评'}
+
+
+def create_real_run(pid, profile_id, budget_limit=None):
+    p=security.require_project(pid);profile=profiles.get(pid,profile_id)
+    limit=p['budget'] if budget_limit is None else budget_limit
+    if not isinstance(limit,(int,float)) or isinstance(limit,bool) or not 0<limit<=p['budget']:
+        fail('INVALID_BUDGET','真实论文评测预算必须在项目预算内')
+    data={'version':'real-paper.v1','cases':[{'id':'PAPER','prompt':'对照冻结任务和原文评价整篇候选。',
+          'variants':[{'name':'candidate','context':'每个样本绑定自己的冻结上下文。'}], 'gold':REAL_STANDARD}]}
+    identity=db.uid();policy={'dataset_blob':blob(data),'budget_limit':limit,'real_paper':True,
+                            'route_fingerprint':profile['route_fingerprint']}
+    db.execute('INSERT INTO diagnostic_runs VALUES(?,?,?,?,?,?,?,?,?)',
+               (identity,pid,digest(data),profile_id,db.dumps(policy),'completed',None,db.now(),db.now()))
+    return get(pid,identity)
+
+
+def register_real_whole_paper(pid, run_id, case_id, variant_id, repetition, answer, profile_id, source=None):
+    """Register a real whole-paper candidate as a diagnostic sample.
+
+    This connects the actual writing chain to the diagnostic scoring harness:
+    a generated (or revised) whole-paper candidate is stored as a completed
+    diagnostic item so the same blinded review, disagreement adjudication and
+    frozen-policy qualification used for synthetic cases can be applied to it.
+    No model call is made here; the caller supplies the already-generated text.
+    """
+    security.require_project(pid)
+    run = db.one('SELECT * FROM diagnostic_runs WHERE id=? AND project_id=?', (run_id, pid))
+    if not run: fail('NOT_FOUND', '诊断运行不存在', 404)
+    data = run_dataset(run)
+    if digest(data) != run['dataset_hash']: fail('DATASET_CHANGED', '诊断题集已变化', 409)
+    if case_id not in {c['id'] for c in data['cases']}: fail('INVALID_DIAGNOSTIC', '诊断用例不存在')
+    if not isinstance(variant_id,str) or not 1<=len(variant_id)<=100:fail('INVALID_DIAGNOSTIC','真实样本变体标识无效')
+    if db.loads(run['policy_json'],{}).get('real_paper'):
+        case=next(c for c in data['cases'] if c['id']==case_id)
+        if variant_id not in {v['name'] for v in case['variants']}:fail('INVALID_DIAGNOSTIC','真实评测变体不属于冻结题集')
+    profile = profiles.get(pid, profile_id)
+    if run['profile_id']!=profile_id:fail('PROFILE_MISMATCH','样本模型配置与冻结评测运行不一致',409)
+    if type(repetition) is not int or not 0<=repetition<=100:fail('INVALID_DIAGNOSTIC','重复样本编号无效')
+    if not isinstance(answer,str) or not answer.strip():fail('INVALID_DIAGNOSTIC','论文正文不能为空')
+    if source is not None and not isinstance(source,dict):fail('INVALID_DIAGNOSTIC','样本来源须为结构化快照')
+    source=dict(source or {})
+    context=source.get('context') or {}
+    input_data={'instruction':source.get('instruction') or '评价给定论文；缺失原文时不能确认事实支持。',
+                'context':context,'real_whole_paper':True,'paper_hash':source.get('paper_hash') or digest(answer),
+                'source_task_id':source.get('task_id'),'profile_fingerprint':profile['route_fingerprint'],
+                'case_id':case_id,'variant_id':variant_id,'answer_hash':digest(answer)}
+    if source.get('task_id'):
+        task=db.one('SELECT result FROM tasks WHERE id=? AND project_id=?',(source['task_id'],pid))
+        saved=db.loads(task['result'],{}) if task else {}
+        if not task or saved.get('paper_hash')!=source.get('paper_hash') or saved.get('text')!=answer:
+            fail('CANDIDATE_CHANGED','真实样本必须对应已保存的候选及哈希',409)
+    previous=db.one('SELECT * FROM diagnostic_items WHERE run_id=? AND case_id=? AND variant_id=? AND repetition=?',
+                    (run_id,case_id,variant_id,repetition))
+    if previous:
+        if previous['input_hash']!=digest(input_data):fail('SAMPLE_CONFLICT','同一重复编号已绑定另一份样本',409)
+        return {'item_id':previous['id'],'run_id':run_id,'idempotent_replay':True}
+    item = db.uid()
+    result = {'answer': answer, 'protocol_complete': True, 'structured_output': True,
+              'semantic_score': None, 'human_review_required': True, 'generation_strategy': 'real_whole_paper',
+              'real_whole_paper': True, 'reported_model': profile.get('actual_config', {}).get('model'),
+              'case_id': case_id, 'variant_id': variant_id,'evaluation_input':input_data,
+              'evaluation_standard':REAL_STANDARD,'evidence_context_complete':bool(context)}
+    with db.transaction():
+        db.execute('INSERT INTO diagnostic_items VALUES(?,?,?,?,?,?,?,?,?,?,?)',
+                   (item, run_id, case_id, variant_id, repetition, digest(input_data), '[]',
+                    blob(result), None, None, 'completed'))
+        remaining=db.one("SELECT COUNT(*) n FROM diagnostic_items WHERE run_id=? AND status!='completed'",(run_id,))['n']
+        db.execute('UPDATE diagnostic_runs SET status=?,updated_at=? WHERE id=?',('running' if remaining else 'completed',db.now(),run_id))
+    return {'item_id': item, 'run_id': run_id, 'case_id': case_id, 'variant_id': variant_id, 'answer_characters': len(answer)}
+
+
+def score_real_whole_paper(pid, run_id, item_id, profile_id):
+    """Score a registered real whole-paper candidate with the model-assisted side.
+
+    Reuses the diagnostic scoring review so the same dimension rubric applies.
+    """
+    from .. import tasks
+    security.require_project(pid)
+    run = db.one('SELECT * FROM diagnostic_runs WHERE id=? AND project_id=?', (run_id, pid))
+    if not run: fail('NOT_FOUND', '诊断运行不存在', 404)
+    item = db.one('SELECT * FROM diagnostic_items WHERE id=? AND run_id=?', (item_id, run_id))
+    if not item or item['status'] != 'completed': fail('NOT_FOUND', '需已完成真实样本', 404)
+    profile = profiles.get(pid, profile_id)
+    result=unblob(item['result_blob'])
+    if not result.get('real_whole_paper'):fail('INVALID_DIAGNOSTIC','请选择真实论文样本')
+    if not result.get('evidence_context_complete'):fail('EVIDENCE_CONTEXT_REQUIRED','缺少冻结任务与原文，请重新登记完整样本')
+    return tasks.enqueue(pid,'writing_real_diagnostic_review',{'run_id':run_id,'item_id':item_id,'profile_id':profile_id},
+                         'real-paper-score:'+digest([item_id,profile['route_fingerprint'],item['input_hash']]))
+
+
+def process_real_score(task, body):
+    from . import diagnostic_scoring
+    pid=task['project_id'];run=owned('diagnostic',body['run_id'],pid)
+    item=db.one('SELECT * FROM diagnostic_items WHERE id=? AND run_id=?',(body['item_id'],run['id']))
+    if not item or item['status']!='completed':fail('NOT_FOUND','真实样本不存在',404)
+    result=unblob(item['result_blob']);frozen=result.get('evaluation_input') or {}
+    if not result.get('real_whole_paper') or not result.get('evidence_context_complete') or digest(frozen)!=item['input_hash']:
+        fail('EVIDENCE_CONTEXT_REQUIRED','真实样本缺少完整冻结上下文或指纹不符',409)
+    if frozen.get('source_task_id'):
+        source=db.one('SELECT * FROM tasks WHERE id=? AND project_id=?',(frozen['source_task_id'],pid))
+        from ..paper_writing import validate_request
+        if not source:fail('CANDIDATE_CHANGED','来源写作任务不存在',409)
+        validate_request(source)
+        if db.loads(source['result'],{}).get('paper_hash')!=frozen['paper_hash']:fail('CANDIDATE_CHANGED','来源候选已变化',409)
+    profile=profiles.get(pid,body['profile_id'])
+    payload={**frozen,'answer':result['answer'],'evaluation_standard':result['evaluation_standard'],
+             'dimensions':diagnostic_scoring.DIMENSIONS,'real_whole_paper':True}
+    system = ('你是独立评估侧核验者。对照给定材料与标准逐项核对真实整篇候选，'
+              '不以流畅度代替事实。返回JSON {"decision":"pass|fail|unknown","note":"具体总判断",'
+              '"dimensions":{"每个给定维度":{"score":0或1或2或null,"applicable":true或false,"rationale":"具体依据"}}}。'
+              '0为错误，1为部分满足，2为在给定范围内满足；不适用才给null并解释。未知不能判通过。')
+    from . import provider_adapter as adapter
+    manifest = {'diagnostic_run_id': run['id'], 'diagnostic_item_id': item['id'], 'evaluation_side': True,
+                'gold_isolation': 'evaluation_only', 'stage': 'diagnostic_model_review',
+                'real_whole_paper': True}
+    parsed = provider.parse_json(adapter.call(task,profile,system,payload,manifest)['text'])
+    return diagnostic_scoring.review(pid, run['id'], {**parsed, 'item_id': item['id'],
+                                       'evaluator_id': 'model:' + profile['route_fingerprint']},
+                         method='model_assisted')
+
 def review(pid,rid,body):
     from .diagnostic_scoring import review as record
     record(pid,rid,body);return get(pid,rid)

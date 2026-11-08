@@ -1,6 +1,7 @@
 import sys,os
 from pathlib import Path
 ROOT=Path(__file__).resolve().parent
+sys.path.insert(0,str(ROOT))
 sys.path.insert(0,str(ROOT/'.runtime'/'python-deps'))
 sys.path.insert(0,str(ROOT/'.runtime'/'advanced-deps'))
 sys.path.insert(0,str(ROOT/'backend'))

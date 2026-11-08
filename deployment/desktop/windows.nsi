@@ -2,7 +2,7 @@
 !include "MUI2.nsh"
 !define APP_NAME "砚台论文工作台"
 !ifndef VERSION
-!define VERSION "1.0.0"
+!define VERSION "1.1.0"
 !endif
 !ifndef APP_SOURCE
 !define APP_SOURCE "..\..\dist\Yantai"

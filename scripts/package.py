@@ -41,6 +41,10 @@ GUIDES=(*GUIDES,'docs/架构整合实施记录_2026-11-02.md','docs/新增功能
 GUIDES=(*GUIDES,'docs/功能完整性复查与补齐记录_2026-11-02.md','docs/功能完整性复核_2026-11-02/README.md')
 GUIDES=(*GUIDES,'docs/核心写作与素材闭环实施记录_2026-11-03.md','docs/0.10.0完整整合便携版使用说明.md')
 GUIDES=(*GUIDES,'docs/1.0.0完整整合便携版使用说明.md')
+GUIDES=(*GUIDES,'docs/1.1.0完整整合便携版使用说明.md',
+        'docs/模块一致性全面审查与优化_2026-11-08.md',
+        'docs/上下文记忆与官方规范优化实施验收_2026-11-08.md',
+        'docs/官方规范方案补齐与逐项验收_2026-11-08.md')
 
 
 def _walk(folder, allow_modules=False):
@@ -128,7 +132,7 @@ def selected_files(profile='full', root=None):
     if profile in ('browser', 'models','graphrag'):
         yield from (_browser_files(root) if profile == 'browser' else _model_files(root) if profile=='models' else _walk(root/'.runtime/graphrag-deps'))
         return
-    for name in ('backend', 'frontend/dist', 'prompts', '.runtime/python', '.runtime/python-deps',
+    for name in ('backend', 'frontend/dist', 'prompts', 'skills', '.runtime/python', '.runtime/python-deps',
                  '.runtime/advanced-deps', '.runtime/browser', '.runtime/writing-agent/typescript'):
         overridden = _overridden_base_entries(root) if name == '.runtime/python-deps' else set()
         for path in _walk(root / name, allow_modules=name == '.runtime/browser'):
@@ -153,7 +157,9 @@ def selected_files(profile='full', root=None):
     for name in ('runner.py', '启动论文工作台.ps1', '停止论文工作台.ps1', '安装便携组件.ps1',
                  'scripts/yantai-data.mjs','scripts/yantai_data_offline.py','scripts/yantai_query_projection.py','deployment/execution.Dockerfile',
                  '准备截图浏览器.ps1', '准备隔离执行环境.ps1', 'frontend/package.json',
-                 'requirements.lock.txt', 'requirements-advanced.lock.txt','requirements-graphrag.lock.txt', *SCRIPTS, *GUIDES, *RUNTIME_ASSETS):
+                 'requirements.lock.txt', 'requirements-advanced.lock.txt','requirements-graphrag.lock.txt',
+                 'requirements-ai.lock.txt','scripts/audit_ai_runtime.py','docs/AI系统优化实施与验收_2026-11-07.md',
+                 *SCRIPTS, *GUIDES, *RUNTIME_ASSETS):
         path = root / name
         if path.is_file():
             yield path

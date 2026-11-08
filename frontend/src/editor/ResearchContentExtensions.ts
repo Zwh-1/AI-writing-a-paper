@@ -59,7 +59,7 @@ export const ResearchAttributes = Extension.create({
       {
         types: ["table"],
         attributes: Object.fromEntries(
-          ["columnWidths", "fontSize", "bodyAlignment"].map((name) => [
+          ["columnWidths", "fontSize", "bodyAlignment", "pageBreakRows"].map((name) => [
             name,
             { default: null, renderHTML: () => ({}) },
           ]),

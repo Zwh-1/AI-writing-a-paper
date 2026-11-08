@@ -110,10 +110,15 @@ def latex_project(pid,body,prepared=None):
         if body.get('reference_metadata')=='adopted':
             snapshot=next((item for item in frozen['citations'] if item['reference_id']==rid),None)
             if snapshot:metadata=db.loads(snapshot['reference_snapshot'],metadata)
-        bibliography.append('\\bibitem{ref'+rid+'} '+tex(bibliography_text(metadata)))
-        fields={key:metadata.get(key,'') for key in ('title','year','journal','doi')};authors=metadata.get('authors',[])
+        from .bibliography_format import render as render_reference
+        bibliography.append('\\bibitem{ref'+rid+'} '+tex(render_reference(metadata,frozen['settings']['academic_standards:'+pid]['bibliography_version'])['text']))
+        fields={key:metadata.get(key,'') for key in ('title','year','journal','doi','volume','pages','publisher','url','edition')};authors=metadata.get('authors',[])
+        if metadata.get('issue'):fields['number']=metadata['issue']
+        if metadata.get('place'):fields['address']=metadata['place']
+        if metadata.get('container_title'):fields['booktitle']=metadata['container_title']
         fields['author']=' and '.join(authors) if isinstance(authors,list) else authors
-        bib.append('@article{ref'+rid+',\n'+',\n'.join('  '+key+' = {'+tex(value)+'}' for key,value in fields.items() if value)+'\n}')
+        bib_type={'J':'article','M':'book','D':'phdthesis','C':'inproceedings','S':'misc','EB':'misc'}.get(str(metadata.get('type','J')).split('/')[0],'misc')
+        bib.append('@'+bib_type+'{ref'+rid+',\n'+',\n'.join('  '+key+' = {'+tex(value)+'}' for key,value in fields.items() if value)+'\n}')
     preamble=['\\documentclass[12pt,a4paper]{'+('ctexart' if language=='zh' else 'article')+'}',
               '\\usepackage{amsmath,amssymb,graphicx,longtable,hyperref,geometry}',
               '\\IfFileExists{booktabs.sty}{\\usepackage{booktabs}}{\\newcommand{\\toprule}{\\hline}\\newcommand{\\bottomrule}{\\hline}\\newcommand{\\midrule}{\\hline}}',
@@ -124,6 +129,7 @@ def latex_project(pid,body,prepared=None):
     guide='# LaTeX 工程\n\n'+('中文模板：使用 XeLaTeX 和已安装的 CTeX 字体。\n\n```\nxelatex -interaction=nonstopmode main.tex\nxelatex -interaction=nonstopmode main.tex\n```' if language=='zh' else '英文模板：使用 pdfLaTeX 或 XeLaTeX。\n\n```\npdflatex -interaction=nonstopmode main.tex\npdflatex -interaction=nonstopmode main.tex\n```')+'\n\n参考文献已嵌入 main.tex；references.bib 供后续改用 BibTeX 使用。目录中的图片使用相对路径。请检查 warnings.json 和原件；生成工程不代表已编译或人工验收。\n'
     files={'main.tex':source.encode(),'references.bib':'\n\n'.join(bib).encode(),'document.md':'\n'.join(markdown).encode(),'HOW_TO_COMPILE.md':guide.encode(),'warnings.json':db.dumps(warnings).encode(),**image_files}
     files['research-trace.json']=db.dumps(frozen.get('research_trace',{})).encode()
+    files['academic-standards.json']=db.dumps(prepared['checks']['bibliography']).encode()
     files['knowledge-trace.json']=db.dumps(frozen.get('graph_wiki',{})).encode()
     manifest={'export_format':'latex','snapshot_id':prepared['snapshot_id'],'mode':prepared['mode'],'checks':prepared['checks'],'project_id':pid,'language':language,'sections':manifest_sections,'created_at':db.now(),'warnings':warnings,'compiled':False,'files':{name:hashlib.sha256(raw).hexdigest() for name,raw in files.items()}}
     files['manifest.json']=db.dumps(manifest).encode();archive=folder/'latex-project.zip'

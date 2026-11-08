@@ -119,7 +119,11 @@ def test_pack_uses_wire_size_without_dropping_mandatory_originals_or_navigation(
 
 
 def test_model_serialization_uses_wire_view_but_hash_and_guard_keep_canonical_input(client,monkeypatch):
-    pid=project(client);task=tasks.enqueue(pid,'write',{})
+    pid=project(client)
+    # This isolates lossless serialization and its canonical hash from the
+    # independently tested default skill prompt and its additional input cost.
+    db.set_setting('skills:'+pid,{'enabled':False})
+    task=tasks.enqueue(pid,'write',{})
     db.execute("UPDATE tasks SET status='running',attempt=1 WHERE id=?",(task['id'],))
     task=db.one('SELECT * FROM tasks WHERE id=?',(task['id'],))
     context=context_fixture();before=deepcopy(context);manifest={'request_options':{'max_output_tokens':1000}}
@@ -137,3 +141,33 @@ def test_model_serialization_uses_wire_view_but_hash_and_guard_keep_canonical_in
                      provider.config(),'draft',0,manifest['request_options']])
     assert captured[0]['writing_flow_request_hash']==expected
     assert context==before
+
+
+def test_cached_stage_budgets_and_hashes_the_effective_skill_prompt(client,monkeypatch):
+    from fastapi import HTTPException
+    from app.skill_runtime import enrich
+    pid=project(client);task=tasks.enqueue(pid,'write',{})
+    db.execute("UPDATE tasks SET status='running',attempt=1 WHERE id=?",(task['id'],))
+    task=db.one('SELECT * FROM tasks WHERE id=?',(task['id'],))
+    context=context_fixture();before=deepcopy(context)
+    manifest={'request_options':{'max_output_tokens':1000}}
+    cfg={**provider.DEFAULT,'context_limit':len(db.dumps(compact_model_context(context)).encode())+3000,
+         'max_output_tokens':1000};db.set_setting('provider',cfg)
+    captured=[]
+    def call(task,system,user,meta):
+        captured.append((system,meta));return {'text':'{"ok":true}'}
+    monkeypatch.setattr(tasks,'model_call',call)
+    with pytest.raises(HTTPException) as error:
+        writing_flow._cached_call(task,'系统约束',context,manifest,stage='draft')
+    assert error.value.detail['code']=='WRITING_CONTEXT_BUDGET_EXCEEDED'
+    assert not captured and context==before
+    # A separate small input fits the same unchanged capacity; its cache key
+    # must bind the actual skill instructions, not merely the base prompt.
+    small={'rules':'必要条件不可删除。'}
+    actual_system,_=enrich(task,'系统约束','',{'writing_stage':'draft'})
+    writing_flow._cached_call(task,'系统约束',small,manifest,stage='draft')
+    expected=digest([writing_flow.VERSION,actual_system,writing_flow.stable_input(small),None,
+                     provider.config(),'draft',0,manifest['request_options']])
+    assert len(captured)==1 and '技能 academic-expression' in captured[0][0]
+    assert captured[0][1]['writing_flow_request_hash']==expected
+    assert captured[0][1]['skills_usage']

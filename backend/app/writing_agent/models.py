@@ -21,6 +21,8 @@ class DraftParagraph(Strict):
     text:str=Field(min_length=1,max_length=20000)
     reference_ids:list[str]=Field(default_factory=list,max_length=30)
     evidence_ids:list[str]=Field(default_factory=list,max_length=30)
+    project_material_ids:list[str]=Field(default_factory=list,max_length=30)
+    visual_plan_ids:list[str]=Field(default_factory=list,max_length=12)
     claim_spans:list[ClaimSpan]=Field(default_factory=list,max_length=100)
     citation_intents:list[CitationIntent]=Field(default_factory=list,max_length=100)
 class Draft(Strict):

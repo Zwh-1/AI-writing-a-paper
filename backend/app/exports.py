@@ -7,6 +7,7 @@ from docx.oxml.ns import qn
 from . import db,documents,reviews
 from .config import DATA,DB_PATH
 from .security import safe_object,require_project
+from .docx_references import citation_link,bookmark_reference,paragraph_runs,navigation_report
 DEFAULT_FORMAT={'font':'宋体','latin_font':'Times New Roman','font_size':12,'line_spacing':1.5,'line_spacing_points':None,'alignment':'justify','first_line_chars':2,'margin_top':25,'margin_bottom':25,'margin_left':30,'margin_right':25,'heading_font':'黑体','reference_superscript':True}
 def format_config(pid):
     from .paper_format import resolve
@@ -36,6 +37,10 @@ def export_project(pid,options,tid=None,prepared=None):
     from .export_checks import freeze,check_docx,markdown_document
     writing_report=prepared['writing_report']
     frozen=prepared['snapshot']
+    figure_delivery_results=[]
+    from .bibliography_format import render as render_reference
+    bibliography_version=frozen['settings']['academic_standards:'+pid]['bibliography_version']
+    format_bibliography=lambda meta:render_reference(meta,bibliography_version)['text']
     p=frozen['project'];fmt={**DEFAULT_FORMAT,**(frozen['settings'].get('format:'+pid) or {})};sections=frozen['sections'];valid_revisions={x['id'] for x in frozen['revisions'].values()};report_findings=[x for x in frozen['findings'] if not x['revision_id'] or x['revision_id'] in valid_revisions];findings={'findings':report_findings,'summary':{state:sum(x['result']==state for x in report_findings) for state in ('pass','fail','unknown')}}
     from .paper_format import resolve as resolve_format
     format_resolution=resolve_format(pid,package=frozen['package'],settings=frozen['settings'].get('format:'+pid) or {},project=p)
@@ -156,7 +161,7 @@ def export_project(pid,options,tid=None,prepared=None):
         line=values.get('line_spacing_points',size*float(fmt['line_spacing']))
         for key in ('space_before','space_after'):
             if key+'_lines' in values:setattr(paragraph_format,key,Pt(line*values[key+'_lines']))
-        selected_runs=[] if style else paragraph.runs if runs is None else runs
+        selected_runs=[] if style else paragraph_runs(paragraph) if runs is None else runs
         fonts=[paragraph.font] if style else [run.font for run in selected_runs]
         for font in fonts:
             if 'font_size' in values:font.size=Pt(values['font_size'])
@@ -240,8 +245,9 @@ def export_project(pid,options,tid=None,prepared=None):
     def figure_caption(node,default=''):
         nonlocal bookmark_count
         from .paper_tables import add_caption
+        from .documents import normalize_workflow_terms
         attrs=node.get('attrs',{});row=figure_lookup.get((active_sid,attrs.get('nodeId')))
-        if not row:return add_caption(doc,attrs.get('caption') or default)
+        if not row:return add_caption(doc,normalize_workflow_terms(attrs.get('caption') or default))
         paragraph=add_caption(doc,'');name='Figure' if node['type']=='figure' else 'Table'
         bookmark_count+=1;start=OxmlElement('w:bookmarkStart');start.set(qn('w:id'),str(bookmark_count));start.set(qn('w:name'),row['bookmark']);paragraph._p.append(start)
         prefix=('图' if node['type']=='figure' else '表')+(' ' if figure_policy['caption_space'] else '')
@@ -254,13 +260,14 @@ def export_project(pid,options,tid=None,prepared=None):
         reset=' \\r 1' if key not in sequences and figure_policy['numbering']=='chapter' else ''
         field(paragraph,' SEQ '+name+reset+' \\* ARABIC ',row['index']);sequences.add(key)
         end=OxmlElement('w:bookmarkEnd');end.set(qn('w:id'),str(bookmark_count));paragraph._p.append(end)
-        paragraph.add_run(' '+(attrs.get('caption') or default or '【题名待补】'))
+        paragraph.add_run(' '+normalize_workflow_terms(attrs.get('caption') or default or '【题名待补】'))
         apply_component(paragraph,'caption')
         return paragraph
     def inline(par,n):
         typ=n.get('type');attrs=n.get('attrs',{})
         if typ=='text':
-            run=par.add_run(n.get('text',''));marks={m['type'] for m in n.get('marks',[])};run.bold='bold' in marks;run.italic='italic' in marks;run.font.strike='strike' in marks
+            from .documents import normalize_workflow_terms
+            run=par.add_run(normalize_workflow_terms(n.get('text','')));marks={m['type'] for m in n.get('marks',[])};run.bold='bold' in marks;run.italic='italic' in marks;run.font.strike='strike' in marks
             run.underline='underline' in marks
             if 'superscript' in marks:run.font.superscript=True
             if 'subscript' in marks:run.font.subscript=True
@@ -269,7 +276,9 @@ def export_project(pid,options,tid=None,prepared=None):
             from .math_office import convert
             par._p.append(omml(attrs.get('omml') or convert(attrs.get('latex') or attrs.get('expression',''))))
         elif typ=='citation':
-            run=par.add_run(('（'+year_labels.get(attrs.get('citationId'),'?')+'）') if citation_style=='author_year' else ('['+str(numbering.get(attrs.get('citationId'),'?'))+']'));run.font.superscript=citation_style=='numeric' and bool(fmt['reference_superscript'])
+            rid=attrs.get('citationId')
+            label=('（'+year_labels[rid]+'）') if citation_style=='author_year' else ('['+str(numbering[rid])+']')
+            citation_link(par,rid,label,citation_style=='numeric' and bool(fmt['reference_superscript']))
         elif typ=='footnote':
             identifier=100000+len(footnotes);footnotes[identifier]=attrs.get('noteText','');run=par.add_run();run.font.superscript=True;reference=OxmlElement('w:footnoteReference');reference.set(qn('w:id'),str(identifier));run._r.append(reference)
         elif typ=='hardBreak': par.add_run().add_break()
@@ -287,7 +296,7 @@ def export_project(pid,options,tid=None,prepared=None):
             ind=paragraph._p.get_or_add_pPr().find(qn('w:ind'))
             if ind is None:ind=OxmlElement('w:ind');paragraph._p.get_or_add_pPr().append(ind)
             ind.set(qn('w:firstLineChars'),str(0 if cell else int(float(current['first_line_chars'])*100)))
-            for run in paragraph.runs:
+            for run in paragraph_runs(paragraph):
                 run.font.size=Pt(float(current['font_size']))
                 if run.font.name!='Consolas':run.font.name=current['latin_font']
                 run._r.get_or_add_rPr().get_or_add_rFonts().set(qn('w:eastAsia'),current['font'])
@@ -356,7 +365,7 @@ def export_project(pid,options,tid=None,prepared=None):
                         paragraph=target.paragraphs[0] if k==0 else target.add_paragraph()
                         inline(paragraph,part);format_paragraph(paragraph,cell=True)
                         if source_cell['type']=='tableHeader':
-                            for run in paragraph.runs:run.bold=True
+                            for run in paragraph_runs(paragraph):run.bold=True
                     j+=cs
                 if any(c['type']=='tableHeader' for c in row.get('content',[])):
                     header=OxmlElement('w:tblHeader');header.set(qn('w:val'),'true');table.rows[i]._tr.get_or_add_trPr().append(header)
@@ -365,19 +374,30 @@ def export_project(pid,options,tid=None,prepared=None):
                 for table_cell in table_row.cells:
                     for paragraph in table_cell.paragraphs:
                         if attrs.get('fontSize'):
-                            for run in paragraph.runs:run.font.size=Pt(float(attrs['fontSize']))
+                            for run in paragraph_runs(paragraph):run.font.size=Pt(float(attrs['fontSize']))
                         if attrs.get('bodyAlignment') and row_index>0:paragraph.alignment={'left':0,'center':1,'right':2,'justify':3}[attrs['bodyAlignment']]
+            if attrs.get('pageBreakRows'):
+                from .table_continuation import split_word
+                entry=figure_lookup.get((active_sid,attrs.get('nodeId')))
+                table=split_word(doc,table,rows,attrs['pageBreakRows'],
+                    ((entry['label']+' ') if entry else '')+(attrs.get('caption') or '【表题待补】'))
             if attrs.get('note'):
                 from .paper_tables import keep_note_with_table
                 keep_note_with_table(table)
-                note=doc.add_paragraph('注：'+attrs['note']);unindent(note)
+                from .documents import normalize_workflow_terms
+                note=doc.add_paragraph('注：'+normalize_workflow_terms(attrs['note']));unindent(note)
         elif typ=='figure':
             aid=attrs.get('artifactId');artifact=artifacts.get(attrs.get('assetVersionId') or aid)
             if not artifact or not artifact['sha256']: raise ValueError('图片资源缺失')
             try:
                 from PIL import Image
                 with Image.open(safe_object(artifact['sha256'])) as image:iw,ih=image.size
-                width=min(145,210-float(fmt['margin_left'])-float(fmt['margin_right']),180*iw/ih)
+                metadata=db.loads(artifact.get('metadata'),{}) if isinstance(artifact.get('metadata'),str) else artifact.get('metadata',{}) or {}
+                desired=metadata.get('delivery_spec',{}).get('width_mm',145)
+                width=min(desired,210-float(fmt['margin_left'])-float(fmt['margin_right']),180*iw/ih)
+                from .visual_delivery import quality as measure_figure
+                figure_delivery_results.append({'artifact_id':artifact['id'],'section_id':active_sid,
+                    **measure_figure({**metadata,'width':iw},width)})
                 shape=doc.add_picture(str(safe_object(artifact['sha256'])),width=Mm(width))
                 metadata=db.loads(artifact.get('metadata'),{}) if isinstance(artifact.get('metadata'),str) else artifact.get('metadata',{}) or {}
                 svg_hash=attrs.get('svgSha256') or metadata.get('svg_sha256')
@@ -438,7 +458,8 @@ def export_project(pid,options,tid=None,prepared=None):
     if native_numbering:
         props=OxmlElement('w:numPr');disabled=OxmlElement('w:numId');disabled.set(qn('w:val'),'0');props.append(disabled);bibliography_heading._p.get_or_add_pPr().append(props)
     for rid,bib in sorted(refs.items(),key=lambda item:year_labels[item[0]]) if citation_style=='author_year' else refs.items():
-        line=('' if citation_style=='author_year' else f'[{numbering[rid]}] ')+bibliography_text(db.loads(bib['metadata'],{}));paragraph=doc.add_paragraph(line)
+        line=('' if citation_style=='author_year' else f'[{numbering[rid]}] ')+format_bibliography(db.loads(bib['metadata'],{}));paragraph=doc.add_paragraph(line)
+        bookmark_reference(paragraph,rid)
         from .paper_tables import unindent
         unindent(paragraph);apply_component(paragraph,'references_body')
         # Bibliographic prose must wrap naturally; distributed justification of
@@ -482,6 +503,7 @@ def export_project(pid,options,tid=None,prepared=None):
     (folder/'论文.md').write_text(markdown,encoding='utf-8')
     report={'project_title':p['title'],'created_at':db.now(),'findings':findings,'visual_check':'not_run','template_preservation':preservation,'citation_style':citation_style,'footnotes':len(footnotes),'field_update':'请在目标Word软件更新目录、图表目录、交叉引用和页码','format_profile':fmt,'figure_checks':figure_report,'figure_numbering':figure_policy['numbering']}
     report['format_resolution']=format_resolution
+    report['figure_delivery']=figure_delivery_results
     report['effective_component_styles']=component_styles;report['effective_document_policy']=document_policy
     pdf=False;tool=renderer()
     needs_field_update=has_directory or bool(figure_rows) or preserve or citation_style=='author_year' or footnotes or document_policy.get('frontmatter_numbering') or document_policy.get('chapter_headers') or any(n.get('attrs',{}).get('omml') for item in snapshots for n in documents.nodes(item['document']))
@@ -510,14 +532,24 @@ def export_project(pid,options,tid=None,prepared=None):
     elif options.get('pdf'):
         try:
             from .pdf_render import render_pdf
-            render_pdf(folder/'论文.pdf',p,snapshots,refs,numbering,fmt,artifacts,figure_rows)
+            render_pdf(folder/'论文.pdf',p,snapshots,refs,numbering,fmt,artifacts,figure_rows,bibliography_formatter=format_bibliography)
             pdf=True;report['pdf_status']='generated_independent_layout';report['pdf_renderer']='ReportLab；PDF独立排版，不代表Word分页已验收'
         except Exception as exc: report['pdf_status']='renderer_unavailable';report['pdf_error']=str(exc)[:300]
     report['docx_property_checks']=check_docx(folder/filename,fmt,preservation.get('body_section_index') if preservation else None)
+    from .academic_standards import check_docx as check_academic_docx
+    report['academic_standard_checks']=check_academic_docx(folder/filename,frozen['settings']['academic_standards:'+pid])
     report['snapshot_consistency']='read_transaction'
     report['content_revision_ids']=[x['revision']['id'] for x in snapshots]
+    expected_citations=sum(n['type']=='citation' for item in snapshots for n in documents.nodes(item['document']))
+    report['reference_navigation']=navigation_report(folder/filename,expected_citations,len(refs))
+    if options.get('include_submission_copy',True):
+        from .export_submission import write_submission
+        report['submission_copy']=write_submission(folder,p,snapshots,refs,numbering,year_labels,artifacts,figure_rows,fmt,citation_style,format_bibliography)
     (folder/'检查报告.json').write_text(db.dumps(report),encoding='utf-8');(folder/'检查报告.md').write_text('# 论文检查报告\n\n视觉检查：未人工验收。\n\n'+'\n'.join(f"- [{f['result']}] {f['message']}" for f in findings['findings']),encoding='utf-8')
     manifest={'project':p,'rule_package':package,'sections':[{'id':x['section']['id'],'revision_id':x['revision']['id']} for x in snapshots],'references':refs,'format':fmt,'template_sha256':template,'created_at':db.now(),'mode':options.get('mode','draft'),'visual_check':'not_run','pdf':pdf,'research_facts':frozen['facts'],'file_versions':frozen['file_versions'],'docx_property_checks':report['docx_property_checks'],'snapshot_at':frozen['created_at']}
+    manifest['academic_standards']=frozen['settings']['academic_standards:'+pid]
+    report['bibliography']=prepared['checks']['bibliography']
+    (folder/'参考文献格式核对.json').write_text(db.dumps(report['bibliography']),encoding='utf-8')
     (folder/'版本清单.json').write_text(db.dumps(manifest),encoding='utf-8')
     evidence_mapping=[{'section_id':x['section']['id'],'revision_id':x['revision']['id'],'node_id':n.get('attrs',{}).get('nodeId'),'text':documents.plain(n),'source_ids':n.get('attrs',{}).get('sourceIds',[]),'fact_ids':n.get('attrs',{}).get('factIds',[]),'evidence_ids':n.get('attrs',{}).get('evidenceIds',[]),'knowledge_unit_ids':n.get('attrs',{}).get('knowledgeUnitIds',[]),'reading_ids':n.get('attrs',{}).get('documentReadingIds',[])} for x in snapshots for n in documents.nodes(x['document']) if any(n.get('attrs',{}).get(key) for key in ('sourceIds','factIds','evidenceIds','knowledgeUnitIds','documentReadingIds'))]
     (folder/'段落证据映射.json').write_text(db.dumps(evidence_mapping),encoding='utf-8')
@@ -557,6 +589,15 @@ def backup():
         portable.commit()
     finally:portable.close()
     entries={'workbench.sqlite3':tmp};entries.update({'objects/'+p.name:p for p in (DATA/'objects').iterdir() if p.is_file()})
+    graph_snapshot=None
+    graph_path=Path(db.DB_PATH).parent/'ai-graph-checkpoints.sqlite3'
+    if graph_path.is_file():
+        graph_snapshot=DATA/'tmp'/f'{bid}-graph.sqlite3'
+        source=sqlite3.connect(graph_path.as_uri()+'?mode=ro',uri=True)
+        target=sqlite3.connect(graph_snapshot)
+        try:source.backup(target)
+        finally:target.close();source.close()
+        entries['ai-graph-checkpoints.sqlite3']=graph_snapshot
     resource_roots={}
     check=sqlite3.connect(tmp);check.row_factory=sqlite3.Row
     try:
@@ -568,12 +609,15 @@ def backup():
                 for resource in original.rglob('*') if original.is_dir() else [original]:
                     if resource.is_file() and not resource.is_symlink():entries[root+'/'+(resource.relative_to(original).as_posix() if original.is_dir() else resource.name)]=resource
     finally:check.close()
-    manifest={'version':2,'created_at':db.now(),'files':{name:hashlib.sha256(path.read_bytes()).hexdigest() for name,path in entries.items()},'knowledge_resources':resource_roots,'credentials_included':False}
+    manifest={'version':2,'created_at':db.now(),'files':{name:hashlib.sha256(path.read_bytes()).hexdigest() for name,path in entries.items()},'knowledge_resources':resource_roots,'credentials_included':False,
+              'ai_graph_recovery':'business_receipts_authoritative_checkpoints_optional'}
     path=DATA/'backups'/f'{bid}.zip'
     with zipfile.ZipFile(path,'w',zipfile.ZIP_DEFLATED) as z:
         for name,source in entries.items(): z.write(source,name)
         z.writestr('manifest.json',db.dumps(manifest))
-    tmp.unlink(missing_ok=True);db.execute('INSERT INTO backups VALUES(?,?,?,?)',(bid,path.name,db.dumps(manifest),db.now()))
+    tmp.unlink(missing_ok=True)
+    if graph_snapshot:graph_snapshot.unlink(missing_ok=True)
+    db.execute('INSERT INTO backups VALUES(?,?,?,?)',(bid,path.name,db.dumps(manifest),db.now()))
     return {'id':bid,'filename':path.name,'credentials_included':False}
 def restore_backup(data):
     rid=db.uid();target=DATA/'restored'/rid

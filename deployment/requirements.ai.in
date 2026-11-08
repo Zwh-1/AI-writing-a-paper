@@ -1,0 +1,4 @@
+# AI orchestration uses the existing transport, credentials and request ledger.
+langchain>=1,<2
+langgraph>=1,<2
+langgraph-checkpoint-sqlite>=3,<4

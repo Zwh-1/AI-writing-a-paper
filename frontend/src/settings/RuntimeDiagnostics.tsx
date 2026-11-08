@@ -8,6 +8,8 @@ declare const __RUNTIME_FRONTEND_BUILD__: Row | null;
 const frontendBuild = typeof __RUNTIME_FRONTEND_BUILD__ === "undefined" ? null : __RUNTIME_FRONTEND_BUILD__;
 const short = (value: unknown) => typeof value === "string" && value ? value.slice(0, 12) : "未记录";
 const count = (value: unknown) => typeof value === "number" ? value.toLocaleString("zh-CN") : "未知";
+const duration = (value: unknown) => typeof value === "number" ? count(Math.round(value)) : "无执行样本";
+const aiLabels: Record<string, string> = { understand: '项目理解', draft: '章节起草', review: '候选核验', semantic_review: '主张核验', discourse_review: '篇章审查', context_build: '上下文准备', queue_wait: '排队', task_total: '任务总耗时', worker_elapsed: '本次执行', model_gateway: '模型调用', graph_node: '写作阶段', stage: '处理阶段', queue: '排队', provider_response_headers: '接口响应', first_model_content: '首段输出' };
 const issues: Record<string, string> = {
   source_changed_since_start: "源码已有更新，当前运行实例尚未加载。",
   worker_unavailable: "未收到有效执行器心跳，队列可能暂时无法执行。",
@@ -18,6 +20,8 @@ export default function RuntimeDiagnostics({ pid }: { pid: string }) {
   const [runtime, setRuntime] = useState<Row | null>(null);
   const [policy, setPolicy] = useState<Row | null>(null);
   const [metrics, setMetrics] = useState<Row | null>(null);
+  const [aiPolicy, setAiPolicy] = useState<Row | null>(null);
+  const [aiMetrics, setAiMetrics] = useState<Row | null>(null);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
@@ -37,10 +41,14 @@ export default function RuntimeDiagnostics({ pid }: { pid: string }) {
       }
       try { const result = await api("/ai-cache-policy", { timeout: 10000, signal: controller.signal }); if (alive) setPolicy(result); }
       catch { if (alive) setPolicy(null); }
+      try { const result = await api('/ai-runtime/policy', { timeout: 10000, signal: controller.signal }); if (alive) setAiPolicy(result); }
+      catch { if (alive) setAiPolicy(null); }
       if (pid) {
+        try { const result = await api(`/ai-runtime/projects/${pid}`, { timeout: 10000, signal: controller.signal }); if (alive) setAiMetrics(result); }
+        catch { if (alive) setAiMetrics(null); }
         try { const result = await api(`/projects/${pid}/runtime-metrics`, { timeout: 10000, signal: controller.signal }); if (alive) setMetrics(result); }
         catch { if (alive) setMetrics(null); }
-      } else if (alive) setMetrics(null);
+      } else if (alive) { setMetrics(null); setAiMetrics(null); }
       polling = false;
     }
     void load();
@@ -61,6 +69,28 @@ export default function RuntimeDiagnostics({ pid }: { pid: string }) {
     <p className="muted">这里显示实际加载的构建身份、执行器心跳及本地记录。新任务设置不会改变正在运行任务的输入布局。</p>
     {error && <p role="alert" className="settings-feedback error">{error}</p>}
     {message && <p role="status" className="settings-feedback success">{message}</p>}
+    {aiPolicy && <fieldset className="settings-fieldset" disabled={busy}>
+      <legend>AI 写作与执行</legend>
+      <p className="muted">以下设置用于新任务；已创建任务保留原协议和检查点。生成内容仍需审阅后采用。</p>
+      <label className="field">新任务的执行方式<select aria-label="新任务的执行方式" value={aiPolicy.new_task_engine} onChange={event => void change('/ai-runtime/policy', { new_task_engine: event.target.value }, '已保存新任务的执行方式。')}>
+        <option value="langgraph_v1">可恢复的分阶段流程</option><option value="legacy">兼容原有流程</option>
+      </select></label>
+      <label className="field">新任务的证据规划<select aria-label="新任务的证据规划" value={aiPolicy.new_task_quality} onChange={event => void change('/ai-runtime/policy', { new_task_quality: event.target.value }, '已保存新任务的证据规划方式。')}>
+        <option value="evidence.obligations.v1">按章节责任和证据类型选材</option><option value="legacy">兼容原有选材</option>
+      </select></label>
+      <label className="field">独立检查的同时执行数<select aria-label="独立检查的同时执行数" value={aiPolicy.max_parallel_checks} onChange={event => void change('/ai-runtime/policy', { max_parallel_checks: Number(event.target.value) }, '已保存新任务的检查并发设置。')}>
+        <option value={1}>1 项</option><option value={2}>2 项</option><option value={3}>3 项</option>
+      </select></label>
+      <p className="muted">并发仍受接口额度、项目预算和执行状态约束；不会增加必要检查的数量。</p>
+    </fieldset>}
+    {aiMetrics?.health && !aiMetrics.health.ready && <p className="runtime-warning" role="status">部分 AI 运行能力暂不可用，请检查运行库和检查点状态。</p>}
+    {aiMetrics && <details><summary>AI 阶段耗时与恢复记录</summary>
+      <p>已保存 {count(aiMetrics.completed_nodes)} 个阶段结果。</p>
+      {aiMetrics.health && <p className="muted">运行库：{Object.entries(aiMetrics.health.dependencies).filter(([, value]) => !(value as Row).available).map(([name]) => name).join('、') || '已加载'} · 检查点：{({ readable: '可读取', not_created: '尚未创建', unreadable: '无法读取', directory_missing: '目录缺失' } as Record<string, string>)[aiMetrics.health.checkpoint.status] || '未知'}</p>}
+      <div className="table-wrap"><table className="data-table"><thead><tr><th>阶段</th><th>类型</th><th>完成</th><th>失败</th><th>复用</th><th>实际执行 P50 毫秒</th><th>实际执行 P95 毫秒</th></tr></thead>
+        <tbody>{aiMetrics.metrics.stages.map((row: Row) => <tr key={`${row.stage}:${row.kind}`}><td>{aiLabels[row.stage] || row.stage}</td><td>{aiLabels[row.kind] || row.kind}</td><td>{count(row.completed)}</td><td>{count(row.failed)}</td><td>{count(row.reused)}</td><td>{duration(row.p50_ms)}</td><td>{duration(row.p95_ms)}</td></tr>)}</tbody>
+      </table></div><p className="muted">{aiMetrics.metrics.note}</p>
+    </details>}
     <div className="table-wrap"><table className="data-table"><thead><tr><th>组成</th><th>版本</th><th>源码指纹</th><th>状态</th></tr></thead><tbody>
       <tr><td>当前页面</td><td>{frontendBuild?.version || appVersion}</td><td>{short(frontendBuild?.source_fingerprint)}</td><td>{frontendBuild ? "构建时嵌入" : "构建身份未记录"}</td></tr>
       <tr><td>本机服务</td><td>{runtime?.server?.version || "未知"}</td><td>{short(runtime?.server?.source_fingerprint)}</td><td>{runtime ? "已连接" : "诊断不可用"}</td></tr>

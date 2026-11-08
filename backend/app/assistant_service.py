@@ -1,5 +1,6 @@
 """Metered research actions. A result is saved before it is offered to the editor."""
 import re
+from copy import deepcopy
 from fastapi import HTTPException
 from . import db, security, tasks, provider, documents, resource_refs
 from . import research_records as store
@@ -63,12 +64,27 @@ def abstract(task,body):
     return store.save(pid,'translation',{'reference_id':row['id'],'source_hash':text_hash(source),'language':body.get('language','zh-CN'),'text':text,'run_id':run},owner=row['id'])
 
 def agents(pid):
-    return DEFAULT_AGENTS+[{**row['data'],'id':row['id'],'revision':row['revision']} for row in store.list_records(pid,'agent')]
+    return deepcopy(DEFAULT_AGENTS)+[{**row['data'],'id':row['id'],'revision':row['revision']} for row in store.list_records(pid,'agent')]
+
+
+def agent_snapshot(pid,identity):
+    chosen=next((item for item in agents(pid) if item['id']==identity),None)
+    if not chosen:raise HTTPException(409,'所选智能体已删除，请重新选择后提交')
+    return {'id':chosen['id'],'revision':chosen.get('revision',0),'title':chosen['title'],
+            'prompt':chosen.get('prompt',''),'capabilities':deepcopy(chosen.get('capabilities',[])),
+            'model_profile':chosen.get('model_profile','primary')}
+
+
+def validate_agent_snapshot(pid,snapshot):
+    current=agent_snapshot(pid,snapshot['id'])
+    if current!=snapshot:raise HTTPException(409,'智能体提示词或能力配置已变化，请重新提交请求')
+    return current
 
 def validate_agent(data):
     if not isinstance(data.get('title'),str) or not 1<=len(data['title'].strip())<=100 or not isinstance(data.get('prompt',''),str) or len(data.get('prompt',''))>16000:raise HTTPException(422,'智能体名称或提示词无效')
-    if not isinstance(data.get('capabilities',[]),list) or set(data.get('capabilities',[]))-{'knowledge','assets','document','document_edit','notes'}:raise HTTPException(422,'智能体能力无效')
-    if data.get('model_profile','primary') not in ('primary','gpt'):raise HTTPException(422,'模型路线无效')
+    capabilities=data.get('capabilities',[])
+    if not isinstance(capabilities,list) or len(capabilities)>5 or any(not isinstance(c,str) for c in capabilities) or set(capabilities)-{'knowledge','assets','document','document_edit','notes'}:raise HTTPException(422,'智能体能力无效')
+    if not isinstance(data.get('model_profile','primary'),str) or data.get('model_profile','primary') not in ('primary','gpt'):raise HTTPException(422,'模型路线无效')
     return {key:data[key] for key in ('title','prompt','capabilities','model_profile') if key in data}
 
 def messages(pid,cid):
@@ -87,6 +103,14 @@ def message_permissions(pid,data):
         revision_permissions(pid,data['source_revision_id'])
     return inherited
 
+def validate_history(pid,snapshot):
+    for item in (snapshot or {}).get('messages',[]):
+        row=store.get(pid,item['id'],'message')
+        if row['owner_id']!=snapshot['conversation_id'] or row['revision']!=item['revision']:
+            raise HTTPException(409,'已加载的对话消息发生变化，请重新准备上下文')
+        message_permissions(pid,row['data'])
+
+
 def require_products(agent,product_refs):
     if not isinstance(product_refs,list):raise HTTPException(422,'产物范围无效')
     capabilities=set(agent.get('capabilities',[]))
@@ -96,13 +120,22 @@ def require_products(agent,product_refs):
     if product_refs and not required<=capabilities:raise HTTPException(422,'该智能体未启用所选材料所需的随记、正文或资产能力')
 
 
+def _validate_ids(value,limit,label):
+    if not isinstance(value,list) or len(value)>limit or any(not isinstance(x,str) or not 1<=len(x)<=160 for x in value):
+        raise HTTPException(422,label+'范围无效')
+
+
 def send_message(pid,cid,body):
     conversation=store.get(pid,cid,'conversation');text=body.get('text','')
     if not isinstance(text,str) or not 1<=len(text.strip())<=30000:raise HTTPException(422,'消息须为1至30000字')
     active=db.one("SELECT id FROM tasks WHERE project_id=? AND kind='studio' AND json_extract(payload,'$.action')='chat' AND json_extract(payload,'$.conversation_id')=? AND status IN ('queued','running','outcome_unknown')",(pid,cid))
     if active:raise HTTPException(409,'当前对话仍有请求未结束，请先查看任务结果')
     selected=body.get('file_ids',conversation['data'].get('file_ids',[]))
-    if not isinstance(selected,list) or len(selected)>20:raise HTTPException(422,'文献范围无效')
+    _validate_ids(selected,20,'文献')
+    _validate_ids(body.get('note_ids',[]),20,'随记')
+    _validate_ids(body.get('asset_ids',[]),10,'资产')
+    for key in ('agent_id','section_id','revision_id'):
+        if body.get(key) is not None and not isinstance(body[key],str):raise HTTPException(422,'助手标识类型无效：'+key)
     for fid in selected:store.require_file(pid,fid,True)
     agent=body.get('agent_id') or conversation['data'].get('agent_id','academic')
     if agent not in {item['id'] for item in agents(pid)}:raise HTTPException(422,'智能体不存在')
@@ -117,16 +150,15 @@ def send_message(pid,cid,body):
         if db.one("SELECT id FROM tasks WHERE project_id=? AND kind='studio' AND json_extract(payload,'$.action')='chat' AND json_extract(payload,'$.conversation_id')=? AND status IN ('queued','running','outcome_unknown')",(pid,cid)):raise HTTPException(409,'当前对话仍有请求未结束')
         store.save(pid,'conversation',{**conversation['data'],'agent_id':agent,'file_ids':selected,'product_refs':product_refs},cid,conversation['owner_id'],conversation['revision'])
         message=store.save(pid,'message',{'role':'user','text':text.strip(),'agent_id':agent,'file_ids':selected,'source_refs':product_refs},owner=cid)
-        chosen=next(item for item in agents(pid) if item['id']==agent)
+        chosen=agent_snapshot(pid,agent)
         note_ids=body.get('note_ids',[])
-        if not isinstance(note_ids,list) or len(note_ids)>20:raise HTTPException(422,'随记范围无效')
         for identity in note_ids:store.notes.get(pid,identity)
         context={'note_ids':note_ids,'product_refs':product_refs}
         if body.get('section_id'):
             from .assistant_context import section
             _,current,_,_,_=section(pid,body['section_id'],body.get('revision_id'))
             context.update(section_id=body['section_id'],revision_id=current['id'],allow_edit=body.get('allow_edit') is True)
-        task=tasks.enqueue(pid,'studio',{'action':'chat','conversation_id':cid,'message_id':message['id'],'agent_id':agent,'provider_profile':chosen.get('model_profile','primary'),'file_ids':selected,'use_knowledge':body.get('use_knowledge',True),'asset_ids':body.get('asset_ids',[]),**context})
+        task=tasks.enqueue(pid,'studio',{'action':'chat','conversation_id':cid,'message_id':message['id'],'agent_id':agent,'agent_snapshot':chosen,'provider_profile':chosen.get('model_profile','primary'),'file_ids':selected,'use_knowledge':body.get('use_knowledge',True),'asset_ids':body.get('asset_ids',[]),**context})
     return task
 
 def chat(task,body):
@@ -134,10 +166,16 @@ def chat(task,body):
     pending=store.get(pid,body['message_id'],'message')
     if pending['owner_id']!=cid:raise ValueError('消息不属于本次对话')
     if any(row['data'].get('reply_to')==pending['id'] for row in history):return {'conversation_id':cid,'already_saved':True}
-    agent=next((item for item in agents(pid) if item['id']==body['agent_id']),None)
-    if not agent:raise ValueError('所选智能体已删除')
+    agent=validate_agent_snapshot(pid,body['agent_snapshot']) if body.get('agent_snapshot') else agent_snapshot(pid,body['agent_id'])
+    from .project_memory import history_context,task_context,DEFAULT as default_memory_policy
+    from .ai_runtime.policy import frozen
+    memory_snapshot=frozen(task).get('memory')
+    history_view=history_context(history,pending['id'],memory_snapshot['policy'] if memory_snapshot else {**default_memory_policy,'recent_messages':40})
+    provided_ids={row['id'] for row in history_view['messages']}|{row['message_id'] for row in history_view['conversation_memory']['episodes']}
+    provided_history=[row for row in history if row['id'] in provided_ids]
+    history_snapshot={'conversation_id':cid,'messages':[{'id':row['id'],'revision':row['revision']} for row in provided_history]}
     capabilities=set(agent.get('capabilities',[]));file_ids=[];originals=[];citations=[]
-    for previous in history:
+    for previous in provided_history:
         file_ids.extend(message_permissions(pid,previous['data']))
     remaining=48000
     for fid in body.get('file_ids',[]) if 'document' in capabilities else []:
@@ -165,10 +203,16 @@ def chat(task,body):
         section_row,document_revision,_,paragraphs,document_permission=section(pid,body['section_id'],body.get('revision_id'))
         document_context={'section_id':section_row['id'],'revision_id':document_revision['id'],'title':section_row['title'],'paragraphs':paragraphs}
     allowed={item['source_id']:item for item in originals}
-    payload={'messages':[{'role':row['data']['role'],'text':row['data']['text']} for row in history[-40:]],'originals':originals,'assets':assets,
+    history_total=db.one("SELECT COUNT(*) n FROM studio_records WHERE project_id=? AND kind='message' AND owner_id=? AND deleted_at IS NULL",(pid,cid))['n']
+    if history_total>len(history):
+        history_view['history_scope'].update(complete=False,older_unloaded_messages=history_total-len(history),
+            notice='更早消息未加载；本次仅提供列明的消息和记忆，不能声称读取全部会话')
+    memory=task_context(pid,pending['data']['text'],body.get('section_id'),task)
+    payload={**history_view,'project_memory':memory,'originals':originals,'assets':assets,
              'schema':{'text':'回复','citations':['仅从给定 source_id 选择']},'context_boundary':'提供的原件可能仅覆盖部分单元，不能声称已读未提供的全文'}
     payload['current_document']=document_context
     input_refs=[item['source_ref'] for item in originals]
+    input_refs.extend(ref for row in provided_history for ref in row['data'].get('source_refs',[]))
     input_refs.extend(resource_refs.make(pid,'asset',identity) for identity in asset_stamps)
     payload['personal_notes']=[]
     payload['research_products']=[]
@@ -189,7 +233,14 @@ def chat(task,body):
         payload['schema']['operations']=[{'node_id':'给定段落ID','before':'该段落中唯一匹配的可编辑文字','after':'替换文字'}]
         payload['requirements']=['仅在用户要求修改正文时提出 operations；不可改变锁定段落、引用、公式或图表，未经用户采用不写入正文。']
     file_ids.extend(resource_refs.source_files(pid,input_refs))
-    value,run=call(task,'chat',payload,file_ids,agent.get('prompt',''),images or None,source_refs=input_refs)
+    for item in memory['items']:input_refs.extend(item.get('source_refs',[]))
+    value,run=call(task,'chat',payload,file_ids,agent.get('prompt',''),images or None,source_refs=input_refs,
+                   manifest_extra={'project_memory':memory,'history_scope':history_view['history_scope'],'conversation_history':history_snapshot,
+                                   'assistant_agent_snapshot':agent})
+    validate_agent_snapshot(pid,agent)
+    validate_history(pid,history_snapshot)
+    from .project_memory import validate_context as validate_memory_context
+    validate_memory_context(pid,memory)
     resource_refs.validate(pid,input_refs,remote=True)
     for aid,stamp in asset_stamps.items():
         from .assistant_context import artifact

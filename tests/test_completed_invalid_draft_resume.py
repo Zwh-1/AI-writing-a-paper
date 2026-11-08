@@ -21,7 +21,10 @@ def returned_invalid_draft(e, monkeypatch):
 
     def transport(system, user, images=None):
         payload = db.loads(user)
-        calls.append(payload.get('section', {}).get('kind'))
+        kind=payload.get('section', {}).get('kind')
+        review=(payload.get('operation')=='review_candidate_discourse' or 'messages' in payload
+                or any(key in payload for key in ('passages','navigation_indexes','question')))
+        calls.append('review:'+str(kind) if review else kind)
         response = original_transport(system, user, images)
         if len(calls) == 1:
             response['text'] = RAW
@@ -72,10 +75,11 @@ def test_resume_reuses_returned_invalid_draft_and_only_sends_existing_repair(man
     output = db.loads(done['result'])
     assert output['complete'] and output['completed_sections'] == 5
     assert calls.count('introduction') == 2
-    assert len(calls) == 6  # Returned invalid draft, its repair, four other chapters.
+    draft_calls=[kind for kind in calls if not str(kind).startswith('review:')]
+    assert len(draft_calls) == 6  # Returned invalid draft, its repair, four other chapters.
     assert run['id'] in output['completed_run_ids']
     assert not paper.uncheckpointed_runs(done)
-    assert db.one('SELECT COUNT(*) n FROM generation_runs WHERE task_id=?', (task['id'],))['n'] == 6
+    assert db.one('SELECT COUNT(*) n FROM generation_runs WHERE task_id=?', (task['id'],))['n'] == len(calls)
     assert not any(item.get('degraded') for item in output['paper_sections'])
     assert not db.rows('SELECT * FROM revisions')
 

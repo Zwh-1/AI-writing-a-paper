@@ -190,8 +190,13 @@ def inspect_pdf(path,frozen,metrics,errors,warnings):
                         if stripped==str(chapter_index)+compact(chapter_title):chapter=chapter_title
                     if stripped=='参考文献':chapter='参考文献';in_references=True
                 if number%2==1:
-                    if chapter is None:errors.append(f'PDF逻辑奇数页{number}无法定位当前一级标题')
-                    elif compact(header)!=compact(chapter):errors.append(f'PDF逻辑奇数页{number}页眉不等于一级标题文字：{header!r}，预期{chapter!r}')
+                    # 新规则：奇数页（单页）页眉=论文题目
+                    expected_title=frozen['project']['title']
+                    if compact(header)!=compact(expected_title):errors.append(f'PDF逻辑奇数页{number}页眉不等于论文题目：{header!r}，预期{expected_title!r}')
+                else:
+                    # 偶数页（双页）页眉=当前章标题
+                    if chapter is None:errors.append(f'PDF逻辑偶数页{number}无法定位当前一级标题')
+                    elif compact(header)!=compact(chapter):errors.append(f'PDF逻辑偶数页{number}页眉不等于章标题：{header!r}，预期{chapter!r}')
                 if not in_references:bodytexts.append(middle)
                 elif re.search(r'(?:^|\n)\s*参考文献\s*(?:\r?\n|$)',middle):bodytexts.append(re.split(r'(?:^|\n)\s*参考文献\s*(?:\r?\n|$)',middle,maxsplit=1)[0])
             pages.append({'physical_page':index+1,'logical_kind':kind,'logical_page':number,'header':header,'footer':footer,

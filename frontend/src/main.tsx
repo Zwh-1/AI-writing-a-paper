@@ -1765,6 +1765,7 @@ const ThesisTable = Table.extend({
       columnWidths: { default: null, renderHTML: () => ({}) },
       fontSize: { default: null, renderHTML: () => ({}) },
       bodyAlignment: { default: null, renderHTML: () => ({}) },
+      pageBreakRows: { default: null, renderHTML: () => ({}) },
     };
   },
 });
@@ -2344,15 +2345,15 @@ function RichEditor({
         <div>
           <Sparkles size={17} />
           <strong>{isEnglishAbstract ? "英文摘要翻译" : "辅助本节写作"}</strong>
-          <span>{isEnglishAbstract ? "直接翻译已保存的中文摘要" : "读取已保存全文后处理当前章"}</span>
+          <span>{isEnglishAbstract ? "直接翻译已保存的中文摘要" : "按项目上下文设置处理当前章"}</span>
         </div>
         {remoteConflict&&<p className="alert" role="alert">正文在其他窗口已更新，本机未保存修改已保留。请核对版本差异后再保存，避免覆盖新内容。</p>}
         {liveInputs.data&&<div className="writing-live-summary" aria-label="写作关联依据"><span>已连接{liveInputs.data.repository?.target_snapshot_id?"项目代码 · ":""}{liveInputs.data.material_count} 份资料 · {liveInputs.data.reference_count} 篇文献 · {liveInputs.data.figures?.length??0} 个正文图表</span><small>资料与格式变更会同步刷新，生成时读取当前项目依据。</small>{liveInputs.data.repository?.target_snapshot_id&&<Button onClick={()=>act(()=>send(`/projects/${pid}/writing-live/refresh-project`),"项目依据已更新，后续写作将使用新版本")}>更新项目依据</Button>}</div>}
         {!isEnglishAbstract && <div className="writing-context" aria-label="全文上下文">
           {manuscript?.can_load ? <details>
-            <summary>{manuscript.saved_sections ? `全文上下文：${manuscript.saved_sections}/${manuscript.total_sections} 章已有正文 · ${manuscript.characters.toLocaleString()} 字` : "全文上下文：尚无已保存正文，目前只有提纲与研究资料"}</summary>
-            <p className="muted">生成、修改、润写、扩写、压缩均读取以下章节的完整已保存正文。只输出当前章或选区的候选。</p>
-            <ul>{manuscript.sections.map((item: Row) => <li key={item.section_id}>{item.title} · {item.has_content ? `${item.characters.toLocaleString()} 字` : "尚无正文"}</li>)}</ul>
+            <summary>{manuscript.scope === "current_and_dependencies" ? `分层上下文：完整读取 ${manuscript.provided_section_ids?.length ?? 0} 章 · ${manuscript.catalogue_section_ids?.length ?? 0} 章提供导航` : manuscript.saved_sections ? `全文上下文：${manuscript.saved_sections}/${manuscript.total_sections} 章已有正文 · ${manuscript.characters.toLocaleString()} 字` : "全文上下文：尚无已保存正文，目前只有提纲与研究资料"}</summary>
+            <p className="muted">{manuscript.scope === "current_and_dependencies" ? "当前章和依赖章提供完整正文，其他章节提供版本目录及部分完整段落作为导航。实际读取范围随候选保存。" : "生成、修改、润写、扩写、压缩均读取以下章节的完整已保存正文。只输出当前章或选区的候选。"}</p>
+            <ul>{manuscript.sections.map((item: Row) => <li key={item.section_id}>{item.title} · {item.has_content ? `${item.characters.toLocaleString()} 字` : "尚无正文"}{manuscript.catalogue_section_ids?.includes(item.section_id) ? " · 导航" : ""}</li>)}</ul>
           </details> : <p className="muted" role="status">{manuscript?.message || writingContext.error || "正在检查已保存全文…"}</p>}
         </div>}
         {!isEnglishAbstract && operation === "polish" && <p className="muted" role="note">润写按独立规范改善措辞、句式与衔接，保留事实、数值、限定条件和引用。可在论文规则中单独勾选“润写”并发布适用条款。{!editor?.getText().trim() && "请先保存需要润写的正文。"}</p>}
@@ -2490,6 +2491,7 @@ function RichEditor({
         <button title="锁定或解锁当前段落" onClick={lockCurrent}>
           <LockKeyhole size={16} />
         </button>
+        {editor?.isActive("table") && <label title="Word 续表从这些数据行开始新页，逗号分隔；不含表头。PDF 按实际分页自动补续表题。">续表起始行<input aria-label="续表起始数据行" style={{ width: 100 }} placeholder="如 21,41" defaultValue={(editor.getAttributes("table").pageBreakRows ?? []).join(",")} onBlur={e => { const values = e.target.value.split(/[,，\s]+/).filter(Boolean).map(Number); if (values.every(x => Number.isInteger(x) && x >= 2)) editor.chain().focus().updateAttributes("table", { pageBreakRows: values }).run(); }} /></label>}
         <span className="toolbar-divider" />
         <select
           aria-label="选择引用文献"
@@ -3893,6 +3895,8 @@ function ChartTools() {
   const { pid, tick, act } = useApp();
   const { data: files } = useLoad("/projects/" + pid + "/files", tick);
   const [open, setOpen] = useState(false);
+  const [savedChart, setSavedChart] = useState<Row | null>(null);
+  const [chartKind, setChartKind] = useState("histogram");
   return (
     <>
       <Button onClick={() => setOpen(true)}>
@@ -3900,14 +3904,17 @@ function ChartTools() {
         从真实数据绘图
       </Button>
       {open && (
-        <Modal title="绘制数值分布图" onClose={() => setOpen(false)}>
+        <Modal title="从数据生成论文图表" onClose={() => setOpen(false)}>
           <form
             onSubmit={async (e) => {
+              const values = formValues(e);
+              const { width_mm, unit, bins, row_start, row_end, ...chart } = values;
+              const range = Object.fromEntries(Object.entries({ bins, row_start, row_end }).filter(([, value]) => value !== "" && value != null).map(([key, value]) => [key, Number(value)]));
               const d = await act(
-                () => send("/projects/" + pid + "/charts", formValues(e)),
+                () => send("/projects/" + pid + "/charts", { ...chart, ...range, delivery_spec: { width_mm: Number(width_mm), unit } }),
                 "图表已保存到研究产物，可在编辑器插入",
               );
-              if (d) setOpen(false);
+              if (d) setSavedChart(d);
             }}
           >
             <Field label="数据文件">
@@ -3924,12 +3931,26 @@ function ChartTools() {
             <Field label="数值列名">
               <input name="column" required placeholder="与原始数据表头一致" />
             </Field>
+            <Field label="图表类型"><select name="kind" value={chartKind} onChange={e => setChartKind(e.target.value)}><option value="histogram">直方图</option><option value="line">折线图</option><option value="scatter">散点图</option><option value="bar">柱状图</option></select></Field>
+            {chartKind !== "histogram" && <Field label="横轴列（折线和散点为数值，柱状图可用类别）"><input name="x_column" required={["line", "scatter"].includes(chartKind)} placeholder="与原始数据表头一致" /></Field>}
+            <Field label="分组列（可选）"><input name="group_column" /></Field>
+            <Field label="XLSX 工作表名（留空使用首张）"><input name="sheet_name" /></Field>
+            <Field label="起始数据行（从1开始，不含表头）"><input name="row_start" type="number" min={1} /></Field>
+            <Field label="结束数据行（包含该行，留空至末行）"><input name="row_end" type="number" min={1} /></Field>
+            {chartKind === "histogram" ? <Field label="分箱数（各组共用边界）"><input name="bins" type="number" min={1} max={200} /></Field> : <>
+              <Field label="实际区间下界列（可选）"><input name="lower_column" /></Field>
+              <Field label="实际区间上界列（可选）"><input name="upper_column" /></Field>
+              <Field label="区间含义和计算方法"><input name="interval_description" placeholder="填写数据中区间的真实含义" /></Field>
+            </>}
+            <Field label="纵轴单位"><input name="unit" maxLength={100} /></Field>
+            <Field label="目标宽度（毫米）"><input name="width_mm" type="number" min={30} max={500} defaultValue={150} required /></Field>
             <Field label="图表标题">
               <input name="title" placeholder="不填写则使用列名" />
             </Field>
             <Button type="submit" variant="primary">
               实际计算并绘图
             </Button>
+            {savedChart && <div><p>{["png", "svg", "pdf", "source"].map(format => <a className="btn" key={format} href={apiUrl(`/projects/${pid}/charts/${savedChart.id}/download?format=${format}`)} download>下载 {format === "source" ? "复算数据与绘图记录" : format.toUpperCase()}</a>)}</p><Button type="button" onClick={async () => { const result = await act(() => send(`/projects/${pid}/charts/${savedChart.id}/reproduce`, {}), "已从冻结数值重新生成图表"); if (result) setSavedChart(result); }}>按冻结数据重新生成</Button><p>保留选中数据行、排除原因和实际区间；重复类别不会自动聚合。</p></div>}
           </form>
         </Modal>
       )}

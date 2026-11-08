@@ -150,7 +150,13 @@ def test_regular_writer_receives_linked_products_and_tracks_adopted_sources(clie
     material=products.reuse(pid,{'sources':[refs.make(pid,'note',source['id'])],'target':'material','section_id':sid})['record']
     calls=[]
     def generate(system,user,images=None):
-        payload=json.loads(user);calls.append(payload)
+        payload=json.loads(user)
+        if payload.get('operation')=='review_candidate_discourse':
+            return {'text':db.dumps({'coverage_complete':True,'findings':[],'summary':'合成核验保留材料边界',
+                'rule_reviews':[{'rule_id':row['id'],'status':'satisfied','paragraph_indices':[0],
+                    'quote':payload['candidate_paragraphs'][0]['text'],'reason':'没有虚构实际测量'} for row in payload.get('rule_applications',[])]}),
+                'usage':{},'cost':0,'remote_id':'synthetic-review','request_hash':'synthetic-review'}
+        calls.append(payload)
         assert 'no measured deployment' in payload['research_products'][0]['text']
         return {'text':db.dumps({'paragraphs':[{'text':'本方法尚无实际部署测量结果。','source_ids':[],'reference_ids':[]}],'missing_materials':['真实测量']}),'usage':{'input_tokens':100,'output_tokens':40},'cost':0,'remote_id':'synthetic','request_hash':'synthetic'}
     monkeypatch.setattr(provider,'generate',generate)
